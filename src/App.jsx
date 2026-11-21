@@ -24,6 +24,9 @@ import { soundManager } from './utils/audio';
 import confetti from 'canvas-confetti';
 import { Volume2, VolumeX, BookOpen, RotateCcw, Trophy, Users, Shield, AlertTriangle, AlertCircle, Wrench, Wifi } from 'lucide-react';
 
+// Set to true only during local development/testing; kept false in production so players cannot access cheats
+const DEBUG_ENABLED = false;
+
 export default function App() {
   const [gameState, setGameState] = useState('SETUP'); // 'SETUP' | 'PLAYING' | 'GAMEOVER'
   const [gameMode, setGameMode] = useState('KLASIK'); // 'KLASIK' | 'MODERN'
@@ -1234,14 +1237,16 @@ export default function App() {
 
         {/* Right Actions */}
         <div className="flex items-center gap-1 sm:gap-2">
-          <button
-            onClick={() => setIsDebugOpen(true)}
-            className="px-2.5 py-1.5 text-amber-950 bg-amber-400 hover:bg-amber-500 border border-amber-500 rounded-xl transition flex items-center gap-1 shadow-sm text-xs font-black"
-            title="Hile & Test Paneli"
-          >
-            <Wrench size={14} />
-            <span>Hile</span>
-          </button>
+          {DEBUG_ENABLED && (
+            <button
+              onClick={() => setIsDebugOpen(true)}
+              className="px-2.5 py-1.5 text-amber-950 bg-amber-400 hover:bg-amber-500 border border-amber-500 rounded-xl transition flex items-center gap-1 shadow-sm text-xs font-black"
+              title="Hile & Test Paneli"
+            >
+              <Wrench size={14} />
+              <span>Hile</span>
+            </button>
+          )}
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className="p-2 text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-xl transition"
@@ -1333,16 +1338,19 @@ export default function App() {
         rollData={wheelRollData}
       />
 
-      {/* Floating Quick Action: Debug & Test */}
-      <button
-        onClick={() => setIsDebugOpen(true)}
-        className="debug-float-btn fixed top-14 right-3 z-40 bg-amber-400 hover:bg-amber-500 text-stone-900 font-black text-xs px-2.5 py-1.5 rounded-xl shadow-lg border border-amber-500 flex items-center gap-1 active:scale-95 transition"
-        title="Hile & Test Paneli"
-      >
-        <Wrench size={16} />
-        <span>🛠️ Test / Hile</span>
-      </button>
+      {/* Floating Quick Action: Debug & Test (Hidden & Locked when DEBUG_ENABLED is false) */}
+      {DEBUG_ENABLED && (
+        <button
+          onClick={() => setIsDebugOpen(true)}
+          className="debug-float-btn fixed top-14 right-3 z-40 bg-amber-400 hover:bg-amber-500 text-stone-900 font-black text-xs px-2.5 py-1.5 rounded-xl shadow-lg border border-amber-500 flex items-center gap-1 active:scale-95 transition"
+          title="Hile & Test Paneli"
+        >
+          <Wrench size={16} />
+          <span>🛠️ Test / Hile</span>
+        </button>
+      )}
 
+      {DEBUG_ENABLED && (
       <DebugModal
         isOpen={isDebugOpen}
         onClose={() => setIsDebugOpen(false)}
@@ -1459,6 +1467,7 @@ export default function App() {
         }}
         onEliminatePlayer={handleEliminatePlayer}
       />
+      )}
 
       <DiplomacyModal
         isOpen={isDiplomacyOpen}
