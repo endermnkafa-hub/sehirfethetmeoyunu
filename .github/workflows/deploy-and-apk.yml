@@ -1,0 +1,99 @@
+name: Site Yayinla & Android APK Olustur
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-and-apk"
+  cancel-in-progress: false
+
+jobs:
+  deploy-pages:
+    name: 7/24 Web Sitesi (GitHub Pages)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Kodu Cek
+        uses: actions/checkout@v4
+
+      - name: Node.js Kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Paketleri Yukle
+        run: npm ci
+
+      - name: Web Sitesini Derle
+        run: npm run build
+
+      - name: GitHub Pages Ayarla
+        uses: actions/configure-pages@v5
+
+      - name: Site Dosyalarini Yukle
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './dist'
+
+      - name: GitHub Pages Yayinla
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  build-apk:
+    name: Android APK Derle ve Yayinla
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodu Cek
+        uses: actions/checkout@v4
+
+      - name: Node.js Kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Java 21 Kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Paketleri Yukle ve Web Derle
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
+      - name: Android APK Derle
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: APK Dosyasini Adlandir
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk sehir-fethetme-oyunu.apk
+
+      - name: GitHub Releases (Indirme Linki) Olustur
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0-latest
+          name: Sehir & Toprak Fethi (Android APK)
+          body: |
+            📱 **Şehir & Toprak Fethi - Android Uygulaması**
+
+            Aşağıdaki `sehir-fethetme-oyunu.apk` dosyasına tıklayıp Android telefonunuza indirip kurabilirsiniz.
+          files: sehir-fethetme-oyunu.apk
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

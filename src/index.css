@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+}
+
+/* Notebook pattern helper */
+.notebook-grid {
+  background-color: #fbfbf9;
+  background-image: 
+    linear-gradient(#dbe4eb 1px, transparent 1px),
+    linear-gradient(90deg, #dbe4eb 1px, transparent 1px);
+}
