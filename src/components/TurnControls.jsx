@@ -27,7 +27,7 @@ export default function TurnControls({
   const remaining = totalToPlace - spent;
 
   return (
-    <div className="w-full bg-white/95 backdrop-blur-md border-t-2 border-stone-200 shadow-2xl p-3 sm:p-4 z-20">
+    <div className="turn-controls-panel w-full bg-white/95 backdrop-blur-md border-t-2 border-stone-200 shadow-2xl p-3 sm:p-4 z-20 shrink-0">
       <div className="max-w-2xl mx-auto flex flex-col gap-2.5">
         
         {/* Active Player Info Header */}
@@ -110,7 +110,7 @@ export default function TurnControls({
             </div>
 
             {/* 1-9 buttons */}
-            <div className="grid grid-cols-9 gap-1 sm:gap-1.5">
+            <div className="number-grid-landscape grid grid-cols-9 gap-1 sm:gap-1.5">
               {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => {
                 const isSafe = num <= maxSafe;
                 const isSelected = chosenNumber === num;

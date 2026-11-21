@@ -1185,7 +1185,7 @@ export default function App() {
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-stone-100 select-none">
       
       {/* 1. Top Navigation Bar */}
-      <header className="bg-white/95 backdrop-blur-md border-b border-stone-200 px-3 py-2 z-20 flex items-center justify-between shadow-sm">
+      <header className="game-header bg-white/95 backdrop-blur-md border-b border-stone-200 px-3 py-2 z-20 flex items-center justify-between shadow-sm">
         
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="bg-amber-100 text-amber-800 font-black px-2.5 py-1 rounded-xl text-xs sm:text-sm border border-amber-300">
@@ -1270,55 +1270,57 @@ export default function App() {
         </div>
       </header>
 
-      {/* 2. Main Interactive Board */}
-      <main className="flex-1 relative overflow-hidden">
-        <GameBoard
-          grid={grid}
-          gridWidth={gridWidth}
-          gridHeight={gridHeight}
+      {/* 2. Main Interactive Board + Turn Controls (Portrait: Top/Bottom, Landscape: Left/Right) */}
+      <div className="flex-1 flex flex-col game-body-layout overflow-hidden min-h-0">
+        <main className="flex-1 relative overflow-hidden min-h-0 min-w-0">
+          <GameBoard
+            grid={grid}
+            gridWidth={gridWidth}
+            gridHeight={gridHeight}
+            activePlayer={activePlayer}
+            pendingCells={pendingCells}
+            pendingWalls={pendingWalls}
+            walls={walls}
+            placingMode={placingMode}
+            onCellClick={handleCellClick}
+            onBuildWall={handleBuildWall}
+            onUndo={handleUndo}
+            canPlaceMore={isMyTurn && (pendingCells.reduce((sum, c) => sum + (c.cost || 1), 0) + pendingWalls.length < totalToPlace)}
+            alliances={alliances}
+            isPlacingPhase={isMyTurn && turnPhase === 'PLACING'}
+            isMyTurn={isMyTurn}
+          />
+        </main>
+
+        {/* 3. Turn Control Panel (Bottom in Portrait, Right Sidebar in Landscape) */}
+        <TurnControls
+          gameMode={gameMode}
           activePlayer={activePlayer}
+          playerArea={activePlayerArea}
+          turnPhase={turnPhase}
+          chosenNumber={chosenNumber}
+          setChosenNumber={handleSelectChosenNumber}
+          onStartSpin={handleStartSpin}
+          placingMode={placingMode}
+          setPlacingMode={setPlacingMode}
           pendingCells={pendingCells}
           pendingWalls={pendingWalls}
-          walls={walls}
-          placingMode={placingMode}
-          onCellClick={handleCellClick}
-          onBuildWall={handleBuildWall}
+          totalToPlace={totalToPlace}
+          onFinishPlacing={handleFinishPlacing}
           onUndo={handleUndo}
-          canPlaceMore={isMyTurn && (pendingCells.reduce((sum, c) => sum + (c.cost || 1), 0) + pendingWalls.length < totalToPlace)}
-          alliances={alliances}
-          isPlacingPhase={isMyTurn && turnPhase === 'PLACING'}
           isMyTurn={isMyTurn}
+          hasValidMoves={hasValidMoves}
+          onOpenDiplomacy={() => {
+            if (!isMyTurn) return;
+            if (pendingCells.length > 0 || pendingWalls.length > 0) {
+              showMessage('Önce haritadaki hamleni tamamla veya geri al!', 3000);
+              return;
+            }
+            setIsDiplomacyOpen(true);
+          }}
+          actionMessage={actionMessage}
         />
-      </main>
-
-      {/* 3. Bottom Turn Control Panel */}
-      <TurnControls
-        gameMode={gameMode}
-        activePlayer={activePlayer}
-        playerArea={activePlayerArea}
-        turnPhase={turnPhase}
-        chosenNumber={chosenNumber}
-        setChosenNumber={handleSelectChosenNumber}
-        onStartSpin={handleStartSpin}
-        placingMode={placingMode}
-        setPlacingMode={setPlacingMode}
-        pendingCells={pendingCells}
-        pendingWalls={pendingWalls}
-        totalToPlace={totalToPlace}
-        onFinishPlacing={handleFinishPlacing}
-        onUndo={handleUndo}
-        isMyTurn={isMyTurn}
-        hasValidMoves={hasValidMoves}
-        onOpenDiplomacy={() => {
-          if (!isMyTurn) return;
-          if (pendingCells.length > 0 || pendingWalls.length > 0) {
-            showMessage('Önce haritadaki hamleni tamamla veya geri al!', 3000);
-            return;
-          }
-          setIsDiplomacyOpen(true);
-        }}
-        actionMessage={actionMessage}
-      />
+      </div>
 
       {/* Modals */}
       <WheelModal
@@ -1334,7 +1336,7 @@ export default function App() {
       {/* Floating Quick Action: Debug & Test */}
       <button
         onClick={() => setIsDebugOpen(true)}
-        className="fixed top-14 right-3 z-40 bg-amber-400 hover:bg-amber-500 text-stone-900 font-black text-xs px-2.5 py-1.5 rounded-xl shadow-lg border border-amber-500 flex items-center gap-1 active:scale-95 transition"
+        className="debug-float-btn fixed top-14 right-3 z-40 bg-amber-400 hover:bg-amber-500 text-stone-900 font-black text-xs px-2.5 py-1.5 rounded-xl shadow-lg border border-amber-500 flex items-center gap-1 active:scale-95 transition"
         title="Hile & Test Paneli"
       >
         <Wrench size={16} />

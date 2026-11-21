@@ -151,24 +151,11 @@ export default function WheelModal({
   const diff = resultNumber !== null ? chosenNumber * resultNumber : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-sm w-full text-center border-4 border-amber-300 flex flex-col items-center animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-3 overflow-y-auto">
+      <div className="wheel-modal-card bg-white rounded-3xl p-6 shadow-2xl max-w-sm w-full text-center border-4 border-amber-300 flex flex-col items-center animate-in fade-in zoom-in-95 duration-200 max-h-[95vh] overflow-y-auto">
         
-        {/* Header */}
-        <div className="mb-3">
-          <div className="text-xs uppercase font-extrabold tracking-wider text-stone-500">
-            {activePlayer.name} Hamlesi
-          </div>
-          <div className="text-lg font-black text-stone-800 flex items-center justify-center gap-2 mt-0.5">
-            <span>Söylenen Sayı:</span>
-            <span className="inline-block px-3 py-0.5 bg-blue-100 text-blue-700 rounded-xl text-xl font-black border border-blue-300">
-              {chosenNumber}
-            </span>
-          </div>
-        </div>
-
         {/* Wheel Graphic */}
-        <div className="relative w-64 h-64 my-2 flex items-center justify-center">
+        <div className="wheel-graphic-box relative w-64 h-64 my-2 flex items-center justify-center shrink-0">
           {/* Top Indicator Arrow */}
           <div className="absolute -top-3.5 z-20 w-0 h-0 border-l-[14px] border-l-transparent border-r-[14px] border-r-transparent border-t-[26px] border-t-red-600 drop-shadow-lg"></div>
 
@@ -226,8 +213,23 @@ export default function WheelModal({
           </div>
         </div>
 
-        {/* Result Area */}
-        <div className="w-full min-h-[90px] flex flex-col items-center justify-center mt-2">
+        {/* Info, Result & Action Column */}
+        <div className="flex-1 w-full flex flex-col items-center justify-center">
+          {/* Header */}
+          <div className="mb-2 text-center">
+            <div className="text-xs uppercase font-extrabold tracking-wider text-stone-500">
+              {activePlayer.name} Hamlesi
+            </div>
+            <div className="text-lg font-black text-stone-800 flex items-center justify-center gap-2 mt-0.5">
+              <span>Söylenen Sayı:</span>
+              <span className="inline-block px-3 py-0.5 bg-blue-100 text-blue-700 rounded-xl text-xl font-black border border-blue-300">
+                {chosenNumber}
+              </span>
+            </div>
+          </div>
+
+          {/* Result Area */}
+          <div className="w-full min-h-[80px] flex flex-col items-center justify-center mt-1 text-center">
           {isSpinning && (
             <div className="text-stone-600 font-bold animate-pulse text-sm">
               Çark hızla dönüyor...
@@ -307,6 +309,7 @@ export default function WheelModal({
             </div>
           )
         )}
+        </div>
       </div>
     </div>
   );

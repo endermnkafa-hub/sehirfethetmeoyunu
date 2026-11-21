@@ -35,8 +35,8 @@ export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
   };
 
   return (
-    <div className="min-h-screen bg-stone-100 notebook-grid flex flex-col items-center justify-center p-4">
-      <div className="bg-white/95 backdrop-blur-md rounded-3xl p-6 sm:p-8 shadow-2xl max-w-md w-full border-4 border-amber-300 animate-in fade-in zoom-in-95 duration-200">
+    <div className="h-screen w-screen overflow-y-auto touch-pan-y bg-stone-100 notebook-grid flex flex-col items-center justify-start sm:justify-center p-4">
+      <div className="bg-white/95 backdrop-blur-md rounded-3xl p-5 sm:p-8 shadow-2xl max-w-md w-full border-4 border-amber-300 animate-in fade-in zoom-in-95 duration-200 my-auto">
         
         {/* Title & Brand */}
         <div className="text-center mb-5">
