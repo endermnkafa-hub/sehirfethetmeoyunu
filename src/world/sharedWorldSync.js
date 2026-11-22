@@ -84,6 +84,7 @@ export class SharedWorldSync {
             population: Math.floor(myC.population),
             color: myC.color,
             upgrades: myC.upgrades,
+            inventory: myC.inventory || { nukes: 0 },
             lastActiveTime: Date.now(),
           },
         });
@@ -413,6 +414,7 @@ export class SharedWorldSync {
       gold: Math.round(myC.gold),
       troops: Number(myC.troops.toFixed(1)),
       upgrades: myC.upgrades,
+      inventory: myC.inventory || { nukes: 0 },
       creatorIp: myC.creatorIp,
       deviceId: myC.deviceId,
       createdAt: myC.createdAt,
@@ -663,6 +665,12 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'ADMIN_CLEAR_CHAT') {
       this.engine.adminClearChat(false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'ADMIN_CLEAR_RADIATION') {
+      this.engine.adminClearRadiation(false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'ADMIN_RESET_TREATIES') {
+      this.engine.adminResetTreaties(false);
       this.onRemoteUpdate();
     } else if (data.type === 'ADMIN_RESET_WORLD') {
       this.engine.adminResetWorld(false);

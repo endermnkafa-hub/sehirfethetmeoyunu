@@ -149,6 +149,31 @@ export class WorldSimulationEngine {
     } catch {}
   }
 
+  _ensureCountryInventory(c) {
+    if (!c) return;
+    c.inventory = c.inventory || { nukes: 0 };
+    try {
+      if (typeof localStorage !== "undefined") {
+        const stored = localStorage.getItem(`sf_inventory_${c.id}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && typeof parsed.nukes === "number") {
+            c.inventory.nukes = Math.max(c.inventory.nukes || 0, parsed.nukes);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  _persistCountryInventory(c) {
+    if (!c || !c.inventory) return;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(`sf_inventory_${c.id}`, JSON.stringify(c.inventory));
+      }
+    } catch {}
+  }
+
   restoreMyCountryFromServer(clientIp = null) {
     const storedId = getMyCountryId();
     if (storedId) {
@@ -158,6 +183,7 @@ export class WorldSimulationEngine {
         if (c && c.landCount > 0) {
           this.myCountryId = parsed;
           c.deviceId = this.myDeviceId;
+          this._ensureCountryInventory(c);
           return;
         }
       }
@@ -168,6 +194,7 @@ export class WorldSimulationEngine {
     if (devCountry) {
       this.myCountryId = devCountry.id;
       saveMyCountryId(devCountry.id);
+      this._ensureCountryInventory(devCountry);
       this.processOfflineProgress();
       return;
     }
@@ -180,6 +207,7 @@ export class WorldSimulationEngine {
         this.myCountryId = ipCountry.id;
         ipCountry.deviceId = this.myDeviceId;
         saveMyCountryId(ipCountry.id);
+        this._ensureCountryInventory(ipCountry);
         this.onEvent(
           `${ipCountry.name} devletinin yönetimi IP üzerinden Chrome'a otomatik bağlandı!`,
         );
@@ -693,7 +721,8 @@ export class WorldSimulationEngine {
   buyMercenaries(countryId, troopCount) {
     const c = this.countryMap.get(countryId);
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
-    const maxTroops = this.getMaxTroops(c);
+    this._recalculateDerivedStats(c);
+    const maxTroops = Math.max(10, c.capacity || Math.floor(c.landCount * 1.2));
     const availableCap = Math.max(0, maxTroops - c.troops);
     if (availableCap <= 0.05) {
       return { ok: false, reason: `Asker kapasiten dolu! (Maks: ${Math.floor(maxTroops)})` };
@@ -704,7 +733,7 @@ export class WorldSimulationEngine {
       return { ok: false, reason: `Yetersiz altın! ${Math.floor(count)} asker için ${cost.toLocaleString()} Altın gereklidir.` };
     }
     c.gold -= cost;
-    c.troops += count;
+    c.troops = Number((c.troops + count).toFixed(1));
     this.dirtyPixels = true;
     this.onSound("celebration");
     this.onEvent(`⚔️ ${Math.floor(count)} Paralı Asker kiralandı! (-${cost.toLocaleString()} Altın)`);
@@ -717,6 +746,7 @@ export class WorldSimulationEngine {
         population: Math.round(c.population),
         troops: Number(c.troops.toFixed(1)),
         upgrades: c.upgrades,
+        inventory: c.inventory,
       },
     });
 
@@ -750,6 +780,7 @@ export class WorldSimulationEngine {
     c.gold -= COST;
     c.inventory = c.inventory || { nukes: 0 };
     c.inventory.nukes = (c.inventory.nukes || 0) + 1;
+    this._persistCountryInventory(c);
     this.dirtyPixels = true;
     this.onSound("celebration");
     this.onEvent(
@@ -786,6 +817,7 @@ export class WorldSimulationEngine {
     }
 
     c.inventory.nukes -= 1;
+    this._persistCountryInventory(c);
     const strike = {
       id: "nuke_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
       attackerId: countryId,
@@ -968,6 +1000,61 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.dirtyRegions = true;
     return transferred;
+  }
+
+  // Automatically fill any internal holes/cavities inside the country's borders to ensure solid, gap-free territory
+  autoFillInternalCavities(countryId) {
+    const country = this.countryMap.get(countryId);
+    if (!country || country.landCount < 6) return 0;
+
+    const b = this.countryBounds ? this.countryBounds.get(countryId) : null;
+    if (!b || b.count < 6) return 0;
+
+    const minX = Math.max(0, b.minX - 1);
+    const maxX = Math.min(MAP_W - 1, b.maxX + 1);
+    const minY = Math.max(0, b.minY - 1);
+    const maxY = Math.min(MAP_H - 1, b.maxY + 1);
+
+    let filledCount = 0;
+    // Iterate through bounding box to find gaps with 3 or 4 neighbors owned by countryId
+    for (let py = minY; py <= maxY; py++) {
+      const row = py * MAP_W;
+      for (let px = minX; px <= maxX; px++) {
+        const idx = row + px;
+        // Only neutral unoccupied land can be auto-filled
+        if (this.owners[idx] === 0 && this.worldData.isLand[idx]) {
+          if (this.isWasteland && this.isWasteland[idx]) continue;
+
+          const ownedNeighbors =
+            (px > 0 && this.owners[idx - 1] === countryId ? 1 : 0) +
+            (px < MAP_W - 1 && this.owners[idx + 1] === countryId ? 1 : 0) +
+            (py > 0 && this.owners[idx - MAP_W] === countryId ? 1 : 0) +
+            (py < MAP_H - 1 && this.owners[idx + MAP_W] === countryId ? 1 : 0);
+
+          if (ownedNeighbors >= 3) {
+            this.owners[idx] = countryId;
+            country.landCount++;
+            country.population += 3;
+            this._expandCountryBound(countryId, px, py);
+            filledCount++;
+
+            this.sync.broadcast({
+              type: "CONQUER_PIXEL",
+              countryId,
+              x: px,
+              y: py,
+            });
+          }
+        }
+      }
+    }
+
+    if (filledCount > 0) {
+      this._recalculateDerivedStats(country);
+      this.dirtyPixels = true;
+    }
+
+    return filledCount;
   }
 
   // Check if country has any internal holes/cavities inside its bounding box
@@ -1384,6 +1471,9 @@ export class WorldSimulationEngine {
       y,
       cost: check.cost,
     });
+
+    // Automatically seal any remaining tiny cavities so borders stay completely solid
+    this.autoFillInternalCavities(countryId);
 
     this.scheduleSave();
     return { ok: true, isNaval: false, country };
@@ -2007,6 +2097,8 @@ export class WorldSimulationEngine {
         country.gold = remoteCountry.gold;
       if (typeof remoteCountry.population === "number")
         country.population = remoteCountry.population;
+      if (remoteCountry.inventory)
+        country.inventory = { ...remoteCountry.inventory };
     }
 
     const idxCap = country.capitalY * MAP_W + country.capitalX;
@@ -2771,11 +2863,117 @@ export class WorldSimulationEngine {
         population: Math.floor(c.population),
         color: c.color,
         upgrades: c.upgrades,
+        inventory: c.inventory,
       },
     });
     this.onEvent(
       `[ADMIN] +${troopsDelta} Asker & +${goldDelta} Altın eklendi!`,
     );
+    return { ok: true };
+  }
+
+  adminGiveNuclear(countryId, count = 1) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    c.inventory = c.inventory || { nukes: 0 };
+    c.inventory.nukes = (c.inventory.nukes || 0) + count;
+    this._persistCountryInventory(c);
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+      },
+    });
+    this.onSound("celebration");
+    this.onEvent(`[ADMIN] ${c.name} envanterine +${count} Taktik Nükleer Silah eklendi!`);
+    return { ok: true, nukes: c.inventory.nukes };
+  }
+
+  adminClearRadiation(broadcast = true) {
+    const total = MAP_W * MAP_H;
+    let clearedCount = 0;
+    if (this.isWasteland) {
+      for (let i = 0; i < total; i++) {
+        if (this.isWasteland[i]) {
+          this.isWasteland[i] = 0;
+          clearedCount++;
+        }
+      }
+    }
+    this.nuclearStrikes = [];
+    this.dirtyPixels = true;
+    this.saveState();
+
+    if (broadcast) {
+      this.sync.broadcast({ type: "ADMIN_CLEAR_RADIATION" });
+      this.onSound("celebration");
+      this.onEvent(`[ADMIN] Tüm nükleer radyasyon ve çorak araziler temizlendi! (${clearedCount} piksel rehabilite edildi)`);
+    }
+    return { ok: true, clearedCount };
+  }
+
+  adminGiveAllPlayersGold(goldAmount = 10000) {
+    let count = 0;
+    for (const c of this.countries) {
+      if (c && c.landCount > 0) {
+        c.gold = (c.gold || 0) + goldAmount;
+        count++;
+        this.sync.broadcast({
+          type: "SYNC_COUNTRY_STATS",
+          countryId: c.id,
+          stats: {
+            troops: Number(c.troops.toFixed(1)),
+            gold: Math.floor(c.gold),
+            population: Math.floor(c.population),
+            color: c.color,
+            upgrades: c.upgrades,
+            inventory: c.inventory,
+          },
+        });
+      }
+    }
+    this.saveState();
+    this.sync.sendChatMessage(`🎉 [SUNUCU ETKİNLİĞİ] Admin tüm aktif devletlere +${goldAmount.toLocaleString()} Altın hediye etti!`, true);
+    this.onSound("cash");
+    this.onEvent(`[ADMIN] Tüm ${count} devlete +${goldAmount.toLocaleString()} Altın dağıtıldı!`);
+    return { ok: true, count };
+  }
+
+  adminAutoExpand(countryId, pixelsCount = 25) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+
+    let conquered = 0;
+    for (let i = 0; i < pixelsCount; i++) {
+      const res = this.findSmartExpandTarget(countryId, true);
+      if (!res.ok) break;
+      const move = this.conquerPixel(countryId, res.x, res.y);
+      if (move.ok) conquered++;
+      else break;
+    }
+    this.autoFillInternalCavities(countryId);
+    this.saveState();
+    this.onSound("pencil");
+    this.onEvent(`[ADMIN] ${c.name} devletinin sınırları +${conquered} boş piksel otomatik genişletildi!`);
+    return { ok: true, conquered };
+  }
+
+  adminResetTreaties(broadcast = true) {
+    this.treaties = [];
+    this.wars = [];
+    this.saveState();
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    if (broadcast) {
+      this.sync.broadcast({ type: "ADMIN_RESET_TREATIES" });
+      this.sync.sendChatMessage(`🕊️ [BARIŞ İLANI] Admin tüm diplomatik savaşları ve anlaşmaları sıfırladı. Tüm devletler barışa kavuştu!`, true);
+      this.onEvent(`[ADMIN] Tüm anlaşmalar ve savaşlar sıfırlandı!`);
+    }
     return { ok: true };
   }
 

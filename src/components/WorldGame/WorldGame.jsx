@@ -2173,9 +2173,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
               {/* Self Boost Controls */}
               {myCountry && (
                 <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-2">
-                  <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
-                    <Zap size={14} />
-                    <span>Kendi Devletini Güçlendir ({myCountry.name})</span>
+                  <div className="text-xs font-black text-amber-300 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Zap size={14} />
+                      <span>Kendi Devletini Güçlendir ({myCountry.name})</span>
+                    </div>
+                    <span className="text-[10px] text-amber-400 font-bold">Depo Nükleer: {myCountry.inventory?.nukes || 0}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <button
@@ -2188,13 +2191,49 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }
                       className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
                     >
-                      +100 Asker & +5000 Altın
+                      +100 Asker & +5K Altın
+                    </button>
+                    <button
+                      onClick={() =>
+                        engineRef.current?.adminGiveResources(
+                          myCountry.id,
+                          500,
+                          50000,
+                        )
+                      }
+                      className="py-2 px-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-[11px] transition shadow"
+                    >
+                      +500 Asker & +50K Altın
+                    </button>
+                    <button
+                      onClick={() =>
+                        engineRef.current?.adminGiveNuclear(myCountry.id, 1)
+                      }
+                      className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] transition shadow"
+                    >
+                      ☢️ +1 Nükleer Başlık Ekle
+                    </button>
+                    <button
+                      onClick={() =>
+                        engineRef.current?.adminGiveNuclear(myCountry.id, 5)
+                      }
+                      className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
+                    >
+                      ☢️ +5 Nükleer Başlık Ekle
+                    </button>
+                    <button
+                      onClick={() =>
+                        engineRef.current?.adminAutoExpand(myCountry.id, 25)
+                      }
+                      className="py-2 px-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-black text-[11px] transition shadow"
+                    >
+                      🗺️ +25 Toprak Genişlet
                     </button>
                     <button
                       onClick={() =>
                         engineRef.current?.adminMaxUpgrades(myCountry.id)
                       }
-                      className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
+                      className="py-2 px-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-[11px] transition shadow"
                     >
                       Tüm Geliştirmeler Sv.25
                     </button>
@@ -2214,7 +2253,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 <div className="text-xs font-black text-white">
                   Haritadaki Devletleri Yönet ({hud.totalCountriesCount})
                 </div>
-                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
                   {(engineRef.current?.countries || [])
                     .filter((c) => c.landCount > 0)
                     .sort((a, b) => b.landCount - a.landCount)
@@ -2224,28 +2263,43 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         className="p-2 rounded-xl bg-slate-900/90 border border-slate-700/70 flex items-center justify-between gap-2"
                       >
                         <div className="min-w-0">
-                          <div className="text-xs font-black text-white truncate">
-                            {c.name}
+                          <div className="text-xs font-black text-white truncate flex items-center gap-1.5">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
+                              style={{ backgroundColor: c.color }}
+                            />
+                            <span>{c.name}</span>
                           </div>
                           <div className="text-[10px] text-slate-400">
-                            {c.landCount}px • {Math.floor(c.troops)} Asker
+                            {c.landCount}px • {Math.floor(c.troops)} Asker • {Math.floor(c.gold).toLocaleString()} Altın
                           </div>
                         </div>
-                        <button
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `"${c.name}" devletini haritadan tamamen silmek istiyor musun?`,
-                              )
-                            ) {
-                              engineRef.current?.adminDeleteCountry(c.id, true);
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() =>
+                              engineRef.current?.adminGiveResources(c.id, 100, 10000)
                             }
-                          }}
-                          className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] flex items-center gap-1 shrink-0 transition"
-                        >
-                          <Trash2 size={12} />
-                          <span>Sil</span>
-                        </button>
+                            className="px-2 py-1 rounded-lg bg-amber-500/80 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition"
+                            title="+100 Asker & +10K Altın Gönder"
+                          >
+                            +Yardım
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `"${c.name}" devletini haritadan tamamen silmek istiyor musun?`,
+                                )
+                              ) {
+                                engineRef.current?.adminDeleteCountry(c.id, true);
+                              }
+                            }}
+                            className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] flex items-center gap-1 transition"
+                          >
+                            <Trash2 size={12} />
+                            <span>Sil</span>
+                          </button>
+                        </div>
                       </div>
                     ))}
                   {(!engineRef.current?.countries ||
@@ -2258,12 +2312,34 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </div>
               </div>
 
-              {/* Server Maintenance Controls */}
+              {/* Server Maintenance & Global Events */}
               <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/40 space-y-2">
                 <div className="text-xs font-black text-rose-300">
-                  Sunucu & Sohbet Kontrolleri
+                  Global Sunucu Olayları & Bakım
                 </div>
                 <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => engineRef.current?.adminGiveAllPlayersGold(10000)}
+                    className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                  >
+                    🎁 Herkese +10K Altın Dağıt
+                  </button>
+                  <button
+                    onClick={() => engineRef.current?.adminClearRadiation(true)}
+                    className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] transition shadow"
+                  >
+                    🌱 Radyasyonu Temizle
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (window.confirm("Tüm diplomatik anlaşmalar ve savaşlar sıfırlanıp genel barış ilan edilsin mi?")) {
+                        engineRef.current?.adminResetTreaties(true);
+                      }
+                    }}
+                    className="py-2 px-2.5 rounded-xl bg-sky-700 hover:bg-sky-600 text-white font-black text-[11px] transition shadow"
+                  >
+                    🕊️ Genel Barış İlan Et
+                  </button>
                   <button
                     onClick={() => {
                       if (
@@ -2276,7 +2352,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     }}
                     className="py-2 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-bold text-[11px] transition"
                   >
-                    Sohbeti Temizle
+                    💬 Sohbeti Temizle
                   </button>
                   <button
                     onClick={() => {
@@ -2289,9 +2365,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         setShowAdminModal(false);
                       }
                     }}
-                    className="py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow"
+                    className="col-span-2 py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow"
                   >
-                    Tüm Haritayı Sıfırla
+                    ⚠️ Tüm Haritayı Sıfırla (Wipe)
                   </button>
                 </div>
               </div>
