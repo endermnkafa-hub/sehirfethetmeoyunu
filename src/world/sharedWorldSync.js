@@ -25,6 +25,7 @@ export class SharedWorldSync {
     if (typeof window !== 'undefined') {
       this._storageListener = (e) => {
         if (
+          e.key === 'sf_shared_world_v7_fresh' ||
           e.key === 'sf_shared_world_v5_worldbox' ||
           e.key === 'sf_shared_world_v4_data' ||
           e.key === 'sf_my_country_id'
@@ -70,6 +71,9 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
       this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
+      this.onRemoteUpdate();
+    } else if (data.type === 'RESET_WORLD') {
+      this.engine.resetWorldMap(false);
       this.onRemoteUpdate();
     }
   }
