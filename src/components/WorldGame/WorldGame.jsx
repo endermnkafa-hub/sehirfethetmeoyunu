@@ -73,6 +73,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [hud, setHud] = useState({
     myCountry: null,
     totalCountriesCount: 0,
+    connectedPeers: 0,
     time: 0,
   });
 
@@ -81,6 +82,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const isPaintingRef = useRef(false);
   const lastCellRef = useRef(null);
   const dragStartRef = useRef({ x: 0, y: 0 });
+  const tapOriginRef = useRef({ x: 0, y: 0, moved: false, pointerCount: 0 });
   const pointersRef = useRef(new Map());
   const pinchStartDistRef = useRef(0);
   const pinchStartZoomRef = useRef(1);
@@ -246,11 +248,23 @@ export default function WorldGame({ onReturnToModeSelect }) {
     };
   }, []);
 
-  // Pointer interactions (drag conquest & smooth pan)
+  // Pointer interactions (drag conquest, smooth mobile pan, pinch zoom & tap-to-found)
   const handlePointerDown = useCallback((e) => {
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     isMouseDownRef.current = true;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
+
+    if (pointersRef.current.size === 1) {
+      tapOriginRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        moved: false,
+        pointerCount: 1,
+      };
+    } else {
+      tapOriginRef.current.pointerCount = Math.max(tapOriginRef.current.pointerCount, pointersRef.current.size);
+      tapOriginRef.current.moved = true;
+    }
 
     // Right-click or middle-click or PAN mode -> pure camera pan
     if (e.button === 2 || e.button === 1 || toolMode === 'PAN') {
@@ -267,41 +281,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
         const myCountry = eng?.getMyCountry();
 
         if (!myCountry) {
-          // Player has no country yet: clicking an unclaimed land pixel prompts founding modal!
-          const idx = pos.y * MAP_W + pos.x;
-          if (worldData.isLand[idx] && eng.owners[idx] === 0) {
-            if (networkInfo.isVpnOrProxy) {
-              setVpnBlocked(true);
-              return;
-            }
-            // Enforce 1 Device = 1 Country
-            const existing = eng.countries.find((c) => c.deviceId === eng.myDeviceId);
-            if (existing) {
-              showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş! (1 Cihaz = 1 Ülke)`);
-              eng.myCountryId = existing.id;
-              centerOnCoords(existing.capitalX, existing.capitalY, 3.8);
-              return;
-            }
-            setFoundingModal({ x: pos.x, y: pos.y });
-          } else if (worldData.isLand[idx]) {
-            showToast('Bu piksel zaten başka bir devlete ait!');
-          } else {
-            showToast('Deniz veya okyanusa ülke kurulamaz!');
-          }
+          // Allow smooth 1-finger pan and 2-finger pinch before founding; founding triggers on clean tap (pointerUp)
           isPaintingRef.current = false;
           return;
         }
 
-        // Player already has country: conquer adjacent pixel OR launch naval ship across sea
+        // Player already has country: if touching an adjacent land border pixel, conquer & paint on drag
         const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
-        if (check.valid) {
-          isPaintingRef.current = !check.isNaval;
+        if (check.valid && !check.isNaval) {
+          isPaintingRef.current = true;
           const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
           if (!res.ok && res.reason) {
             showToast(res.reason);
           }
         } else {
-          // Dragging outside border cells pans the map smoothly!
+          // Touching outside adjacent border allows smooth panning; naval ships launch on clean tap (pointerUp)
           isPaintingRef.current = false;
         }
       }
@@ -311,11 +305,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
       pinchStartDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       pinchStartZoomRef.current = cameraRef.current.zoom;
     }
-  }, [getMapCoords, toolMode, worldData, networkInfo, showToast]);
+  }, [getMapCoords, toolMode, showToast]);
 
   const handlePointerMove = useCallback((e) => {
     if (!pointersRef.current.has(e.pointerId)) return;
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    const distFromTap = Math.hypot(
+      e.clientX - tapOriginRef.current.x,
+      e.clientY - tapOriginRef.current.y
+    );
+    if (distFromTap > 9) {
+      tapOriginRef.current.moved = true;
+    }
 
     const pos = getMapCoords(e.clientX, e.clientY);
     hoveredPosRef.current = pos;
@@ -326,12 +328,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
           const eng = engineRef.current;
           const myCountry = eng?.getMyCountry();
           if (myCountry) {
-            eng.conquerPixel(myCountry.id, pos.x, pos.y);
+            const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
+            if (check.valid && !check.isNaval) {
+              eng.conquerPixel(myCountry.id, pos.x, pos.y);
+            }
           }
           lastCellRef.current = { x: pos.x, y: pos.y };
         }
       } else if (isMouseDownRef.current && !isPaintingRef.current) {
-        // Pan camera
+        // Pan camera smoothly with 1 finger or mouse drag
         const dx = e.clientX - dragStartRef.current.x;
         const dy = e.clientY - dragStartRef.current.y;
         cameraRef.current.panX += dx;
@@ -339,25 +344,78 @@ export default function WorldGame({ onReturnToModeSelect }) {
         dragStartRef.current = { x: e.clientX, y: e.clientY };
       }
     } else if (pointersRef.current.size === 2) {
-      // Pinch to zoom
+      // Pinch to zoom without center drift
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       if (pinchStartDistRef.current > 0) {
+        const oldZoom = cameraRef.current.zoom;
         const ratio = dist / pinchStartDistRef.current;
         const newZoom = Math.max(0.6, Math.min(32.0, pinchStartZoomRef.current * ratio));
+        const zoomStepRatio = newZoom / oldZoom;
         cameraRef.current.zoom = newZoom;
+        cameraRef.current.panX *= zoomStepRatio;
+        cameraRef.current.panY *= zoomStepRatio;
       }
     }
   }, [getMapCoords]);
 
   const handlePointerUp = useCallback((e) => {
+    const wasCleanSingleTap =
+      !tapOriginRef.current.moved &&
+      tapOriginRef.current.pointerCount === 1 &&
+      e.button !== 2 &&
+      e.button !== 1 &&
+      toolMode !== 'PAN';
+
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size === 0) {
       isMouseDownRef.current = false;
       isPaintingRef.current = false;
       lastCellRef.current = null;
     }
-  }, []);
+
+    if (wasCleanSingleTap) {
+      const pos = getMapCoords(e.clientX, e.clientY);
+      if (!pos || pos.x < 0 || pos.x >= MAP_W || pos.y < 0 || pos.y >= MAP_H) return;
+
+      const eng = engineRef.current;
+      if (!eng) return;
+      const myCountry = eng.getMyCountry();
+
+      if (!myCountry) {
+        // Clean tap when player has no country -> Open Founding Modal!
+        const idx = pos.y * MAP_W + pos.x;
+        if (worldData.isLand[idx] && eng.owners[idx] === 0) {
+          if (networkInfo.isVpnOrProxy) {
+            setVpnBlocked(true);
+            return;
+          }
+          const existing = eng.countries.find((c) => c.deviceId === eng.myDeviceId && c.landCount > 0);
+          if (existing) {
+            showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş! (1 Cihaz = 1 Ülke)`);
+            eng.myCountryId = existing.id;
+            const center = eng.getCountryCenter(existing.id);
+            centerOnCoords(center.x, center.y, 4.5);
+            return;
+          }
+          setFoundingModal({ x: pos.x, y: pos.y });
+        } else if (worldData.isLand[idx]) {
+          showToast('Bu piksel zaten başka bir devlete ait!');
+        } else {
+          showToast('Deniz veya okyanusa ülke kurulamaz! Gri bir kara pikseline dokun.');
+        }
+      } else {
+        // Clean tap when player has a country -> Launch Naval Ship if target is a valid coastal pixel across sea!
+        const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
+        if (check.valid && check.isNaval) {
+          const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+          if (!res.ok && res.reason) {
+            showToast(res.reason);
+          }
+        }
+      }
+    }
+  }, [getMapCoords, toolMode, worldData, networkInfo, showToast, centerOnCoords]);
 
   // Non-passive wheel event listener
   useEffect(() => {
@@ -429,6 +487,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
           setHud({
             myCountry: myC ? { ...myC } : null,
             totalCountriesCount: eng.countries.length,
+            connectedPeers: eng.sync?.getConnectedPeersCount() || 0,
             time: now,
           });
         }
@@ -438,7 +497,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
     };
 
     animId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animId);
+    return () => {
+      cancelAnimationFrame(animId);
+      engineRef.current?.sync?.destroy();
+    };
   }, []);
 
   const myCountry = hud.myCountry;

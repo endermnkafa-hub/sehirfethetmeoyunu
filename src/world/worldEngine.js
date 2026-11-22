@@ -532,6 +532,12 @@ export class WorldSimulationEngine {
       this.ships.push(ship);
       this.onSound('pencil');
       this.onEvent(`Çıkarma gemisi denize açıldı! Hedef kıyıya ilerliyor...`);
+
+      this.sync.broadcast({
+        type: 'LAUNCH_SHIP',
+        ship,
+      });
+
       this.saveState();
       return { ok: true, isNaval: true, ship, country };
     }
@@ -612,9 +618,11 @@ export class WorldSimulationEngine {
       flagRgba = decoded.rgba;
     } catch {}
 
-    const newId = this.countries.length > 0
-      ? Math.max(...this.countries.map((c) => c.id)) + 1
-      : 1;
+    // Unique 15-bit integer ID (10..32000) so countries created on different devices (Phone vs PC) never collide
+    let newId = 10 + Math.floor(Math.random() * 31900);
+    while (this.countryMap.has(newId)) {
+      newId = 10 + Math.floor(Math.random() * 31900);
+    }
 
     const country = this._normalizeCountry({
       id: newId,
@@ -725,6 +733,12 @@ export class WorldSimulationEngine {
     this.dirtyRegions = true;
   }
 
+  handleRemoteLaunchShip(remoteShip) {
+    if (!remoteShip || !remoteShip.id) return;
+    if (this.ships.some((s) => s.id === remoteShip.id)) return;
+    this.ships.push({ ...remoteShip });
+  }
+
   handleRemoteSyncCountryStats(countryId, stats) {
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
@@ -737,6 +751,126 @@ export class WorldSimulationEngine {
     if (typeof stats.troops === 'number') country.troops = stats.troops;
     if (stats.upgrades) country.upgrades = { ...DEFAULT_UPGRADES, ...stats.upgrades };
     this._recalculateDerivedStats(country);
+  }
+
+  // Export compact world snapshot for cross-device WebRTC synchronization (Phone <-> PC)
+  exportSnapshot() {
+    try {
+      const total = MAP_W * MAP_H;
+      const rle = [];
+      let cur = this.owners[0];
+      let len = 1;
+      for (let i = 1; i < total; i++) {
+        const v = this.owners[i];
+        if (v === cur && len < 65535) {
+          len++;
+        } else {
+          rle.push(cur, len);
+          cur = v;
+          len = 1;
+        }
+      }
+      rle.push(cur, len);
+
+      return {
+        v: 9,
+        countries: this.countries.map((c) => ({
+          id: c.id,
+          name: c.name,
+          color: c.color,
+          flagDataUrl: c.flagDataUrl,
+          capitalX: c.capitalX,
+          capitalY: c.capitalY,
+          creatorIp: c.creatorIp,
+          deviceId: c.deviceId,
+          troops: c.troops,
+          landCount: c.landCount,
+          population: c.population,
+          gold: c.gold,
+          upgrades: c.upgrades,
+          createdAt: c.createdAt,
+        })),
+        rle,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // Merge remote device's world snapshot into local shared world (Phone <-> PC)
+  mergeRemoteSnapshot(data) {
+    if (!data || !Array.isArray(data.countries) || !Array.isArray(data.rle)) return;
+
+    let changed = false;
+
+    for (const rc of data.countries) {
+      if (!rc || !rc.id) continue;
+      const existing = this.countryMap.get(rc.id);
+      if (!existing) {
+        const country = this._normalizeCountry({ ...rc });
+        if (rc.flagDataUrl) {
+          loadDataUrlToFlagBuffer(rc.flagDataUrl)
+            .then((res) => {
+              country.flagRgba = res.rgba;
+              this.dirtyPixels = true;
+            })
+            .catch(() => {});
+        }
+        this.countries.push(country);
+        this.countryMap.set(country.id, country);
+        if (rc.deviceId === this.myDeviceId && !this.myCountryId) {
+          this.myCountryId = country.id;
+          saveMyCountryId(country.id);
+        }
+        changed = true;
+      } else {
+        // Merge upgrades if remote has higher upgrade levels
+        if (rc.upgrades) {
+          for (const k of Object.keys(DEFAULT_UPGRADES)) {
+            if ((rc.upgrades[k] || 0) > (existing.upgrades[k] || 0)) {
+              existing.upgrades[k] = rc.upgrades[k];
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+
+    // Merge claimed pixels from remote RLE
+    const total = MAP_W * MAP_H;
+    let ptr = 0;
+    for (let i = 0; i < data.rle.length; i += 2) {
+      const val = data.rle[i];
+      const count = data.rle[i + 1];
+      for (let k = 0; k < count && ptr < total; k++) {
+        if (val > 0 && this.worldData.isLand[ptr] && this.countryMap.has(val)) {
+          if (this.owners[ptr] === 0) {
+            this.owners[ptr] = val;
+            changed = true;
+          }
+        }
+        ptr++;
+      }
+    }
+
+    if (changed) {
+      // Recount land per country accurately
+      const landCounts = new Map();
+      for (let i = 0; i < total; i++) {
+        const o = this.owners[i];
+        if (o > 0) {
+          landCounts.set(o, (landCounts.get(o) || 0) + 1);
+        }
+      }
+      for (const c of this.countries) {
+        c.landCount = landCounts.get(c.id) || 0;
+        this._recalculateDerivedStats(c);
+      }
+
+      this.dirtyPixels = true;
+      this.dirtyRegions = true;
+      this.saveState();
+    }
   }
 
   computeCountryBounds() {
