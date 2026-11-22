@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Wrench, X, Plus, Sparkles, User, Shield, Check, Flame } from 'lucide-react';
+import { Wrench, X, Plus, Sparkles, User, Shield, Flame } from 'lucide-react';
 
 export default function DebugModal({
   isOpen,

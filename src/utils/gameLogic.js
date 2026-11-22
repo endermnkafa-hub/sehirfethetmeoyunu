@@ -912,3 +912,118 @@ export function expandPlayerInstant(grid, playerId, amount) {
   return { newGrid, added };
 }
 
+/**
+ * Computes intelligent bot moves for expansion & walls
+ */
+export function computeBotTurnMoves(grid, botPlayerId, totalPoints, walls = {}, alliances = [], gameMode = 'KLASIK') {
+  const height = grid.length;
+  const width = grid[0].length;
+  const dirs = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+  const pendingCells = [];
+  const pendingWalls = [];
+  const curWalls = { ...walls };
+  let spent = 0;
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+
+  // Modern mode: Build a wall if exposed to enemies and has enough points
+  if (gameMode === 'MODERN' && totalPoints >= 2 && Math.random() < 0.35) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (grid[y][x] === botPlayerId && !curWalls[`${x},${y}`]) {
+          const enemyNear = dirs.some(d => {
+            const nx = x + d.dx, ny = y + d.dy;
+            return nx >= 0 && nx < width && ny >= 0 && ny < height && grid[ny][nx] > 0 && grid[ny][nx] !== botPlayerId;
+          });
+          if (enemyNear && canBuildWallOnCell(grid, botPlayerId, x, y, curWalls, []).valid) {
+            pendingWalls.push({ x, y });
+            curWalls[`${x},${y}`] = true;
+            spent++;
+            break;
+          }
+        }
+      }
+      if (pendingWalls.length > 0) break;
+    }
+  }
+
+  while (spent < totalPoints) {
+    const remaining = totalPoints - spent;
+    const candidates = [];
+    const visitedKeys = new Set(pendingCells.map(c => `${c.x},${c.y}`));
+    const candidateCoords = new Set();
+
+    const consider = (tx, ty) => {
+      const k = `${tx},${ty}`;
+      if (!visitedKeys.has(k) && tx >= 0 && tx < width && ty >= 0 && ty < height) {
+        candidateCoords.add(k);
+      }
+    };
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (grid[y][x] === botPlayerId) {
+          for (const d of dirs) consider(x + d.dx, y + d.dy);
+        }
+      }
+    }
+    for (const c of pendingCells) {
+      if (!c.isWallBreachOnly) {
+        for (const d of dirs) consider(c.x + d.dx, c.y + d.dy);
+      }
+    }
+
+    for (const k of candidateCoords) {
+      const [tx, ty] = k.split(',').map(Number);
+      const isWall = !!curWalls[k] && grid[ty][tx] !== botPlayerId;
+      const cost = isWall ? 2 : 1;
+
+      if (remaining >= cost) {
+        const check = canExpandToCell(grid, botPlayerId, tx, ty, pendingCells, alliances);
+        if (check.valid) {
+          let score = 10;
+          if (check.isAttack) {
+            score = check.isAllianceAttack ? -50 : 50;
+          } else {
+            const distToCenter = Math.hypot(tx - centerX, ty - centerY);
+            score += Math.max(0, 30 - distToCenter);
+          }
+          candidates.push({ x: tx, y: ty, cost, isWall, isAttack: check.isAttack, targetOwner: check.targetOwner, score });
+        }
+      }
+    }
+
+    if (candidates.length === 0) break;
+
+    candidates.sort((a, b) => (b.score + Math.random() * 5) - (a.score + Math.random() * 5));
+    const chosen = candidates[0];
+
+    if (chosen.isWall) {
+      delete curWalls[`${chosen.x},${chosen.y}`];
+      pendingCells.push({
+        x: chosen.x,
+        y: chosen.y,
+        cost: 2,
+        isWallDemolished: true,
+        previousOwner: grid[chosen.y][chosen.x],
+        targetOwner: chosen.targetOwner,
+        playerId: botPlayerId,
+      });
+      spent += 2;
+    } else {
+      pendingCells.push({
+        x: chosen.x,
+        y: chosen.y,
+        cost: 1,
+        previousOwner: grid[chosen.y][chosen.x],
+        targetOwner: chosen.targetOwner,
+        playerId: botPlayerId,
+      });
+      spent += 1;
+    }
+  }
+
+  return { pendingCells, pendingWalls, walls: curWalls };
+}
+

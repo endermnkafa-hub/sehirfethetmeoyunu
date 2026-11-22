@@ -1,6 +1,14 @@
 import PeerPkg from 'peerjs';
 const Peer = typeof PeerPkg === 'function' ? PeerPkg : (PeerPkg?.Peer || PeerPkg?.default || PeerPkg);
 
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+];
+
 const getStoredClientToken = () => {
   try {
     let token = sessionStorage.getItem('sf_client_token');
@@ -9,7 +17,7 @@ const getStoredClientToken = () => {
       sessionStorage.setItem('sf_client_token', token);
     }
     return token;
-  } catch (e) {
+  } catch {
     return 'ct_' + Math.random().toString(36).slice(2, 10);
   }
 };
@@ -59,7 +67,8 @@ class MultiplayerManager {
   createRoom(customCode, onReady, onError) {
     this.cleanup();
     this.isHost = true;
-    const code = customCode || Math.floor(1000 + Math.random() * 9000).toString();
+    // 5-digit room code gives 90,000 combinations, drastically reducing collision probability
+    const code = customCode || Math.floor(10000 + Math.random() * 90000).toString();
     this.roomCode = code;
 
     // Local BroadcastChannel for instant same-browser/PC sync
@@ -86,6 +95,9 @@ class MultiplayerManager {
     const peerId = `sf-game-${code}`;
     this.peer = new Peer(peerId, {
       debug: 1,
+      config: {
+        iceServers: ICE_SERVERS,
+      },
     });
 
     this.peer.on('open', () => {
@@ -97,12 +109,12 @@ class MultiplayerManager {
       const incomingToken = conn.metadata?.clientToken;
       const activeOpenConns = this.connections.filter(c => c !== conn && c.open);
 
-      // Problem 3 Fix: Enforce single remote client limit
+      // Enforce single remote client limit
       if (activeOpenConns.length >= 1) {
         // If this is the SAME client reconnecting (e.g. WiFi hiccup or page refresh), replace stale connection
         if (incomingToken && this.activeClientToken && incomingToken === this.activeClientToken) {
           activeOpenConns.forEach(old => {
-            try { old.close(); } catch (e) {}
+            try { old.close(); } catch {}
           });
           this.connections = [conn];
         } else {
@@ -114,9 +126,9 @@ class MultiplayerManager {
                 message: 'Bu oda dolu! Sadece 2 cihaz (Oda Sahibi ve 1 Katılımcı) desteklenmektedir.',
               }));
               setTimeout(() => {
-                try { conn.close(); } catch (e) {}
+                try { conn.close(); } catch {}
               }, 500);
-            } catch (e) {}
+            } catch {}
           });
           return;
         }
@@ -213,6 +225,9 @@ class MultiplayerManager {
     const targetPeerId = `sf-game-${code}`;
     this.peer = new Peer({
       debug: 1,
+      config: {
+        iceServers: ICE_SERVERS,
+      },
     });
 
     this.peer.on('open', () => {
@@ -229,7 +244,7 @@ class MultiplayerManager {
             type: 'CLIENT_HANDSHAKE',
             clientToken: this.clientToken,
           }));
-        } catch (e) {}
+        } catch {}
       });
 
       this.hostConn.on('data', (data) => {
@@ -282,7 +297,7 @@ class MultiplayerManager {
       if (conn.open) {
         try {
           conn.send(stamped);
-        } catch (e) {}
+        } catch {}
       }
     });
 
@@ -290,7 +305,7 @@ class MultiplayerManager {
     if (this.channel) {
       try {
         this.channel.postMessage({ ...stamped, _sender: 'HOST' });
-      } catch (e) {}
+      } catch {}
     }
   }
 
@@ -308,12 +323,12 @@ class MultiplayerManager {
       if (this.hostConn && this.hostConn.open) {
         try {
           this.hostConn.send(stamped);
-        } catch (e) {}
+        } catch {}
       }
       if (this.channel) {
         try {
           this.channel.postMessage({ ...stamped, _sender: 'CLIENT' });
-        } catch (e) {}
+        } catch {}
       }
     }
   }
@@ -327,25 +342,25 @@ class MultiplayerManager {
     if (this.channel) {
       try {
         this.channel.close();
-      } catch (e) {}
+      } catch {}
       this.channel = null;
     }
     if (this.hostConn) {
       try {
         this.hostConn.close();
-      } catch (e) {}
+      } catch {}
       this.hostConn = null;
     }
     this.connections.forEach(c => {
       try {
         c.close();
-      } catch (e) {}
+      } catch {}
     });
     this.connections = [];
     if (this.peer) {
       try {
         this.peer.destroy();
-      } catch (e) {}
+      } catch {}
       this.peer = null;
     }
     this.status = 'DISCONNECTED';

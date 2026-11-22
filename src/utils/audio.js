@@ -3,6 +3,24 @@ class SoundManager {
   constructor() {
     this.ctx = null;
     this.enabled = true;
+    this._attachUnlocker();
+  }
+
+  _attachUnlocker() {
+    if (typeof window !== 'undefined') {
+      const unlock = () => {
+        this.init();
+        if (this.ctx && this.ctx.state === 'suspended') {
+          this.ctx.resume().catch(() => {});
+        }
+        window.removeEventListener('pointerdown', unlock);
+        window.removeEventListener('keydown', unlock);
+        window.removeEventListener('touchstart', unlock);
+      };
+      window.addEventListener('pointerdown', unlock, { passive: true });
+      window.addEventListener('keydown', unlock, { passive: true });
+      window.addEventListener('touchstart', unlock, { passive: true });
+    }
   }
 
   init() {
@@ -19,7 +37,7 @@ class SoundManager {
     try {
       this.init();
       if (!this.ctx) return;
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
 
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
@@ -31,7 +49,9 @@ class SoundManager {
       gain.connect(this.ctx.destination);
       osc.start();
       osc.stop(this.ctx.currentTime + 0.05);
-    } catch (e) {}
+    } catch {
+      // Audio play error handled
+    }
   }
 
   playPencil() {
@@ -39,7 +59,7 @@ class SoundManager {
     try {
       this.init();
       if (!this.ctx) return;
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
 
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
@@ -51,7 +71,9 @@ class SoundManager {
       gain.connect(this.ctx.destination);
       osc.start();
       osc.stop(this.ctx.currentTime + 0.08);
-    } catch (e) {}
+    } catch {
+      // Audio play error handled
+    }
   }
 
   playEraser() {
@@ -59,7 +81,7 @@ class SoundManager {
     try {
       this.init();
       if (!this.ctx) return;
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
 
       // Soft low tone for eraser
       const osc = this.ctx.createOscillator();
@@ -73,7 +95,9 @@ class SoundManager {
       gain.connect(this.ctx.destination);
       osc.start();
       osc.stop(this.ctx.currentTime + 0.15);
-    } catch (e) {}
+    } catch {
+      // Audio play error handled
+    }
   }
 
   playWin() {
@@ -81,7 +105,7 @@ class SoundManager {
     try {
       this.init();
       if (!this.ctx) return;
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
 
       const notes = [261.63, 329.63, 392.00, 523.25]; // C4, E4, G4, C5
       notes.forEach((freq, idx) => {
@@ -96,7 +120,9 @@ class SoundManager {
         osc.start(this.ctx.currentTime + idx * 0.08);
         osc.stop(this.ctx.currentTime + idx * 0.08 + 0.25);
       });
-    } catch (e) {}
+    } catch {
+      // Audio play error handled
+    }
   }
 
   playLose() {
@@ -104,7 +130,7 @@ class SoundManager {
     try {
       this.init();
       if (!this.ctx) return;
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
 
       const notes = [330, 290, 240];
       notes.forEach((freq, idx) => {
@@ -119,7 +145,9 @@ class SoundManager {
         osc.start(this.ctx.currentTime + idx * 0.12);
         osc.stop(this.ctx.currentTime + idx * 0.12 + 0.2);
       });
-    } catch (e) {}
+    } catch {
+      // Audio play error handled
+    }
   }
 }
 

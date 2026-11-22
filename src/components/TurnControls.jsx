@@ -80,8 +80,20 @@ export default function TurnControls({
           </div>
         )}
 
-        {/* If not my turn in online multiplayer */}
-        {!isMyTurn ? (
+        {/* If active player is a bot */}
+        {activePlayer.isBot ? (
+          <div className="p-4 bg-purple-50 border-2 border-purple-300 rounded-2xl text-center space-y-1.5 shadow-sm animate-pulse">
+            <div className="flex items-center justify-center gap-2 text-purple-900 font-black text-sm">
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-600 animate-ping" />
+              <span>🤖 {activePlayer.name} (Yapay Zeka) Hamle Yapıyor...</span>
+            </div>
+            <p className="text-xs text-purple-700 font-medium">
+              {turnPhase === 'PICK_NUMBER'
+                ? 'Bot güvenli sayısını belirleyip çarkı çeviriyor...'
+                : 'Bot harita genişleme ve savunma hamlelerini hesaplıyor...'}
+            </p>
+          </div>
+        ) : !isMyTurn ? (
           <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-center space-y-1.5 shadow-sm">
             <div className="flex items-center justify-center gap-2 text-amber-900 font-black text-sm">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping" />

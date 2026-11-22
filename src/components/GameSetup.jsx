@@ -1,13 +1,23 @@
 import React, { useState } from 'react';
 import { PLAYER_COLORS } from '../utils/gameLogic';
-import { Users, Grid, Play, BookOpen, Crown, Shield, Scroll, Wifi, Download } from 'lucide-react';
+import { Users, Grid, Play, BookOpen, Crown, Shield, Scroll, Wifi, Download, Bot, User, RotateCcw } from 'lucide-react';
 
-export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
+export default function GameSetup({
+  onStartGame,
+  onOpenRules,
+  onOpenOnline,
+  savedGame = null,
+  onResumeSavedGame = null,
+}) {
   const [gameMode, setGameMode] = useState('KLASIK'); // 'KLASIK' | 'MODERN'
   const [playerCount, setPlayerCount] = useState(4);
   const [playerNames, setPlayerNames] = useState([
-    'Oyuncu 1', 'Oyuncu 2', 'Oyuncu 3', 'Oyuncu 4',
-    'Oyuncu 5', 'Oyuncu 6', 'Oyuncu 7', 'Oyuncu 8'
+    'Oyuncu 1', 'Oyuncu 2 (Bot)', 'Oyuncu 3 (Bot)', 'Oyuncu 4 (Bot)',
+    'Oyuncu 5 (Bot)', 'Oyuncu 6 (Bot)', 'Oyuncu 7 (Bot)', 'Oyuncu 8 (Bot)'
+  ]);
+  // Player 1 human, other players can default to Bot or Human
+  const [playerBots, setPlayerBots] = useState([
+    false, true, true, true, true, true, true, true
   ]);
   const [gridSize, setGridSize] = useState(60); // 40, 60, 80
   const [startSize, setStartSize] = useState(3); // 3x3 or 5x5
@@ -18,10 +28,27 @@ export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
     setPlayerNames(updated);
   };
 
+  const togglePlayerBot = (idx) => {
+    const nextBots = [...playerBots];
+    nextBots[idx] = !nextBots[idx];
+    setPlayerBots(nextBots);
+
+    const nextNames = [...playerNames];
+    if (nextBots[idx]) {
+      if (!nextNames[idx].includes('(Bot)')) {
+        nextNames[idx] = `${nextNames[idx]} (Bot)`;
+      }
+    } else {
+      nextNames[idx] = nextNames[idx].replace(' (Bot)', '').trim();
+    }
+    setPlayerNames(nextNames);
+  };
+
   const handleStart = () => {
     const selectedPlayers = PLAYER_COLORS.slice(0, playerCount).map((col, idx) => ({
       ...col,
-      name: playerNames[idx] || `Oyuncu ${idx + 1}`,
+      name: playerNames[idx] || (playerBots[idx] ? `Bot ${idx + 1}` : `Oyuncu ${idx + 1}`),
+      isBot: !!playerBots[idx],
       alive: true,
     }));
 
@@ -47,9 +74,30 @@ export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
             Şehir & Toprak Fethi
           </h1>
           <p className="text-stone-500 text-xs sm:text-sm mt-0.5 font-medium">
-            Kareli Defter Strateji & Diplomasi Oyunu
+            Kareli Defter Strateji, Diplomasi & Bot Oyunu
           </p>
         </div>
+
+        {/* Saved Game Resume Card */}
+        {savedGame && onResumeSavedGame && (
+          <div className="mb-4 p-3 bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-400 rounded-2xl shadow-sm flex items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-black text-amber-900 flex items-center gap-1.5">
+                <RotateCcw size={14} className="text-amber-600 animate-spin" />
+                <span>Devam Eden Oyun Bulundu</span>
+              </div>
+              <div className="text-[11px] text-amber-800 mt-0.5">
+                Tur {savedGame.roundNumber} &bull; {savedGame.players?.length} Oyuncu &bull; {savedGame.gameMode} Mod
+              </div>
+            </div>
+            <button
+              onClick={onResumeSavedGame}
+              className="px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white font-black text-xs rounded-xl shadow-md transition active:scale-95 shrink-0"
+            >
+              Devam Et
+            </button>
+          </div>
+        )}
 
         {/* Game Mode Selector */}
         <div className="mb-5">
@@ -121,12 +169,13 @@ export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
           </div>
         </div>
 
-        {/* 2. Player Names List */}
-        <div className="mb-4 max-h-32 overflow-y-auto pr-1 space-y-1.5">
+        {/* 2. Player Names & Human/Bot Toggle List */}
+        <div className="mb-4 max-h-36 overflow-y-auto pr-1 space-y-1.5">
           {Array.from({ length: playerCount }).map((_, idx) => {
             const color = PLAYER_COLORS[idx];
+            const isBot = !!playerBots[idx];
             return (
-              <div key={idx} className="flex items-center gap-2">
+              <div key={idx} className="flex items-center gap-1.5">
                 <span
                   className="w-4 h-4 rounded-full shrink-0 shadow-sm"
                   style={{ backgroundColor: color.hex }}
@@ -136,9 +185,22 @@ export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
                   maxLength={15}
                   value={playerNames[idx]}
                   onChange={e => handleNameChange(idx, e.target.value)}
-                  className="flex-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-stone-200 bg-stone-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  className="flex-1 px-3 py-1.5 text-xs font-bold rounded-lg border border-stone-200 bg-stone-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 min-w-0"
                   placeholder={`Oyuncu ${idx + 1}`}
                 />
+                <button
+                  type="button"
+                  onClick={() => togglePlayerBot(idx)}
+                  className={`px-2 py-1.5 rounded-lg text-[11px] font-black border transition flex items-center gap-1 shrink-0 ${
+                    isBot
+                      ? 'bg-purple-100 text-purple-800 border-purple-300 hover:bg-purple-200'
+                      : 'bg-blue-100 text-blue-800 border-blue-300 hover:bg-blue-200'
+                  }`}
+                  title={isBot ? 'Yapay zeka (Bot) olarak oynar' : 'İnsan oyuncu olarak oynar'}
+                >
+                  {isBot ? <Bot size={13} className="text-purple-600" /> : <User size={13} className="text-blue-600" />}
+                  <span>{isBot ? 'Bot' : 'İnsan'}</span>
+                </button>
               </div>
             );
           })}
@@ -221,7 +283,7 @@ export default function GameSetup({ onStartGame, onOpenRules, onOpenOnline }) {
             className="w-full py-3.5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-black text-base rounded-2xl shadow-lg transition active:scale-98 flex items-center justify-center gap-2"
           >
             <Play size={20} fill="currentColor" />
-            <span>Tek Telefondan Başlat (Pass & Play)</span>
+            <span>Oyunu Başlat (İnsan & Bot)</span>
           </button>
 
           <button

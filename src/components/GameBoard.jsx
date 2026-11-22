@@ -1,6 +1,5 @@
 import React, { useRef, useEffect, useCallback, useMemo } from 'react';
 import { canExpandToCell, canBuildWallOnCell, PLAYER_COLORS } from '../utils/gameLogic';
-import { soundManager } from '../utils/audio';
 import { ZoomIn, ZoomOut, Compass, RotateCcw } from 'lucide-react';
 
 export default function GameBoard({
@@ -231,9 +230,7 @@ export default function GameBoard({
       pendingCells,
       pendingWalls,
       walls,
-      placingMode,
       canPlaceMore,
-      alliances,
       isPlacingPhase,
       highlightedCells,
     } = propsRef.current;
@@ -346,7 +343,6 @@ export default function GameBoard({
     ctx.stroke();
 
     // 6. Bold Pen Borders Around Territories
-    const dirs = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
     for (let y = 0; y < gridHeight; y++) {
       for (let x = 0; x < gridWidth; x++) {
         const ownerId = grid[y][x];

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { App as CapApp } from '@capacitor/app';
 import GameSetup from './components/GameSetup';
 import GameBoard from './components/GameBoard';
 import TurnControls from './components/TurnControls';
@@ -18,6 +19,7 @@ import {
   transferTerritory,
   expandPlayerInstant,
   calculateMaxSafeNumber,
+  computeBotTurnMoves,
   PLAYER_COLORS,
 } from './utils/gameLogic';
 import { soundManager } from './utils/audio';
@@ -86,6 +88,16 @@ export default function App() {
   // Winner
   const [winner, setWinner] = useState(null);
 
+  // Saved Game in LocalStorage for Resume feature
+  const [savedGame, setSavedGame] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sf_saved_game');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const territoryCounts = grid.length > 0 && players.length > 0
     ? countPlayerTerritories(grid, players)
     : {};
@@ -93,6 +105,81 @@ export default function App() {
   const activePlayer = players[activePlayerIndex] || { id: 1, name: 'Oyuncu 1', hex: '#2563eb' };
   const activePlayerArea = territoryCounts[activePlayer.id] || 0;
   const isMyTurn = !onlineInfo || activePlayer.phoneId === onlineInfo.myDevice;
+
+  // Keep latest modal states in ref for hardware back button handler
+  const modalRefs = useRef({});
+  modalRefs.current = {
+    isRulesOpen,
+    isDiplomacyOpen,
+    isOnlineModalOpen,
+    isDebugOpen,
+    isWheelOpen,
+    gameState,
+    returnToSetup,
+  };
+
+  // Capacitor Android Physical Back Button handling
+  useEffect(() => {
+    let backListener = null;
+    try {
+      backListener = CapApp.addListener('backButton', ({ canGoBack }) => {
+        const cur = modalRefs.current;
+        if (cur.isRulesOpen) {
+          setIsRulesOpen(false);
+        } else if (cur.isDiplomacyOpen) {
+          setIsDiplomacyOpen(false);
+        } else if (cur.isOnlineModalOpen) {
+          setIsOnlineModalOpen(false);
+        } else if (cur.isDebugOpen) {
+          setIsDebugOpen(false);
+        } else if (cur.gameState === 'PLAYING') {
+          if (window.confirm('Oyundan çıkıp ana menüye dönmek istiyor musunuz?')) {
+            cur.returnToSetup(true);
+          }
+        } else if (canGoBack) {
+          window.history.back();
+        } else {
+          CapApp.exitApp();
+        }
+      });
+    } catch {}
+
+    return () => {
+      if (backListener && typeof backListener.then === 'function') {
+        backListener.then(handle => handle?.remove?.()).catch(() => {});
+      }
+    };
+  }, []);
+
+  // Autosave game to localStorage on every state change (local games only)
+  useEffect(() => {
+    if (gameState === 'PLAYING' && !onlineInfo && grid.length > 0 && players.length > 0) {
+      try {
+        const savePayload = {
+          gameState,
+          gameMode,
+          players,
+          grid,
+          walls,
+          gridWidth,
+          gridHeight,
+          roundNumber,
+          activePlayerIndex,
+          turnPhase,
+          chosenNumber,
+          alliances,
+          savedAt: Date.now(),
+        };
+        localStorage.setItem('sf_saved_game', JSON.stringify(savePayload));
+        setSavedGame(savePayload);
+      } catch {}
+    } else if (gameState === 'GAMEOVER') {
+      try {
+        localStorage.removeItem('sf_saved_game');
+        setSavedGame(null);
+      } catch {}
+    }
+  }, [gameState, gameMode, players, grid, walls, gridWidth, gridHeight, roundNumber, activePlayerIndex, turnPhase, chosenNumber, alliances, onlineInfo]);
 
   const broadcastToAll = (msg) => {
     if (!onlineInfo) return;
@@ -138,6 +225,10 @@ export default function App() {
   }, [turnPhase, isMyTurn, grid, activePlayer.id, pendingCells, pendingWalls, walls, alliances, gameMode, totalToPlace]);
 
   const returnToSetup = (broadcastReset = false) => {
+    try {
+      localStorage.removeItem('sf_saved_game');
+      setSavedGame(null);
+    } catch {}
     if (broadcastReset && onlineInfo) {
       broadcastToAll({ type: 'RESET_GAME_SYNC' });
     }
@@ -159,6 +250,32 @@ export default function App() {
     setTotalToPlace(0);
     setWinner(null);
     setGameState('SETUP');
+  };
+
+  const handleResumeSavedGame = () => {
+    if (!savedGame) return;
+    multiplayer.cleanup();
+    setOnlineInfo(null);
+    setDisconnectAlert(false);
+    setGameMode(savedGame.gameMode || 'KLASIK');
+    setPlayers(savedGame.players || []);
+    setGrid(savedGame.grid || []);
+    setWalls(savedGame.walls || {});
+    setGridWidth(savedGame.gridWidth || 60);
+    setGridHeight(savedGame.gridHeight || 60);
+    setRoundNumber(savedGame.roundNumber || 1);
+    setActivePlayerIndex(savedGame.activePlayerIndex || 0);
+    setTurnPhase(savedGame.turnPhase || 'PICK_NUMBER');
+    setChosenNumber(savedGame.chosenNumber || 2);
+    setAlliances(savedGame.alliances || []);
+    setPendingCells([]);
+    setPendingWalls([]);
+    setTurnHistory([]);
+    setTotalToPlace(0);
+    setPlacingMode('EXPAND');
+    setWinner(null);
+    setGameState('PLAYING');
+    showMessage(`Tur ${savedGame.roundNumber} oyununa başarıyla devam ediliyor!`, 3000);
   };
 
   const handleStartGame = ({ gameMode: mode, players: initPlayers, gridWidth: gw, gridHeight: gh, startSize }) => {
@@ -697,6 +814,54 @@ export default function App() {
     soundManager.playPencil();
     advanceTurn(newGrid, updatedPlayers, newWalls, nextAlliances);
   };
+
+  // Automated Bot / AI Turn Execution
+  useEffect(() => {
+    if (gameState !== 'PLAYING' || !!onlineInfo) return;
+    const currentActive = players[activePlayerIndex];
+    if (!currentActive || !currentActive.isBot || !currentActive.alive) return;
+
+    let botTimer = null;
+
+    if (turnPhase === 'PICK_NUMBER' && !isWheelOpen) {
+      // 1. Bot chooses safe number and spins wheel
+      botTimer = setTimeout(() => {
+        const area = territoryCounts[currentActive.id] || 1;
+        const maxSafe = calculateMaxSafeNumber(area);
+        const botPick = Math.max(1, Math.min(3, maxSafe));
+        setChosenNumber(botPick);
+
+        setTimeout(() => {
+          handleStartSpin();
+        }, 500);
+      }, 900);
+    } else if (turnPhase === 'PLACING') {
+      // 2. Bot computes and applies placing moves
+      botTimer = setTimeout(() => {
+        const botResult = computeBotTurnMoves(
+          grid,
+          currentActive.id,
+          totalToPlace,
+          walls,
+          alliances,
+          gameMode
+        );
+
+        setPendingCells(botResult.pendingCells);
+        setPendingWalls(botResult.pendingWalls);
+        setWalls(botResult.walls);
+        soundManager.playPencil();
+
+        setTimeout(() => {
+          finalizeTurnPlacing(0, null, botResult.pendingCells, botResult.pendingWalls);
+        }, 800);
+      }, 1000);
+    }
+
+    return () => {
+      if (botTimer) clearTimeout(botTimer);
+    };
+  }, [gameState, onlineInfo, activePlayerIndex, turnPhase, isWheelOpen, totalToPlace, grid, walls, alliances, gameMode, players, territoryCounts]);
 
   const handleConfirmBreach = () => {
     if (!breachPrompt) return;
@@ -1358,6 +1523,8 @@ export default function App() {
           onStartGame={handleStartGame}
           onOpenRules={() => setIsRulesOpen(true)}
           onOpenOnline={() => setIsOnlineModalOpen(true)}
+          savedGame={savedGame}
+          onResumeSavedGame={handleResumeSavedGame}
         />
         <RulesModal
           isOpen={isRulesOpen}

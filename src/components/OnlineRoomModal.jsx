@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { multiplayer } from '../utils/multiplayer';
 import { PLAYER_COLORS } from '../utils/gameLogic';
-import { Wifi, Plus, LogIn, Users, Check, AlertCircle, Copy, Shield, Scroll, Crown, Edit3, Smartphone, Hourglass } from 'lucide-react';
+import { Wifi, Plus, LogIn, Check, AlertCircle, Copy, Edit3, Smartphone, Hourglass } from 'lucide-react';
 
 export default function OnlineRoomModal({
   isOpen,
@@ -69,7 +69,7 @@ export default function OnlineRoomModal({
   const handleCreateRoom = () => {
     setStatus('CONNECTING');
     setErrorMsg('');
-    const randomCode = Math.floor(1000 + Math.random() * 9000).toString();
+    const randomCode = Math.floor(10000 + Math.random() * 90000).toString();
     setRoomCode(randomCode);
     setIsHost(true);
     setClientConnected(false);
@@ -478,6 +478,17 @@ export default function OnlineRoomModal({
                 <span>Kopyala</span>
               </button>
             </div>
+
+            {/* Connection Status Indicator */}
+            {isHost && (
+              <div className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center justify-between border ${
+                clientConnected
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-amber-50 text-amber-800 border-amber-300 animate-pulse'
+              }`}>
+                <span>{clientConnected ? '✅ 2. Cihaz (Katılımcı) Bağlandı' : '⏳ 2. Cihaz Bekleniyor (Oda Kodunu Paylaşın)...'}</span>
+              </div>
+            )}
 
             {/* Room Settings (Host edits, Client sees live) */}
             <div className="p-3 bg-stone-50 rounded-2xl border border-stone-200 space-y-2">
