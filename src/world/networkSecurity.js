@@ -4,12 +4,12 @@
 const DEVICE_ID_KEY = 'sf_unique_device_id';
 const MY_COUNTRY_KEY = 'sf_my_country_id';
 
-// Salted FNV-1a hash of authorized Admin IP(s) so raw IP is never exposed in public source
-const ADMIN_IP_HASHES = new Set(['8e7ef9be']);
+// Salted FNV-1a hashes of authorized Admin IPv4 & IPv6 /64 prefix so raw IPs are never exposed in public source
+const ADMIN_IP_HASHES = new Set(['8e7ef9be', 'fd703693']);
 
 function hashIpForAdmin(ip) {
   if (!ip || typeof ip !== 'string') return '';
-  const s = 'sf_admin_salt_2026:' + ip.trim();
+  const s = 'sf_admin_salt_2026:' + ip.trim().toLowerCase();
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -19,7 +19,13 @@ function hashIpForAdmin(ip) {
 }
 
 export function isAdminIp(ip) {
-  return ADMIN_IP_HASHES.has(hashIpForAdmin(ip));
+  if (!ip || typeof ip !== 'string') return false;
+  if (ADMIN_IP_HASHES.has(hashIpForAdmin(ip))) return true;
+  if (ip.includes(':')) {
+    const prefix64 = ip.split(':').slice(0, 4).join(':');
+    if (ADMIN_IP_HASHES.has(hashIpForAdmin(prefix64))) return true;
+  }
+  return false;
 }
 
 export function getOrCreateDeviceId() {

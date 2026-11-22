@@ -1279,8 +1279,35 @@ export class WorldSimulationEngine {
     return pts;
   }
 
+  // Ultra-compact Horizontal RLE encoding: [y, xStart, length, ...]
+  // Compresses 500+ pixels into ~250 bytes so packets NEVER exceed the 4 KB server limit!
+  getCountryRleSpans(countryId) {
+    if (this.dirtyRegions || !this.countryBounds) {
+      this.computeCountryBounds();
+    }
+    const b = this.countryBounds?.get(countryId);
+    if (!b || b.count === 0) return [];
+    const spans = [];
+    for (let y = b.minY; y <= b.maxY; y++) {
+      const row = y * MAP_W;
+      let x = b.minX;
+      while (x <= b.maxX) {
+        if (this.owners[row + x] === countryId) {
+          const startX = x;
+          while (x <= b.maxX && this.owners[row + x] === countryId) {
+            x++;
+          }
+          spans.push(y, startX, x - startX);
+        } else {
+          x++;
+        }
+      }
+    }
+    return spans;
+  }
+
   // Handle remote country + territory sync packet from cloud (Phone <-> PC) — 100% SYNCHRONOUS to avoid async race overwrites!
-  handleRemoteCountrySyncPacket(remoteCountry, pts, packetTime = 0, batchMode = false) {
+  handleRemoteCountrySyncPacket(remoteCountry, pts, packetTime = 0, batchMode = false, rleSpans = null) {
     if (!remoteCountry || !remoteCountry.id) return;
 
     let country = this.countryMap.get(remoteCountry.id);
@@ -1337,13 +1364,30 @@ export class WorldSimulationEngine {
       this.owners[idxCap] = country.id;
     }
 
-    if (Array.isArray(pts)) {
+    const hasRle = Array.isArray(rleSpans) && rleSpans.length >= 3;
+    const hasPts = Array.isArray(pts) && pts.length >= 2;
+    if (hasRle || hasPts) {
       const validPtsSet = new Set();
-      for (let i = 0; i < pts.length; i += 2) {
-        const px = pts[i];
-        const py = pts[i + 1];
-        if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
-          validPtsSet.add(py * MAP_W + px);
+      if (hasRle) {
+        for (let i = 0; i < rleSpans.length; i += 3) {
+          const py = rleSpans[i];
+          const xStart = rleSpans[i + 1];
+          const len = rleSpans[i + 2];
+          if (py >= 0 && py < MAP_H) {
+            const row = py * MAP_W;
+            const endX = Math.min(MAP_W, xStart + len);
+            for (let px = Math.max(0, xStart); px < endX; px++) {
+              validPtsSet.add(row + px);
+            }
+          }
+        }
+      } else {
+        for (let i = 0; i < pts.length; i += 2) {
+          const px = pts[i];
+          const py = pts[i + 1];
+          if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
+            validPtsSet.add(py * MAP_W + px);
+          }
         }
       }
 

@@ -38,6 +38,10 @@ export class SharedWorldSync {
       } catch {}
     }
 
+    // Outgoing rate-limited POST queue (prevents HTTP 429 rate limits on ntfy.envs.net!)
+    this._sendQueue = [];
+    this._sendQueueTimer = null;
+
     // 2. Start 100% Server-Backed Cloud Sync (Initial Compacted History Load + Fallback Poll + Live SSE)
     this._initCloudSync();
   }
@@ -52,20 +56,22 @@ export class SharedWorldSync {
     // Immediate full server state load (compacted in-memory in <15ms!)
     this._pollCloudMessages();
 
-    // Fallback poll every 20 seconds for networks where SSE is restricted
+    // Fallback poll every 30 seconds ONLY if live SSE is disconnected (0 wasted requests when SSE is live!)
     this._pollInterval = setInterval(() => {
-      this._pollCloudMessages();
-    }, 20000);
+      if (!this.isCloudConnected) {
+        this._pollCloudMessages();
+      }
+    }, 30000);
 
-    // Periodically announce our country snapshot every 45 seconds so server always holds latest state
+    // Periodically announce our country snapshot every 90 seconds so server always holds latest RLE state
     this._announceInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
         this.publishMyCountrySnapshot();
       }
-    }, 45000);
+    }, 90000);
 
-    // Periodically broadcast our real-time troops, gold & stats every 12 seconds
+    // Periodically broadcast our real-time troops, gold & stats every 25 seconds
     this._statsInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
@@ -81,7 +87,7 @@ export class SharedWorldSync {
           },
         });
       }
-    }, 12000);
+    }, 25000);
 
     // Live SSE stream for sub-second updates
     if (typeof EventSource !== 'undefined') {
@@ -121,6 +127,8 @@ export class SharedWorldSync {
     if (this._statsInterval) clearInterval(this._statsInterval);
     if (this._batchTimer) clearTimeout(this._batchTimer);
     if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
+    if (this._sendQueueTimer) clearTimeout(this._sendQueueTimer);
+    this._sendQueue = [];
     if (this.eventSource) {
       try { this.eventSource.close(); } catch {}
       this.eventSource = null;
@@ -246,7 +254,8 @@ export class SharedWorldSync {
         entry.data.country,
         entry.data.pts,
         entry.data._sentAt || entry.data._envTime || 0,
-        true // batchMode: compute bounds once at the end!
+        true, // batchMode: compute bounds once at the end!
+        entry.data.rle || null
       );
     }
 
@@ -325,33 +334,42 @@ export class SharedWorldSync {
     return null;
   }
 
-  // Publish our country's current state + owned pixels to the cloud so Phone & PC always see each other
+  // Publish our country's current state + RLE-compressed territory to the cloud (fits 5,000+ pixels under 4 KB!)
   publishMyCountrySnapshot() {
     const myC = this.engine.getMyCountry();
     if (!myC || myC.landCount <= 0) return;
 
-    const pts = this.engine.getCountryPixelCoords(myC.id, 3000);
+    const rle = this.engine.getCountryRleSpans(myC.id);
     const compactFlag = this.getCompactFlagFromCountry(myC);
 
-    this._sendToCloud({
+    const countryMeta = {
+      id: myC.id,
+      name: myC.name,
+      color: myC.color,
+      flagDataUrl: compactFlag,
+      capitalX: myC.capitalX,
+      capitalY: myC.capitalY,
+      population: Math.round(myC.population),
+      gold: Math.round(myC.gold),
+      troops: Number(myC.troops.toFixed(1)),
+      upgrades: myC.upgrades,
+      creatorIp: myC.creatorIp,
+      deviceId: myC.deviceId,
+      createdAt: myC.createdAt,
+    };
+
+    const payload = {
       type: 'COUNTRY_SYNC_PACKET',
-      country: {
-        id: myC.id,
-        name: myC.name,
-        color: myC.color,
-        flagDataUrl: compactFlag,
-        capitalX: myC.capitalX,
-        capitalY: myC.capitalY,
-        population: Math.round(myC.population),
-        gold: Math.round(myC.gold),
-        troops: Number(myC.troops.toFixed(1)),
-        upgrades: myC.upgrades,
-        creatorIp: myC.creatorIp,
-        deviceId: myC.deviceId,
-        createdAt: myC.createdAt,
-      },
-      pts,
-    });
+      country: countryMeta,
+      rle,
+    };
+
+    // Safety guard: keep total JSON strictly under ntfy's 4096-byte inline message limit!
+    if (JSON.stringify(payload).length > 3600) {
+      delete payload.country.flagDataUrl;
+    }
+
+    this._sendToCloud(payload);
   }
 
   queuePixelConquest(countryId, x, y, cost) {
@@ -372,7 +390,7 @@ export class SharedWorldSync {
     if (!this._batchTimer) {
       this._batchTimer = setTimeout(() => {
         this._flushPixelBatch(countryId);
-      }, 400);
+      }, 1200);
     }
   }
 
@@ -389,13 +407,13 @@ export class SharedWorldSync {
     if (this._pendingPixels.length > 0) {
       this._batchTimer = setTimeout(() => {
         this._flushPixelBatch(countryId);
-      }, 300);
+      }, 900);
     }
-    // Send full authoritative country snapshot 1.2s after conquest stops so all remote devices match 100%
+    // Send full authoritative RLE country snapshot 3.5s after conquest stops so all remote devices match 100%
     if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
     this._authoritativeSnapshotTimer = setTimeout(() => {
       this.publishMyCountrySnapshot();
-    }, 1200);
+    }, 3500);
   }
 
   broadcast(data) {
@@ -431,10 +449,10 @@ export class SharedWorldSync {
           flagDataUrl: compactFlag,
         },
       });
-      // Also send full sync packet after 1s
+      // Also send full RLE sync packet after 2s
       setTimeout(() => {
         this.publishMyCountrySnapshot();
-      }, 900);
+      }, 2000);
       return;
     }
 
@@ -450,10 +468,48 @@ export class SharedWorldSync {
     };
     this.seenMsgIds.add(fullPacket._msgId);
 
-    fetch(CLOUD_TOPIC_URL, {
-      method: 'POST',
-      body: JSON.stringify(fullPacket),
-    }).catch(() => {});
+    // Deduplicate queued snapshots/stats so we always send the freshest one without wasting quota
+    if (fullPacket.type === 'COUNTRY_SYNC_PACKET' || fullPacket.type === 'SYNC_COUNTRY_STATS') {
+      this._sendQueue = this._sendQueue.filter(
+        (q) => !(q.type === fullPacket.type && (q.countryId === fullPacket.countryId || q.country?.id === fullPacket.country?.id))
+      );
+    }
+
+    this._sendQueue.push(fullPacket);
+    if (!this._sendQueueTimer) {
+      this._drainSendQueue();
+    }
+  }
+
+  async _drainSendQueue() {
+    this._sendQueueTimer = null;
+    if (this._sendQueue.length === 0) return;
+
+    const pkt = this._sendQueue.shift();
+    let nextDelay = 850;
+
+    try {
+      const res = await fetch(CLOUD_TOPIC_URL, {
+        method: 'POST',
+        body: JSON.stringify(pkt),
+      });
+      if (res.status === 429) {
+        // Rate limited: put back at front and retry after 4.5 seconds
+        this._sendQueue.unshift(pkt);
+        nextDelay = 4500;
+      }
+    } catch {
+      // Transient network hiccup: retry once if queue isn't bloated
+      if (this._sendQueue.length < 15 && !pkt._retried) {
+        pkt._retried = true;
+        this._sendQueue.unshift(pkt);
+        nextDelay = 3000;
+      }
+    }
+
+    if (this._sendQueue.length > 0) {
+      this._sendQueueTimer = setTimeout(() => this._drainSendQueue(), nextDelay);
+    }
   }
 
   _handleRemoteMessage(data, isHistoryReplay = false) {
@@ -476,7 +532,13 @@ export class SharedWorldSync {
       }
       this.onRemoteUpdate();
     } else if (data.type === 'COUNTRY_SYNC_PACKET' && data.country) {
-      this.engine.handleRemoteCountrySyncPacket(data.country, data.pts, data._sentAt || 0);
+      this.engine.handleRemoteCountrySyncPacket(
+        data.country,
+        data.pts,
+        data._sentAt || 0,
+        false,
+        data.rle || null
+      );
       if (data.country.deviceId === this.engine.myDeviceId && !this.engine.myCountryId) {
         this.engine.myCountryId = data.country.id;
       }
