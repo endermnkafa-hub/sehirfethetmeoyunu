@@ -30,6 +30,10 @@ import {
   AlertTriangle,
   Sparkles,
   ShieldAlert,
+  MessageSquare,
+  Send,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 export default function WorldGame({ onReturnToModeSelect }) {
@@ -78,7 +82,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
     time: 0,
   });
 
+  // Global Chat State
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatMinimized, setChatMinimized] = useState(false);
+  const chatBottomRef = useRef(null);
+
   // Mouse & Touch interaction tracking
+  const hoveredPosRef = useRef(null);
   const isMouseDownRef = useRef(false);
   const isPaintingRef = useRef(false);
   const lastCellRef = useRef(null);
@@ -100,6 +111,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   if (!engineRef.current) {
     engineRef.current = new WorldSimulationEngine(worldData, {
       onEvent: (msg) => showToast(msg),
+      onChat: (msgs) => setChatMessages([...msgs]),
       onSound: (sound) => {
         if (!soundEnabled) return;
         if (sound === 'pencil') soundManager.playPencil();
@@ -110,6 +122,28 @@ export default function WorldGame({ onReturnToModeSelect }) {
       },
     });
   }
+
+  // Load initial chat messages on mount
+  useEffect(() => {
+    if (engineRef.current?.chatMessages) {
+      setChatMessages([...engineRef.current.chatMessages]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!chatMinimized && chatBottomRef.current) {
+      chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, chatMinimized]);
+
+  const handleSendChatMessage = useCallback((e) => {
+    e?.preventDefault();
+    if (!chatInput.trim()) return;
+    const eng = engineRef.current;
+    if (!eng || !eng.sync) return;
+    eng.sync.sendChatMessage(chatInput.trim());
+    setChatInput('');
+  }, [chatInput]);
 
   // Network & Security Check on Mount
   useEffect(() => {
@@ -307,6 +341,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
   }, [getMapCoords, toolMode]);
 
   const handlePointerMove = useCallback((e) => {
+    const pos = getMapCoords(e.clientX, e.clientY);
+    if (pos) {
+      hoveredPosRef.current = pos;
+    }
+
     const prevPt = pointersRef.current.get(e.pointerId);
     if (!prevPt) return;
 
@@ -527,7 +566,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
           const myC = eng.getMyCountry();
           setHud({
             myCountry: myC ? { ...myC } : null,
-            totalCountriesCount: eng.countries.length,
+            totalCountriesCount: eng.countries.filter((c) => c.landCount > 0).length,
             connectedPeers: eng.sync?.getConnectedPeersCount() || 0,
             time: now,
           });
@@ -695,6 +734,101 @@ export default function WorldGame({ onReturnToModeSelect }) {
         </div>
       </div>
 
+      {/* GLOBAL CHAT (SOL ÜST TARAF) */}
+      <div className="absolute top-14 sm:top-16 left-2 sm:left-4 z-20 flex flex-col pointer-events-none max-w-[270px] sm:max-w-xs w-full">
+        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-2xl p-2 sm:p-2.5 shadow-2xl transition">
+          {/* Header */}
+          <div className="flex items-center justify-between pb-1.5 border-b border-slate-700/60 mb-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-black text-amber-400">
+              <MessageSquare size={14} className="text-amber-400" />
+              <span>Global Sohbet</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" title="Canlı Bulut Senkronizasyonu" />
+            </div>
+            <button
+              onClick={() => setChatMinimized((prev) => !prev)}
+              className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+              title={chatMinimized ? 'Sohbeti Genişlet' : 'Sohbeti Küçült'}
+            >
+              {chatMinimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </button>
+          </div>
+
+          {!chatMinimized && (
+            <>
+              {/* Message List */}
+              <div className="max-h-36 sm:max-h-44 overflow-y-auto space-y-1.5 pr-1 text-xs">
+                {chatMessages.length === 0 ? (
+                  <div className="text-[11px] text-slate-400 italic py-2 text-center">
+                    Henüz mesaj yok. İlk mesajı sen gönder!
+                  </div>
+                ) : (
+                  chatMessages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className="p-1.5 rounded-xl bg-slate-800/70 border border-slate-700/50 flex flex-col gap-0.5"
+                    >
+                      <div className="flex items-center justify-between gap-1 text-[10px]">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {msg.flagDataUrl ? (
+                            <img
+                              src={msg.flagDataUrl}
+                              alt=""
+                              className="w-4 h-3 rounded-sm object-cover shrink-0 border"
+                              style={{ borderColor: msg.countryColor || '#FBBF24' }}
+                            />
+                          ) : (
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: msg.countryColor || '#38BDF8' }}
+                            />
+                          )}
+                          <span
+                            className="font-black truncate max-w-[120px]"
+                            style={{ color: msg.countryColor || '#FBBF24' }}
+                          >
+                            {msg.countryName}
+                          </span>
+                        </div>
+                        <span className="text-slate-400 text-[9px] shrink-0">
+                          {new Date(msg.time || Date.now()).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-200 break-words pl-4">
+                        {msg.text}
+                      </div>
+                    </div>
+                  ))
+                )}
+                <div ref={chatBottomRef} />
+              </div>
+
+              {/* Chat Input Form */}
+              <form onSubmit={handleSendChatMessage} className="mt-2 flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder={myCountry ? `${myCountry.name} olarak mesaj yaz...` : 'Mesaj yaz...'}
+                  maxLength={140}
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  type="submit"
+                  disabled={!chatInput.trim()}
+                  className="p-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-slate-950 transition shrink-0"
+                  title="Gönder"
+                >
+                  <Send size={14} />
+                </button>
+              </form>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* FLOATING CAMERA CONTROLS */}
       <div className="absolute right-2.5 sm:right-4 bottom-16 sm:bottom-20 flex flex-col gap-1.5 z-10">
         <button
@@ -805,6 +939,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onPointerLeave={() => {
+          hoveredPosRef.current = null;
+        }}
         className="w-full h-full cursor-crosshair touch-none"
       />
 

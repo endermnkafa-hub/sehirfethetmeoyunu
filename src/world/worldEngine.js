@@ -100,6 +100,7 @@ export class WorldSimulationEngine {
     this.worldData = worldData;
     this.onEvent = callbacks.onEvent || (() => {});
     this.onSound = callbacks.onSound || (() => {});
+    this.onChat = callbacks.onChat || (() => {});
 
     const total = MAP_W * MAP_H;
     this.owners = new Int16Array(total);
@@ -110,18 +111,66 @@ export class WorldSimulationEngine {
     this.countries = [];
     this.countryMap = new Map();
     this.ships = []; // Active naval expeditions sailing across water
+    this.chatMessages = [];
     this.myDeviceId = getOrCreateDeviceId();
     this.myCountryId = null;
 
     this.dirtyPixels = true;
     this.dirtyRegions = true;
 
+    this.loadChatMessages();
     this.loadState();
+    this.cleanupInactiveCountries();
 
     this.sync = new SharedWorldSync(this, () => {
       this.dirtyPixels = true;
       this.dirtyRegions = true;
     });
+  }
+
+  loadChatMessages() {
+    try {
+      const raw = localStorage.getItem('sf_global_chat_v1');
+      if (raw) {
+        this.chatMessages = JSON.parse(raw);
+      }
+    } catch {}
+  }
+
+  saveChatMessages() {
+    try {
+      localStorage.setItem('sf_global_chat_v1', JSON.stringify(this.chatMessages.slice(-50)));
+    } catch {}
+  }
+
+  handleRemoteChatMessage(chat) {
+    if (!chat || !chat.id) return;
+    if (this.chatMessages.some((m) => m.id === chat.id)) return;
+    this.chatMessages.push(chat);
+    if (this.chatMessages.length > 50) {
+      this.chatMessages.shift();
+    }
+    this.saveChatMessages();
+    this.onChat(this.chatMessages);
+  }
+
+  cleanupInactiveCountries() {
+    const total = MAP_W * MAP_H;
+    const activeIds = new Set();
+    for (let i = 0; i < total; i++) {
+      const o = this.owners[i];
+      if (o > 0) activeIds.add(o);
+    }
+    const beforeCount = this.countries.length;
+    this.countries = this.countries.filter((c) => activeIds.has(c.id));
+    this.countryMap.clear();
+    for (const c of this.countries) {
+      this.countryMap.set(c.id, c);
+    }
+    if (this.countries.length !== beforeCount) {
+      this.dirtyPixels = true;
+      this.dirtyRegions = true;
+    }
   }
 
   getMyCountry() {
@@ -297,15 +346,20 @@ export class WorldSimulationEngine {
 
       this._recalculateDerivedStats(c);
 
-      if (c.troops < c.capacity) {
-        c.troops = Math.min(c.capacity, c.troops + c.productionRate * deltaTimeSec);
-      }
+      const isMyCountry = c.id === this.myCountryId;
+      // Continuous local troop production runs for the player's own country.
+      // Other players' true troop counts arrive in real-time via SYNC_COUNTRY_STATS so numbers never desync.
+      if (isMyCountry) {
+        if (c.troops < c.capacity) {
+          c.troops = Math.min(c.capacity, c.troops + c.productionRate * deltaTimeSec);
+        }
 
-      if (c.population < c.maxPopulation) {
-        c.population = Math.min(c.maxPopulation, c.population + c.popGrowthRate * deltaTimeSec);
-      }
+        if (c.population < c.maxPopulation) {
+          c.population = Math.min(c.maxPopulation, c.population + c.popGrowthRate * deltaTimeSec);
+        }
 
-      c.gold += c.goldIncome * deltaTimeSec;
+        c.gold += c.goldIncome * deltaTimeSec;
+      }
     }
 
     // Update sailing ships across oceans/seas
@@ -896,6 +950,12 @@ export class WorldSimulationEngine {
       }
     }
 
+    if (country.id !== this.myCountryId) {
+      if (typeof remoteCountry.troops === 'number') country.troops = remoteCountry.troops;
+      if (typeof remoteCountry.gold === 'number') country.gold = remoteCountry.gold;
+      if (typeof remoteCountry.population === 'number') country.population = remoteCountry.population;
+    }
+
     const idxCap = country.capitalY * MAP_W + country.capitalX;
     if (this.worldData.isLand[idxCap] && this.owners[idxCap] === 0) {
       this.owners[idxCap] = country.id;
@@ -980,6 +1040,7 @@ export class WorldSimulationEngine {
   }
 
   handleRemoteSyncCountryStats(countryId, stats) {
+    if (countryId === this.myCountryId) return;
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
     if (stats.color) {
@@ -1147,6 +1208,19 @@ export class WorldSimulationEngine {
 
     this.countryBounds = bounds;
     this.dirtyRegions = false;
+
+    // Synchronize landCount with actual pixel count and prune 0-pixel ghost countries
+    let hasZeroLand = false;
+    for (const c of this.countries) {
+      const b = bounds.get(c.id);
+      const cnt = b ? b.count : 0;
+      c.landCount = cnt;
+      if (cnt === 0) hasZeroLand = true;
+    }
+    if (hasZeroLand) {
+      this.cleanupInactiveCountries();
+    }
+
     return bounds;
   }
 

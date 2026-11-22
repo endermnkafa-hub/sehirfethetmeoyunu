@@ -22,6 +22,7 @@ export class SharedWorldSync {
     this._lastPollTime = 'all';
     this._pollInterval = null;
     this._announceInterval = null;
+    this._statsInterval = null;
 
     // Pending pixel conquest batch buffer
     this._pendingPixels = [];
@@ -67,13 +68,31 @@ export class SharedWorldSync {
       this._pollCloudMessages();
     }, 3000);
 
-    // Periodically announce our country snapshot every 12 seconds so newly opened devices always see us
+    // Periodically announce our country snapshot every 10 seconds so newly opened devices always see us
     this._announceInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
         this.publishMyCountrySnapshot();
       }
-    }, 12000);
+    }, 10000);
+
+    // Periodically broadcast our real-time troops, gold & stats every 2.5 seconds so all players see exact troop counts
+    this._statsInterval = setInterval(() => {
+      const myC = this.engine.getMyCountry();
+      if (myC && myC.landCount > 0) {
+        this.broadcast({
+          type: 'SYNC_COUNTRY_STATS',
+          countryId: myC.id,
+          stats: {
+            troops: Number(myC.troops.toFixed(1)),
+            gold: Math.floor(myC.gold),
+            population: Math.floor(myC.population),
+            color: myC.color,
+            upgrades: myC.upgrades,
+          },
+        });
+      }
+    }, 2500);
 
     // Live SSE stream for sub-second updates
     if (typeof EventSource !== 'undefined') {
@@ -334,6 +353,28 @@ export class SharedWorldSync {
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
       this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
       this.onRemoteUpdate();
+    } else if (data.type === 'GLOBAL_CHAT' && data.chat) {
+      this.engine.handleRemoteChatMessage(data.chat);
+      this.onRemoteUpdate();
     }
+  }
+
+  sendChatMessage(text) {
+    if (!text || !text.trim()) return;
+    const myC = this.engine.getMyCountry();
+    const chat = {
+      id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      countryId: myC?.id || 0,
+      countryName: myC?.name || 'Gezgin',
+      countryColor: myC?.color || '#38BDF8',
+      flagDataUrl: myC ? this.getCompactFlagFromCountry(myC) : null,
+      text: text.trim().slice(0, 160),
+      time: Date.now(),
+    };
+    this.engine.handleRemoteChatMessage(chat);
+    this.broadcast({
+      type: 'GLOBAL_CHAT',
+      chat,
+    });
   }
 }
