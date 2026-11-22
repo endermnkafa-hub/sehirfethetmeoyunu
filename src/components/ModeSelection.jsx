@@ -1,5 +1,5 @@
 import React from 'react';
-import { Globe, Grid, Shield, Ship, Users, Zap, Award, Sparkles, ArrowRight, Play, RotateCcw } from 'lucide-react';
+import { Globe, Grid, Sparkles, ArrowRight, RotateCcw } from 'lucide-react';
 
 export default function ModeSelection({
   onSelectMode, // 'WORLD' | 'FLAT'

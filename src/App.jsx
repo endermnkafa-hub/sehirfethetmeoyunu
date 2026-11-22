@@ -105,8 +105,9 @@ export default function App() {
 
   const [savedWorldGame, setSavedWorldGame] = useState(() => {
     try {
-      const raw = localStorage.getItem('sf_world_empire_state');
-      return raw ? JSON.parse(raw) : null;
+      const raw = localStorage.getItem('sf_world_v2_empire');
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && parsed.v === 3 ? parsed : null;
     } catch {
       return null;
     }
@@ -1651,8 +1652,9 @@ export default function App() {
         onReturnToModeSelect={() => {
           soundManager.playClick();
           try {
-            const raw = localStorage.getItem('sf_world_empire_state');
-            setSavedWorldGame(raw ? JSON.parse(raw) : null);
+            const raw = localStorage.getItem('sf_world_v2_empire');
+            const parsed = raw ? JSON.parse(raw) : null;
+            setSavedWorldGame(parsed && parsed.v === 3 ? parsed : null);
           } catch {}
           setMainView('MODE_SELECT');
         }}
