@@ -1027,3 +1027,165 @@ export function computeBotTurnMoves(grid, botPlayerId, totalPoints, walls = {}, 
   return { pendingCells, pendingWalls, walls: curWalls };
 }
 
+/**
+ * Finds all neighboring player IDs bordering a specific player
+ */
+export function getPlayerNeighbors(grid, playerId) {
+  const height = grid.length;
+  const width = grid[0].length;
+  const dirs = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+  const neighborCounts = {};
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (grid[y][x] === playerId) {
+        for (const d of dirs) {
+          const nx = x + d.dx;
+          const ny = y + d.dy;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const other = grid[ny][nx];
+            if (other > 0 && other !== playerId) {
+              neighborCounts[other] = (neighborCounts[other] || 0) + 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  return neighborCounts;
+}
+
+/**
+ * Evaluates sophisticated diplomatic actions for a bot
+ * (Tribute demand when dominant, Coalition against superpowers, Desperation peace pacts, Betrayal when trapped)
+ */
+export function evaluateBotDiplomacy(grid, botPlayer, allPlayers, alliances = [], gameMode = 'KLASIK') {
+  // 45% chance to consider diplomacy in any given turn to keep gameplay natural
+  if (Math.random() > 0.45) return null;
+
+  const territoryCounts = countPlayerTerritories(grid, allPlayers);
+  const botArea = territoryCounts[botPlayer.id] || 0;
+  if (botArea < 6) return null;
+
+  const neighborCounts = getPlayerNeighbors(grid, botPlayer.id);
+  const neighborIds = Object.keys(neighborCounts).map(Number);
+  if (neighborIds.length === 0) return null;
+
+  const myAlliances = alliances.filter(a => a.status === 'active' && (a.player1Id === botPlayer.id || a.player2Id === botPlayer.id));
+  const alliedPlayerIds = new Set();
+  myAlliances.forEach(a => {
+    alliedPlayerIds.add(a.player1Id === botPlayer.id ? a.player2Id : a.player1Id);
+  });
+
+  const alivePlayers = allPlayers.filter(p => p.alive && (territoryCounts[p.id] || 0) > 0);
+  const totalConquered = Object.values(territoryCounts).reduce((a, b) => a + b, 0);
+
+  const sortedPlayers = [...alivePlayers].sort((a, b) => (territoryCounts[b.id] || 0) - (territoryCounts[a.id] || 0));
+  const leader = sortedPlayers[0];
+  const leaderArea = territoryCounts[leader.id] || 0;
+
+  // 1. KÖŞEYE SIKIŞTIRMA & HARAÇ (Tribute Demand - Modern Mode)
+  if (gameMode === 'MODERN') {
+    for (const nId of neighborIds) {
+      if (alliedPlayerIds.has(nId)) continue;
+      const target = allPlayers.find(p => p.id === nId);
+      if (!target || !target.alive) continue;
+      const targetArea = territoryCounts[nId] || 0;
+
+      // If bot is significantly stronger (>=1.5x area) and has strong border presence
+      if (botArea >= 15 && botArea >= targetArea * 1.5 && neighborCounts[nId] >= 2) {
+        return {
+          type: 'PROPOSE',
+          targetPlayer: target,
+          proposal: {
+            id: Date.now() + Math.random(),
+            type: 'TRIBUTE',
+            proposer: botPlayer,
+            target: target,
+            player1Id: botPlayer.id,
+            player2Id: target.id,
+            payerId: target.id,
+            patronId: botPlayer.id,
+            durationRounds: 4,
+            penaltyCells: 3,
+            tributeAmount: 1,
+            status: 'active',
+            message: `Ordularım sınırlarına dayandı. Bana saldırmamam ve barış için her tur 1 kare haraç (vergi) ödemelisin!`,
+          }
+        };
+      }
+    }
+  }
+
+  // 2. ORTAK DÜŞMAN / SÜPER GÜCE KARŞI KOALİSYON (Common Threat Coalition)
+  if (leader && leader.id !== botPlayer.id && leaderArea >= totalConquered * 0.32 && leaderArea >= botArea * 1.3) {
+    for (const p of alivePlayers) {
+      if (p.id === botPlayer.id || p.id === leader.id || alliedPlayerIds.has(p.id)) continue;
+      return {
+        type: 'PROPOSE',
+        targetPlayer: p,
+        proposal: {
+          id: Date.now() + Math.random(),
+          type: 'NON_AGGRESSION',
+          proposer: botPlayer,
+          target: p,
+          player1Id: botPlayer.id,
+          player2Id: p.id,
+          durationRounds: 4,
+          penaltyCells: 3,
+          status: 'active',
+          message: `${leader.name} hızla büyüyüp hepimizi tehdit ediyor! Ona karşı güçlerimizi birleştirmek için 4 turluk ittifak kuralım!`,
+        }
+      };
+    }
+  }
+
+  // 3. ZAYIF DÜŞÜNCE BARIŞ VE SALDIRMAZLIK ARAYIŞI (Desperation Peace Pact)
+  if (botArea <= 12) {
+    for (const nId of neighborIds) {
+      if (alliedPlayerIds.has(nId)) continue;
+      const strongNeighbor = allPlayers.find(p => p.id === nId);
+      if (!strongNeighbor || !strongNeighbor.alive) continue;
+      const nArea = territoryCounts[nId] || 0;
+      if (nArea >= botArea * 1.4) {
+        return {
+          type: 'PROPOSE',
+          targetPlayer: strongNeighbor,
+          proposal: {
+            id: Date.now() + Math.random(),
+            type: 'NON_AGGRESSION',
+            proposer: botPlayer,
+            target: strongNeighbor,
+            player1Id: botPlayer.id,
+            player2Id: strongNeighbor.id,
+            durationRounds: 3,
+            penaltyCells: 2,
+            status: 'active',
+            message: `Devletim toparlanırken aramızda barış olsun. 3 turluk saldırmazlık paktı teklif ediyorum.`,
+          }
+        };
+      }
+    }
+  }
+
+  // 4. İTTİFAK FESHİ / İHANET (Break Alliance when completely surrounded by ally)
+  if (myAlliances.length > 0 && Math.random() < 0.25) {
+    const allyId = [...alliedPlayerIds][0];
+    const ally = allPlayers.find(p => p.id === allyId);
+    if (ally) {
+      const otherNeighbors = neighborIds.filter(id => id !== allyId);
+      if (otherNeighbors.length === 0 && botArea >= 12) {
+        return {
+          type: 'BETRAY',
+          allianceId: myAlliances[0].id,
+          targetPlayer: ally,
+          penaltyCells: myAlliances[0].penaltyCells || 2,
+          message: `⚠️ ${botPlayer.name}, toprakları sıkıştığı için ${ally.name} ile olan ittifakını bozdu ve savaşa girdi!`,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+

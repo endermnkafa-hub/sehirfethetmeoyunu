@@ -20,6 +20,7 @@ import {
   expandPlayerInstant,
   calculateMaxSafeNumber,
   computeBotTurnMoves,
+  evaluateBotDiplomacy,
   PLAYER_COLORS,
 } from './utils/gameLogic';
 import { soundManager } from './utils/audio';
@@ -55,6 +56,7 @@ export default function App() {
   const pendingWallsRef = useRef(pendingWalls);
   const wallsRef = useRef(walls);
   const turnHistoryRef = useRef(turnHistory);
+  const botActionKeyRef = useRef('');
 
   useEffect(() => { pendingCellsRef.current = pendingCells; }, [pendingCells]);
   useEffect(() => { pendingWallsRef.current = pendingWalls; }, [pendingWalls]);
@@ -825,18 +827,57 @@ export default function App() {
     advanceTurn(newGrid, updatedPlayers, newWalls, nextAlliances);
   };
 
-  // Automated Bot / AI Turn Execution
+  // Automated Bot / AI Turn Execution (Diplomacy & Visual Animated Painting)
   useEffect(() => {
     if (gameState !== 'PLAYING' || !!onlineInfo) return;
     const currentActive = players[activePlayerIndex];
-    if (!currentActive || !currentActive.isBot || !currentActive.alive) return;
+    if (!currentActive || !currentActive.isBot || !currentActive.alive) {
+      botActionKeyRef.current = '';
+      return;
+    }
 
-    let botTimer = null;
+    // 1. Bot Pick Number & Diplomacy phase
+    if (turnPhase === 'PICK_NUMBER' && !isWheelOpen && !incomingProposal) {
+      const pickKey = `pick-${roundNumber}-${activePlayerIndex}`;
+      if (botActionKeyRef.current === pickKey) return;
+      botActionKeyRef.current = pickKey;
 
-    if (turnPhase === 'PICK_NUMBER' && !isWheelOpen) {
-      // 1. Bot chooses safe number and spins wheel
-      botTimer = setTimeout(() => {
-        const area = territoryCounts[currentActive.id] || 1;
+      const timerId = setTimeout(() => {
+        // Evaluate Bot Diplomacy first
+        const dipAction = evaluateBotDiplomacy(grid, currentActive, players, alliances, gameMode);
+        if (dipAction) {
+          if (dipAction.type === 'PROPOSE') {
+            const { targetPlayer, proposal } = dipAction;
+            if (!targetPlayer.isBot) {
+              // Propose to Human: show popup modal and pause bot until Human answers!
+              setIncomingProposal(proposal);
+              soundManager.playTick();
+              return;
+            } else {
+              // Propose to another Bot: auto-evaluate
+              let accept = true;
+              if (proposal.type === 'TRIBUTE' && proposal.payerId === targetPlayer.id) {
+                const targetArea = countPlayerTerritories(grid, players)[targetPlayer.id] || 0;
+                accept = targetArea <= 8; // Only accept tribute if very weak
+              }
+              if (accept) {
+                setAlliances(prev => [...prev.filter(a => a.id !== proposal.id), proposal]);
+                soundManager.playWin();
+                showMessage(`🤝 ${proposal.proposer.name} ile ${proposal.target.name} arasında ittifak kuruldu!`, 3500);
+              }
+            }
+          } else if (dipAction.type === 'BETRAY') {
+            // Bot breaks alliance
+            setAlliances(prev => prev.filter(a => a.id !== dipAction.allianceId));
+            const { newGrid: bGrid, newWalls: bWalls } = shrinkCountrySmart(grid, currentActive.id, dipAction.penaltyCells, walls);
+            setGrid(bGrid);
+            setWalls(bWalls);
+            showMessage(dipAction.message, 4000);
+          }
+        }
+
+        // Proceed to pick number & start spin
+        const area = countPlayerTerritories(grid, players)[currentActive.id] || 1;
         const maxSafe = calculateMaxSafeNumber(area);
         const botPick = Math.max(1, Math.min(3, maxSafe));
         setChosenNumber(botPick);
@@ -844,10 +885,18 @@ export default function App() {
         setTimeout(() => {
           handleStartSpin();
         }, 500);
-      }, 900);
-    } else if (turnPhase === 'PLACING') {
-      // 2. Bot computes and applies placing moves
-      botTimer = setTimeout(() => {
+      }, 800);
+
+      return () => clearTimeout(timerId);
+    }
+
+    // 2. Bot Placing phase: Visual step-by-step tile painting
+    if (turnPhase === 'PLACING') {
+      const placeKey = `place-${roundNumber}-${activePlayerIndex}`;
+      if (botActionKeyRef.current === placeKey) return;
+      botActionKeyRef.current = placeKey;
+
+      const timerId = setTimeout(() => {
         const botResult = computeBotTurnMoves(
           grid,
           currentActive.id,
@@ -857,21 +906,49 @@ export default function App() {
           gameMode
         );
 
-        setPendingCells(botResult.pendingCells);
-        setPendingWalls(botResult.pendingWalls);
-        setWalls(botResult.walls);
-        soundManager.playPencil();
+        const cells = botResult.pendingCells || [];
+        const newWalls = botResult.pendingWalls || [];
 
-        setTimeout(() => {
-          finalizeTurnPlacing(0, null, botResult.pendingCells, botResult.pendingWalls);
-        }, 800);
-      }, 1000);
+        if (cells.length === 0 && newWalls.length === 0) {
+          finalizeTurnPlacing(0, null, [], []);
+          return;
+        }
+
+        // Animated step-by-step painting
+        let step = 0;
+        const totalSteps = cells.length;
+        if (totalSteps === 0) {
+          setPendingWalls(newWalls);
+          soundManager.playPencil();
+          setTimeout(() => {
+            finalizeTurnPlacing(0, null, [], newWalls);
+          }, 600);
+          return;
+        }
+
+        const animInterval = setInterval(() => {
+          step++;
+          const currentBatch = cells.slice(0, step);
+          setPendingCells(currentBatch);
+          pendingCellsRef.current = currentBatch;
+          soundManager.playPencil();
+
+          if (step >= totalSteps) {
+            clearInterval(animInterval);
+            if (newWalls.length > 0) {
+              setPendingWalls(newWalls);
+              pendingWallsRef.current = newWalls;
+            }
+            setTimeout(() => {
+              finalizeTurnPlacing(0, null, cells, newWalls);
+            }, 600);
+          }
+        }, 300);
+      }, 700);
+
+      return () => clearTimeout(timerId);
     }
-
-    return () => {
-      if (botTimer) clearTimeout(botTimer);
-    };
-  }, [gameState, onlineInfo, activePlayerIndex, turnPhase, isWheelOpen, totalToPlace, grid, walls, alliances, gameMode, players, territoryCounts]);
+  }, [gameState, onlineInfo, activePlayerIndex, turnPhase, isWheelOpen, incomingProposal, totalToPlace, grid, walls, alliances, gameMode, players]);
 
   const handleConfirmBreach = () => {
     if (!breachPrompt) return;
@@ -1872,6 +1949,11 @@ export default function App() {
                       : `sana her tur ${incomingProposal.tributeAmount} kare haraç ödemeyi teklif ediyor!`)
                   : 'seninle barış ittifakı kurmak istiyor!'}
               </h3>
+              {incomingProposal.message && (
+                <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 italic text-left font-semibold">
+                  "{incomingProposal.message}"
+                </div>
+              )}
             </div>
 
             <div className="p-3 bg-stone-50 rounded-2xl border border-stone-200 text-xs text-stone-700 text-left space-y-1.5 font-medium">
