@@ -42,7 +42,15 @@ export class WorldSimulationEngine {
   getMyCountry() {
     if (!this.myCountryId) {
       const storedId = getMyCountryId();
-      if (storedId) this.myCountryId = parseInt(storedId, 10);
+      if (storedId) {
+        this.myCountryId = parseInt(storedId, 10);
+      } else {
+        const devCountry = this.countries.find((c) => c.deviceId === this.myDeviceId);
+        if (devCountry) {
+          this.myCountryId = devCountry.id;
+          saveMyCountryId(devCountry.id);
+        }
+      }
     }
     return this.countryMap.get(this.myCountryId) || null;
   }
@@ -54,11 +62,19 @@ export class WorldSimulationEngine {
     for (const c of this.countries) {
       if (c.landCount <= 0) continue;
 
-      // Exact user formula:
-      // Kapasite = toprak sayisi
-      // Uretim hizi = toprak sayisi / 60 asker/saniye
-      c.capacity = Math.max(1, c.landCount);
-      const ratePerSec = c.landCount / 60.0;
+      // Kapasite: Yeni başlayan küçük ülkenin en az 5 asker depolama alanı olur.
+      // Büyük ülkelerde toprak sayısı kadar kapasiteye ulaşır.
+      c.capacity = Math.max(5, c.landCount);
+
+      // Üretim Hızı (Azalan Getiri / Diminishing Returns Formülü):
+      // Katlanarak kartopu gibi (1-2-4-8-16-32-64-128...) kontrolsüz büyümesini engeller:
+      // - 1 piksel (Yeni ülke): ~0.28 asker/sn (3.5 saniyede 1 asker, hızlı başlangıç)
+      // - 10 piksel: ~0.45 asker/sn (2.2 saniyede 1 asker)
+      // - 100 piksel: ~1.00 asker/sn (saniyede 1 asker)
+      // - 500 piksel: ~1.98 asker/sn (saniyede 2 asker)
+      // - 2000 piksel: ~3.77 asker/sn (dev imparatorluk saniyede 3.8 asker üretir, haritayı patlatamaz)
+      const ratePerSec = 0.20 + 0.08 * Math.sqrt(c.landCount);
+      c.productionRate = ratePerSec;
 
       c.troops = Math.min(c.capacity, c.troops + ratePerSec * deltaTimeSec);
     }
@@ -149,6 +165,7 @@ export class WorldSimulationEngine {
       countryId,
       x,
       y,
+      cost: check.cost,
     });
 
     this.saveState();
@@ -163,6 +180,23 @@ export class WorldSimulationEngine {
     }
     if (this.owners[idx] !== 0) {
       return { ok: false, reason: 'Bu piksel zaten başka bir devlete ait!' };
+    }
+
+    // 1 Device = 1 Country Enforcement
+    const existingForDevice = this.countries.find((c) => c.deviceId === this.myDeviceId);
+    if (existingForDevice) {
+      return {
+        ok: false,
+        reason: `Bu cihazdan zaten bir ülke kurulmuş: "${existingForDevice.name}"! (1 Cihaz = 1 Ülke kuralı)`,
+      };
+    }
+
+    const currentCountry = this.getMyCountry();
+    if (currentCountry && currentCountry.landCount > 0) {
+      return {
+        ok: false,
+        reason: `Zaten "${currentCountry.name}" adında bir ülken var!`,
+      };
     }
 
     // IP Check: Max 2 countries per IP
@@ -195,8 +229,8 @@ export class WorldSimulationEngine {
       capitalX,
       capitalY,
       landCount: 1,
-      troops: 1.0, // Start with 1 full soldier so player can make their 1st expansion immediately
-      capacity: 1,
+      troops: 2.0, // Start with 2 troops for immediate early exploration
+      capacity: 5,
       creatorIp: creatorIp || 'unknown',
       deviceId: this.myDeviceId,
       createdAt: Date.now(),
@@ -266,8 +300,8 @@ export class WorldSimulationEngine {
     this.saveState();
   }
 
-  // Handle remote pixel conquest by another player
-  handleRemoteConquerPixel(countryId, x, y) {
+  // Handle remote pixel conquest by another player or tab
+  handleRemoteConquerPixel(countryId, x, y, cost = 1) {
     if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
     const idx = y * MAP_W + x;
     const prevOwner = this.owners[idx];
@@ -278,14 +312,15 @@ export class WorldSimulationEngine {
     const country = this.countryMap.get(countryId);
     if (country) {
       country.landCount++;
-      country.capacity = country.landCount;
+      country.capacity = Math.max(5, country.landCount);
+      country.troops = Math.max(0, country.troops - (cost || 1));
     }
 
     if (prevOwner > 0) {
       const prevC = this.countryMap.get(prevOwner);
       if (prevC) {
         prevC.landCount = Math.max(0, prevC.landCount - 1);
-        prevC.capacity = Math.max(1, prevC.landCount);
+        prevC.capacity = Math.max(5, prevC.landCount);
       }
     }
 

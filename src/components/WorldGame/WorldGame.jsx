@@ -261,6 +261,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
               setVpnBlocked(true);
               return;
             }
+            // Enforce 1 Device = 1 Country
+            const existing = eng.countries.find((c) => c.deviceId === eng.myDeviceId);
+            if (existing) {
+              showToast(`⚠️ Bu cihazdan zaten "${existing.name}" kurulmuş! (1 Cihaz = 1 Ülke)`);
+              eng.myCountryId = existing.id;
+              centerOnCoords(existing.capitalX, existing.capitalY, 3.8);
+              return;
+            }
             setFoundingModal({ x: pos.x, y: pos.y });
           } else if (worldData.isLand[idx]) {
             showToast('⚠️ Bu piksel zaten başka bir devlete ait!');
@@ -461,7 +469,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     ⚔️ {Math.floor(myCountry.troops)} / {myCountry.capacity} Asker
                   </span>
                   <span className="text-emerald-400">
-                    ⚡ +{(myCountry.landCount / 60).toFixed(2)}/sn
+                    ⚡ +{(myCountry.productionRate || (0.20 + 0.08 * Math.sqrt(myCountry.landCount))).toFixed(2)}/sn
                   </span>
                   <span>
                     📍 {myCountry.landCount} Piksel
@@ -635,8 +643,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
               <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700 text-[11px] text-stone-400 space-y-0.5">
                 <div>📍 Başkent Konumu: ({foundingModal.x}, {foundingModal.y})</div>
-                <div>⚔️ Başlangıç: 1 Piksel Toprak & 1 Asker Kapasitesi</div>
-                <div>⚡ Üretim Hızı: 1/60 Asker/sn (60 sn'de 1 asker)</div>
+                <div>⚔️ Başlangıç: 1 Piksel Toprak & 5 Kapasite (2 Hazır Asker)</div>
+                <div>⚡ Üretim Hızı: ~0.28 Asker/sn (~3.5 saniyede 1 asker)</div>
+                <div className="text-amber-400/90 text-[10px]">🛡️ Denge: Kartopu gibi katlanarak büyüme engellidir (Adil denge eğrisi)</div>
               </div>
 
               <button
