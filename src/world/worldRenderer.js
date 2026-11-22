@@ -276,23 +276,43 @@ export class WorldMapRenderer {
       const fontSize = Math.max(10, Math.min(13, 2.2 * Math.sqrt(scale) + 7));
       ctx.font = `800 ${Math.round(fontSize)}px Inter, system-ui, sans-serif`;
       const label = `${country.name} (${Math.floor(country.troops)})`;
-      const tw = ctx.measureText(label).width + 10;
-      const th = fontSize + 6;
-      const labelY = topY - th - 4;
+      const flagThumbW = 16;
+      const flagThumbH = 11;
+      const textW = ctx.measureText(label).width;
+      const tw = textW + flagThumbW + 16;
+      const th = Math.max(flagThumbH + 6, fontSize + 7);
+      const labelY = topY - th - 5;
+      const pillX = centerX - tw / 2;
 
       // Subtle pill above territory
-      ctx.fillStyle = 'rgba(9, 13, 22, 0.82)';
-      ctx.strokeStyle = isMe ? 'rgba(251, 191, 36, 0.7)' : 'rgba(255, 255, 255, 0.22)';
-      ctx.lineWidth = 1;
+      ctx.fillStyle = 'rgba(9, 13, 22, 0.88)';
+      ctx.strokeStyle = isMe ? 'rgba(251, 191, 36, 0.85)' : 'rgba(255, 255, 255, 0.25)';
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.roundRect(centerX - tw / 2, labelY, tw, th, 5);
+      ctx.roundRect(pillX, labelY, tw, th, 6);
       ctx.fill();
       ctx.stroke();
 
+      // Full uploaded flag thumbnail inside the pill so it's 100% visible even at 1 pixel from any zoom
+      const img = this.getOrLoadImage(country.flagDataUrl);
+      const thumbX = pillX + 5;
+      const thumbY = labelY + (th - flagThumbH) / 2;
+      if (img) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(thumbX, thumbY, flagThumbW, flagThumbH, 2);
+        ctx.clip();
+        ctx.drawImage(img, thumbX, thumbY, flagThumbW, flagThumbH);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = country.color || '#E11D48';
+        ctx.fillRect(thumbX, thumbY, flagThumbW, flagThumbH);
+      }
+
       ctx.fillStyle = isMe ? '#FDE68A' : '#F1F5F9';
-      ctx.textAlign = 'center';
+      ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, centerX, labelY + th / 2);
+      ctx.fillText(label, thumbX + flagThumbW + 5, labelY + th / 2);
       ctx.restore();
     }
 

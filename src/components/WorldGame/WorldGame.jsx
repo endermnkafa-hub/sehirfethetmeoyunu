@@ -450,8 +450,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
       />
 
       {/* SLEEK MINIMALIST TOP BAR */}
-      <div className="absolute top-3 left-3 right-3 sm:left-5 sm:right-5 flex items-center justify-between gap-2 pointer-events-none z-10">
-        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2.5 py-2 shadow-2xl flex items-center gap-3">
+      <div className="absolute top-3 left-3 right-3 sm:left-5 sm:right-5 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
+        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2.5 py-2 shadow-2xl flex items-center gap-2.5 max-w-full">
           <button
             onClick={onReturnToModeSelect}
             className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
@@ -534,7 +534,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
       </div>
 
       {/* FLOATING CAMERA CONTROLS */}
-      <div className="absolute right-3 sm:right-5 top-20 flex flex-col gap-2 z-10">
+      <div className="absolute right-3 sm:right-5 bottom-20 flex flex-col gap-2 z-10">
         <button
           onClick={() => handleZoom(1.35)}
           className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
