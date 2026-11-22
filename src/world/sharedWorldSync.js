@@ -24,7 +24,11 @@ export class SharedWorldSync {
     // Listen to storage events from other tabs in the same browser
     if (typeof window !== 'undefined') {
       this._storageListener = (e) => {
-        if (e.key === 'sf_shared_world_v4_data' || e.key === 'sf_my_country_id') {
+        if (
+          e.key === 'sf_shared_world_v5_worldbox' ||
+          e.key === 'sf_shared_world_v4_data' ||
+          e.key === 'sf_my_country_id'
+        ) {
           this.engine.loadState();
           this.onRemoteUpdate();
         }
@@ -63,6 +67,9 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'CONQUER_PIXEL') {
       this.engine.handleRemoteConquerPixel(data.countryId, data.x, data.y, data.cost);
+      this.onRemoteUpdate();
+    } else if (data.type === 'SYNC_COUNTRY_STATS') {
+      this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
       this.onRemoteUpdate();
     }
   }

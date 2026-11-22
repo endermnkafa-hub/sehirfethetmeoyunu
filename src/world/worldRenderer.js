@@ -244,15 +244,16 @@ export class WorldMapRenderer {
       ctx.roundRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 4);
       ctx.stroke();
 
-      // Country Name & Troop Count Label
+      // Country Name & Troop/Population Label
       if (scale > 1.2 || isMe) {
         const nameFontSize = Math.max(9, Math.min(13, 3.2 * scale));
         ctx.font = `900 ${Math.round(nameFontSize)}px Inter, sans-serif`;
-        const label = `${country.name} (${Math.floor(country.troops)}/${country.capacity})`;
-        const tw = ctx.measureText(label).width + 8;
-        const th = nameFontSize + 4;
+        const popCount = Math.floor(country.population || 25);
+        const label = `${country.name} • ⚔️${Math.floor(country.troops)} 👥${popCount}`;
+        const tw = ctx.measureText(label).width + 10;
+        const th = nameFontSize + 5;
 
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
         ctx.strokeStyle = isMe ? '#FBBF24' : 'rgba(255,255,255,0.3)';
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -267,6 +268,52 @@ export class WorldMapRenderer {
       }
 
       ctx.restore();
+
+      // 5b. Render WorldBox Settlements (Capital, Ports, Towns) & Living Citizen Dots when zoomed in
+      if (scale >= 2.2) {
+        // Capital Marker
+        const capSx = (country.capitalX + 0.5) * scale;
+        const capSy = (country.capitalY + 0.5) * scale;
+        ctx.save();
+        ctx.font = `${Math.max(10, Math.min(16, Math.round(scale * 2.5)))}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('👑', capSx, capSy - scale * 0.6);
+
+        // Settlements (Ports & Towns)
+        if (Array.isArray(country.settlements)) {
+          for (const st of country.settlements) {
+            if (engine.owners[st.y * MAP_W + st.x] !== country.id) continue;
+            const stX = (st.x + 0.5) * scale;
+            const stY = (st.y + 0.5) * scale;
+            ctx.fillText(st.type === 'PORT' ? '⚓' : '🏘️', stX, stY);
+          }
+        }
+
+        // WorldBox Wandering Citizen Micro-Dots around Capital & Territory when zoomed in closely
+        if (scale >= 3.2) {
+          const dotCount = Math.min(24, Math.max(3, Math.floor((country.population || 20) / 15)));
+          for (let i = 0; i < dotCount; i++) {
+            const angle = (timeSec * (0.6 + (i % 5) * 0.2) + i * 2.3);
+            const radius = (1.2 + (i % 6) * 0.85) * scale;
+            const dx = capSx + Math.cos(angle) * radius;
+            const dy = capSy + Math.sin(angle * 1.3) * radius;
+            const tileX = Math.floor(dx / scale);
+            const tileY = Math.floor(dy / scale);
+            if (
+              tileX >= 0 && tileX < MAP_W &&
+              tileY >= 0 && tileY < MAP_H &&
+              engine.owners[tileY * MAP_W + tileX] === country.id
+            ) {
+              ctx.fillStyle = i % 3 === 0 ? '#FBBF24' : '#FFFFFF';
+              ctx.beginPath();
+              ctx.arc(dx, dy, Math.max(1.3, scale * 0.22), 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+        ctx.restore();
+      }
     }
 
     // 6. Interactive Hover Cursor & Founding Reticle
@@ -315,7 +362,9 @@ export class WorldMapRenderer {
             ctx.fillStyle = check.isEnemy ? '#FCA5A5' : '#86EFAC';
             ctx.strokeStyle = '#000000';
             ctx.lineWidth = 3;
-            const costStr = check.isEnemy ? '⚔️ Taarruz (2 Asker)' : '⚔️ Fethet (1 Asker)';
+            const costStr = check.isEnemy
+              ? `⚔️ Taarruz (${check.cost} Asker)`
+              : `⚔️ Fethet (${check.cost} Asker)`;
             ctx.strokeText(costStr, hx + cellSz / 2, hy - 8);
             ctx.fillText(costStr, hx + cellSz / 2, hy - 8);
           }
