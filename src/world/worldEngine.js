@@ -143,13 +143,17 @@ export class WorldSimulationEngine {
     } catch {}
   }
 
-  restoreMyCountryFromServer() {
+  restoreMyCountryFromServer(clientIp = null) {
     const storedId = getMyCountryId();
     if (storedId) {
       const parsed = parseInt(storedId, 10);
       if (this.countryMap.has(parsed)) {
-        this.myCountryId = parsed;
-        return;
+        const c = this.countryMap.get(parsed);
+        if (c && c.landCount > 0) {
+          this.myCountryId = parsed;
+          c.deviceId = this.myDeviceId;
+          return;
+        }
       }
     }
     const devCountry = this.countries.find(
@@ -158,6 +162,19 @@ export class WorldSimulationEngine {
     if (devCountry) {
       this.myCountryId = devCountry.id;
       saveMyCountryId(devCountry.id);
+      return;
+    }
+    // Auto-recovery via IP address (if friend opened Chrome on mobile and cookies/localStorage were wiped)
+    if (clientIp && clientIp !== '127.0.0.1' && clientIp !== 'unknown') {
+      const ipCountry = this.countries.find(
+        (c) => c.creatorIp === clientIp && c.landCount > 0,
+      );
+      if (ipCountry) {
+        this.myCountryId = ipCountry.id;
+        ipCountry.deviceId = this.myDeviceId;
+        saveMyCountryId(ipCountry.id);
+        this.onEvent(`${ipCountry.name} devletinin yönetimi IP üzerinden Chrome'a otomatik bağlandı!`);
+      }
     }
   }
 
@@ -552,6 +569,34 @@ export class WorldSimulationEngine {
     return { ok: true, level: currentLevel + 1, cost };
   }
 
+  // Check if country has any internal holes/cavities inside its bounding box
+  hasInternalCavities(countryId) {
+    const b = this.countryBounds ? this.countryBounds.get(countryId) : null;
+    if (!b || b.count < 8) return false;
+    const minX = Math.max(0, b.minX);
+    const maxX = Math.min(MAP_W - 1, b.maxX);
+    const minY = Math.max(0, b.minY);
+    const maxY = Math.min(MAP_H - 1, b.maxY);
+
+    for (let py = minY; py <= maxY; py++) {
+      const row = py * MAP_W;
+      for (let px = minX; px <= maxX; px++) {
+        const idx = row + px;
+        if (this.owners[idx] === 0 && this.worldData.isLand[idx]) {
+          const ownedNeighbors =
+            (px > 0 && this.owners[idx - 1] === countryId ? 1 : 0) +
+            (px < MAP_W - 1 && this.owners[idx + 1] === countryId ? 1 : 0) +
+            (py > 0 && this.owners[idx - MAP_W] === countryId ? 1 : 0) +
+            (py < MAP_H - 1 && this.owners[idx + MAP_W] === countryId ? 1 : 0);
+          if (ownedNeighbors >= 3) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // Check if pixel (x, y) can be conquered by land OR by naval ship expedition
   canExpandToPixel(countryId, x, y) {
     if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) {
@@ -595,6 +640,23 @@ export class WorldSimulationEngine {
     }
 
     if (isAdjacent) {
+      // Check if country has internal holes/cavities inside its territory
+      // If (x, y) has < 3 owned neighbors (an outer border pixel), but the country has internal hollow holes with 3+ owned neighbors,
+      // force the player to conquer their internal holes first so the country never has empty holes!
+      const ownedNeighborsCount =
+        (x > 0 && this.owners[idx - 1] === countryId ? 1 : 0) +
+        (x < MAP_W - 1 && this.owners[idx + 1] === countryId ? 1 : 0) +
+        (y > 0 && this.owners[idx - MAP_W] === countryId ? 1 : 0) +
+        (y < MAP_H - 1 && this.owners[idx + MAP_W] === countryId ? 1 : 0);
+
+      if (ownedNeighborsCount < 3 && this.hasInternalCavities(countryId)) {
+        return {
+          valid: false,
+          reason:
+            "Devletinin içinde boşluk varken dışarıya büyüyemezsin! Önce içteki boşluk piksellerini fethet.",
+        };
+      }
+
       if (this.isSnakingConquest(countryId, x, y)) {
         return {
           valid: false,
@@ -835,7 +897,35 @@ export class WorldSimulationEngine {
     const idx = y * MAP_W + x;
     const prevOwner = this.owners[idx];
 
-    country.troops = Math.max(0, country.troops - check.cost);
+    // Check if this move encloses any neutral cavity pockets
+    const enclosed = this.findEnclosedCavitiesForMove(countryId, x, y);
+    const siegeLevel = country.upgrades?.siege || 0;
+    const costPerCavityPixel = Math.max(
+      0.5,
+      Number((1.0 - siegeLevel * 0.02).toFixed(2)),
+    );
+    const cavityTotalCost = Number(
+      (enclosed.length * costPerCavityPixel).toFixed(2),
+    );
+    const totalCost = Number((check.cost + cavityTotalCost).toFixed(2));
+
+    // Never auto-grant free pixels: ensure sufficient troops for every single pixel!
+    // Prevent creating hollow gaps: if player doesn't have enough troops for the cavity, block the encirclement!
+    if (country.troops < totalCost) {
+      if (enclosed.length > 0) {
+        return {
+          ok: false,
+          reason: `Devletinin içinde boşluk bırakamazsın! Çevrelenen ${enclosed.length} iç pikseli fethetmek için toplam ${totalCost.toFixed(1)} asker gerekiyor (Sende: ${country.troops.toFixed(1)} asker var).`,
+        };
+      }
+      return {
+        ok: false,
+        reason: `Yetersiz asker! (${check.cost} asker gerekli, sende ${country.troops.toFixed(1)} var)`,
+      };
+    }
+
+    // Deduct exact total troops for both the clicked border pixel + all enclosed cavity pixels
+    country.troops = Math.max(0, country.troops - totalCost);
     this.owners[idx] = countryId;
     country.landCount++;
     country.population += 5;
@@ -853,10 +943,26 @@ export class WorldSimulationEngine {
     }
     this._expandCountryBound(countryId, x, y);
 
-    // Automatically detect and absorb any small enclosed neutral holes left inside territory
-    const filledCavities = this.fillEnclosedCavities(countryId, x, y);
+    const filledCavities = [];
+    for (const cIdx of enclosed) {
+      this.owners[cIdx] = countryId;
+      const px = cIdx % MAP_W;
+      const py = (cIdx / MAP_W) | 0;
+      this._expandCountryBound(countryId, px, py);
+      filledCavities.push({ x: px, y: py });
+      country.landCount++;
+      country.population += 3;
 
-    // Record for 5-Second Undo if this was our own country (including any auto-filled cavities)
+      this.sync.broadcast({
+        type: "CONQUER_PIXEL",
+        countryId,
+        x: px,
+        y: py,
+        cost: costPerCavityPixel,
+      });
+    }
+
+    // Record for 5-Second Undo if this was our own country (including any filled cavities)
     if (countryId === this.myCountryId) {
       this.undoStack.push({
         countryId,
@@ -876,6 +982,12 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.onSound("pencil");
 
+    if (filledCavities.length > 0) {
+      this.onEvent(
+        `Çevrelenen ${filledCavities.length} iç piksel ${cavityTotalCost.toFixed(1)} asker harcanarak fethedildi!`,
+      );
+    }
+
     this.sync.broadcast({
       type: "CONQUER_PIXEL",
       countryId,
@@ -888,14 +1000,15 @@ export class WorldSimulationEngine {
     return { ok: true, isNaval: false, country };
   }
 
-  // Automatically fills neutral land pockets (cavities) completely enclosed by the country
-  fillEnclosedCavities(countryId, targetX, targetY) {
-    const country = this.countryMap.get(countryId);
-    if (!country) return [];
+  // Detects any neutral land pockets that would become completely enclosed if (targetX, targetY) were conquered
+  findEnclosedCavitiesForMove(countryId, targetX, targetY) {
+    const origOwner = this.owners[targetY * MAP_W + targetX];
+    this.owners[targetY * MAP_W + targetX] = countryId;
 
     const candidates = [];
     for (let dy = -4; dy <= 4; dy++) {
       for (let dx = -4; dx <= 4; dx++) {
+        if (dx === 0 && dy === 0) continue;
         const nx = targetX + dx;
         const ny = targetY + dy;
         if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
@@ -907,9 +1020,7 @@ export class WorldSimulationEngine {
       }
     }
 
-    if (candidates.length === 0) return [];
-
-    const filledCoords = [];
+    const enclosedPixels = [];
     const visitedGlobal = new Set();
 
     for (const startIdx of candidates) {
@@ -941,7 +1052,7 @@ export class WorldSimulationEngine {
           }
           const adjIdx = adjY * MAP_W + adjX;
           if (!this.worldData.isLand[adjIdx]) {
-            // Water/ocean is a natural boundary, doesn't break enclosure
+            // Water/ocean is a natural boundary
             continue;
           }
           const o = this.owners[adjIdx];
@@ -967,35 +1078,15 @@ export class WorldSimulationEngine {
 
       if (isEnclosed && component.length <= 150) {
         for (const idx of component) {
-          this.owners[idx] = countryId;
-          const px = idx % MAP_W;
-          const py = (idx / MAP_W) | 0;
-          this._expandCountryBound(countryId, px, py);
-          filledCoords.push({ x: px, y: py });
-
-          this.sync.broadcast({
-            type: "CONQUER_PIXEL",
-            countryId,
-            x: px,
-            y: py,
-            cost: 0,
-          });
+          enclosedPixels.push(idx);
         }
-        country.landCount += component.length;
-        country.population += component.length * 3;
       }
     }
 
-    if (filledCoords.length > 0) {
-      this._recalculateDerivedStats(country);
-      this.dirtyPixels = true;
-      this.dirtyRegions = true;
-      this.onEvent(
-        `${filledCoords.length} adet iç boşluk pikseli otomatik dolduruldu!`,
-      );
-    }
+    // Restore simulated tile
+    this.owners[targetY * MAP_W + targetX] = origOwner;
 
-    return filledCoords;
+    return enclosedPixels;
   }
 
   // 5-Second Undo for mistakenly conquered pixels

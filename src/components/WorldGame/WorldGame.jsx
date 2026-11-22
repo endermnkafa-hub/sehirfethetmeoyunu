@@ -47,7 +47,10 @@ import {
   Crown,
   Trash2,
   Zap,
+  Download,
+  RefreshCw,
 } from "lucide-react";
+import { checkAppVersion } from "../../utils/versionCheck";
 
 export default function WorldGame({ onReturnToModeSelect }) {
   // Raster grey world data (1000x500)
@@ -77,8 +80,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [foundColor, setFoundColor] = useState("#E11D48");
   const [foundFlagDataUrl, setFoundFlagDataUrl] = useState(null);
 
-  // VPN Block Modal
+  // VPN Block Modal & Mandatory Version Update
   const [vpnBlocked, setVpnBlocked] = useState(false);
+  const [mandatoryUpdate, setMandatoryUpdate] = useState(null);
+  const [webUpdateAvailable, setWebUpdateAvailable] = useState(false);
 
   // Modes & UI
   const [toolMode, setToolMode] = useState("CONQUER"); // 'CONQUER' | 'PAN'
@@ -188,12 +193,24 @@ export default function WorldGame({ onReturnToModeSelect }) {
     [chatInput, networkInfo.isAdmin],
   );
 
-  // Network & Security Check on Mount
+  // Network & Security Check on Mount + Auto-Reconnect to country via IP + App Version Checker
   useEffect(() => {
     checkNetworkAndSecurity().then((info) => {
       setNetworkInfo({ ...info, checked: true });
       if (info.isVpnOrProxy) {
         setVpnBlocked(true);
+      }
+      if (engineRef.current && info.clientIp) {
+        engineRef.current.restoreMyCountryFromServer(info.clientIp);
+      }
+    });
+
+    // Check version: if outdated on Android app, enforce mandatory update modal!
+    checkAppVersion().then((ver) => {
+      if (ver.isMandatory) {
+        setMandatoryUpdate(ver);
+      } else if (ver.needsUpdate) {
+        setWebUpdateAvailable(true);
       }
     });
   }, []);
@@ -1256,6 +1273,33 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
+                          {!myCountry && (
+                            <button
+                              onClick={() => {
+                                const eng = engineRef.current;
+                                if (eng) {
+                                  const res = eng.claimExistingCountry(c.id);
+                                  if (res.ok) {
+                                    const center = eng.getCountryCenter(c.id);
+                                    centerOnCoords(center.x, center.y, 16.0);
+                                    setShowCountriesList(false);
+                                    showToast(
+                                      `${c.name} yönetimi bu cihaza bağlandı!`,
+                                    );
+                                  } else {
+                                    showToast(
+                                      res.reason || "Devlet bağlanamadı.",
+                                    );
+                                  }
+                                }
+                              }}
+                              className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                              title="Bu devleti kontrol et"
+                            >
+                              Yönetimi Al
+                            </button>
+                          )}
+
                           <button
                             onClick={() => {
                               const eng = engineRef.current;
@@ -1816,6 +1860,83 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* WEB VERSION UPDATE FLOATING BANNER */}
+      {webUpdateAvailable && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-indigo-950/95 border border-indigo-400 text-indigo-100 px-3.5 py-1.5 rounded-full shadow-2xl text-[11px] font-black flex items-center gap-2 animate-bounce">
+          <Sparkles size={14} className="text-indigo-400" />
+          <span>Yeni sürüm yayında!</span>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-2 py-0.5 rounded-full bg-indigo-500 hover:bg-indigo-400 text-white font-black text-[10px] flex items-center gap-1 transition"
+          >
+            <RefreshCw size={10} />
+            <span>Yenile</span>
+          </button>
+        </div>
+      )}
+
+      {/* MANDATORY UPDATE MODAL (FORCES ANDROID APK USERS TO UPDATE TO LATEST VERSION) */}
+      {mandatoryUpdate && (
+        <div className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-xl flex items-center justify-center p-4 select-none">
+          <div className="w-full max-w-sm bg-slate-900 border-2 border-amber-500/80 rounded-3xl p-6 shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
+              <Sparkles
+                size={32}
+                className="animate-spin"
+                style={{ animationDuration: "6s" }}
+              />
+            </div>
+
+            <div>
+              <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 font-black text-[10px] tracking-wider uppercase">
+                Zorunlu Güncelleme
+              </span>
+              <h2 className="text-xl font-black text-white mt-1.5">
+                Yeni Sürüm Mevcut!
+              </h2>
+              <div className="flex items-center justify-center gap-2 text-xs font-bold text-slate-400 mt-1">
+                <span className="text-slate-400">
+                  v{mandatoryUpdate.localVersion || "1.0"}
+                </span>
+                <span>➔</span>
+                <span className="text-amber-400 font-black">
+                  v{mandatoryUpdate.remoteVersion}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 text-left">
+              <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                Yenilikler & Düzeltmeler:
+              </div>
+              <p className="text-xs text-slate-200 leading-relaxed">
+                {mandatoryUpdate.releaseNotes}
+              </p>
+            </div>
+
+            <p className="text-[11px] text-slate-400 leading-tight">
+              Sunucu haritası ve oyun kuralları güncellendi. Kesintisiz
+              oynayabilmek için son sürüme geçmeniz zorunludur.
+            </p>
+
+            <a
+              href={mandatoryUpdate.apkUrl}
+              target="_system"
+              rel="noreferrer"
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.open(mandatoryUpdate.apkUrl, "_system");
+                }
+              }}
+              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/20 active:scale-95 transition"
+            >
+              <Download size={18} />
+              <span>Hemen Güncelle (APK İndir)</span>
+            </a>
           </div>
         </div>
       )}

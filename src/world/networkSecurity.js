@@ -28,13 +28,30 @@ export function isAdminIp(ip) {
   return false;
 }
 
+// Helper to read/write persistent cookies as robust backup for localStorage (Chrome on mobile)
+function getCookie(name) {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(^|;\\s*)(' + name + ')=([^;]*)'));
+  return match ? decodeURIComponent(match[3]) : null;
+}
+
+function setCookie(name, val) {
+  if (typeof document === 'undefined') return;
+  try {
+    const oneYear = 60 * 60 * 24 * 365;
+    document.cookie = `${name}=${encodeURIComponent(val)}; max-age=${oneYear}; path=/; SameSite=Lax`;
+  } catch {}
+}
+
 export function getOrCreateDeviceId() {
   try {
-    let id = localStorage.getItem(DEVICE_ID_KEY);
+    let id = localStorage.getItem(DEVICE_ID_KEY) || sessionStorage.getItem(DEVICE_ID_KEY) || getCookie(DEVICE_ID_KEY);
     if (!id) {
       id = 'dev_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now().toString(36);
-      localStorage.setItem(DEVICE_ID_KEY, id);
     }
+    localStorage.setItem(DEVICE_ID_KEY, id);
+    try { sessionStorage.setItem(DEVICE_ID_KEY, id); } catch {}
+    setCookie(DEVICE_ID_KEY, id);
     return id;
   } catch {
     return 'dev_' + Math.random().toString(36).substring(2, 12);
@@ -43,7 +60,13 @@ export function getOrCreateDeviceId() {
 
 export function getMyCountryId() {
   try {
-    return localStorage.getItem(MY_COUNTRY_KEY);
+    const id = localStorage.getItem(MY_COUNTRY_KEY) || sessionStorage.getItem(MY_COUNTRY_KEY) || getCookie(MY_COUNTRY_KEY);
+    if (id) {
+      try { localStorage.setItem(MY_COUNTRY_KEY, id); } catch {}
+      try { sessionStorage.setItem(MY_COUNTRY_KEY, id); } catch {}
+      setCookie(MY_COUNTRY_KEY, id);
+    }
+    return id;
   } catch {
     return null;
   }
@@ -51,7 +74,15 @@ export function getMyCountryId() {
 
 export function saveMyCountryId(countryId) {
   try {
-    localStorage.setItem(MY_COUNTRY_KEY, countryId);
+    if (countryId) {
+      localStorage.setItem(MY_COUNTRY_KEY, String(countryId));
+      try { sessionStorage.setItem(MY_COUNTRY_KEY, String(countryId)); } catch {}
+      setCookie(MY_COUNTRY_KEY, String(countryId));
+    } else {
+      localStorage.removeItem(MY_COUNTRY_KEY);
+      try { sessionStorage.removeItem(MY_COUNTRY_KEY); } catch {}
+      setCookie(MY_COUNTRY_KEY, '');
+    }
   } catch (e) {
     console.warn('Could not save country ID:', e);
   }
