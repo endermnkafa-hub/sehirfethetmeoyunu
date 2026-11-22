@@ -108,18 +108,12 @@ export default function App() {
 
   // Keep latest modal states in ref for hardware back button handler
   const modalRefs = useRef({});
-  modalRefs.current = {
-    isRulesOpen,
-    isDiplomacyOpen,
-    isOnlineModalOpen,
-    isDebugOpen,
-    isWheelOpen,
-    gameState,
-    returnToSetup,
-  };
 
-  // Capacitor Android Physical Back Button handling
+  // Capacitor Android Physical Back Button handling (Native Android only)
   useEffect(() => {
+    if (typeof window === 'undefined' || !window.Capacitor?.isNativePlatform?.()) {
+      return;
+    }
     let backListener = null;
     try {
       backListener = CapApp.addListener('backButton', ({ canGoBack }) => {
@@ -134,7 +128,7 @@ export default function App() {
           setIsDebugOpen(false);
         } else if (cur.gameState === 'PLAYING') {
           if (window.confirm('Oyundan çıkıp ana menüye dönmek istiyor musunuz?')) {
-            cur.returnToSetup(true);
+            if (cur.returnToSetup) cur.returnToSetup(true);
           }
         } else if (canGoBack) {
           window.history.back();
@@ -250,6 +244,17 @@ export default function App() {
     setTotalToPlace(0);
     setWinner(null);
     setGameState('SETUP');
+  };
+
+  // Update modalRefs on each render cleanly after returnToSetup is initialized
+  modalRefs.current = {
+    isRulesOpen,
+    isDiplomacyOpen,
+    isOnlineModalOpen,
+    isDebugOpen,
+    isWheelOpen,
+    gameState,
+    returnToSetup,
   };
 
   const handleResumeSavedGame = () => {
