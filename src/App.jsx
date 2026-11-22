@@ -106,9 +106,10 @@ export default function App() {
 
   const [savedWorldGame, setSavedWorldGame] = useState(() => {
     try {
-      const raw = localStorage.getItem('sf_world_classic_v3');
+      const myCountryId = localStorage.getItem('sf_my_country_id');
+      const raw = localStorage.getItem('sf_shared_world_v4_data');
       const parsed = raw ? JSON.parse(raw) : null;
-      return parsed && parsed.v === 4 ? parsed : null;
+      return myCountryId && parsed ? parsed : null;
     } catch {
       return null;
     }
@@ -1652,13 +1653,13 @@ export default function App() {
   if (mainView === 'WORLD_GAME') {
     return (
       <WorldGame
-        startInSetup={worldStartInSetup}
         onReturnToModeSelect={() => {
           soundManager.playClick();
           try {
-            const raw = localStorage.getItem('sf_world_classic_v3');
+            const myCountryId = localStorage.getItem('sf_my_country_id');
+            const raw = localStorage.getItem('sf_shared_world_v4_data');
             const parsed = raw ? JSON.parse(raw) : null;
-            setSavedWorldGame(parsed && parsed.v === 4 ? parsed : null);
+            setSavedWorldGame(myCountryId && parsed ? parsed : null);
           } catch {}
           setMainView('MODE_SELECT');
         }}
