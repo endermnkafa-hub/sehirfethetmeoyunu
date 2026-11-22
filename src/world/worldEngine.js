@@ -115,6 +115,9 @@ export class WorldSimulationEngine {
     this.countries = [];
     this.countryMap = new Map();
     this.ships = []; // Active naval expeditions sailing across water
+    this.treaties = []; // Diplomatic treaties & tribute agreements (İttifak & Haraç)
+    this.onTreatyUpdate = null;
+    this._lastTributeCheck = 0;
     this.chatMessages = [];
     this.undoStack = []; // 5-second undo stack for recent pixel conquests
     this.myDeviceId = getOrCreateDeviceId();
@@ -323,7 +326,7 @@ export class WorldSimulationEngine {
     const country = this.countryMap.get(this.myCountryId) || null;
     if (country && typeof localStorage !== 'undefined') {
       const localFlag = localStorage.getItem('sf_my_country_flag');
-      if (localFlag && (!country.flagRgba || !country.flagDataUrl || country.flagDataUrl.length < 500)) {
+      if (localFlag && (country.flagDataUrl !== localFlag || !country.flagRgba)) {
         country.flagDataUrl = localFlag;
         loadDataUrlToFlagBuffer(localFlag)
           .then((decoded) => {
@@ -572,6 +575,9 @@ export class WorldSimulationEngine {
       }
     }
 
+    // Process periodic Tribute payments every 60s
+    this._processPeriodicTributes();
+
     // Update sailing ships across oceans/seas
     if (this.ships.length > 0) {
       const remainingShips = [];
@@ -739,6 +745,18 @@ export class WorldSimulationEngine {
       const siegeLevel = attacker.upgrades?.siege || 0;
       baseCost = Math.max(0.5, Number((1.0 - siegeLevel * 0.02).toFixed(2)));
     } else {
+      // Check active diplomatic treaties (İttifak / Haraç)
+      const activeTreaty = this.getActiveTreatyBetween(countryId, currentOwner);
+      if (activeTreaty) {
+        return {
+          valid: false,
+          isTreatyViolation: true,
+          treaty: activeTreaty,
+          targetOwner: currentOwner,
+          reason: `Bu devletle aktif bir ${activeTreaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşman var! Saldırmak anlaşmayı bozar ve ${activeTreaty.penalty} Altın ceza ödetir.`,
+        };
+      }
+
       const defender = this.countryMap.get(currentOwner);
       const defPower = defender ? defender.defensePower || 1.0 : 1.0;
       const atkPower = attacker.attackPower || 1.0;
@@ -1330,7 +1348,7 @@ export class WorldSimulationEngine {
   // Smart Mobile Touch-Snap: If finger touches within radius of a valid border pixel, snap to nearest valid border pixel!
   findSmartExpandTarget(countryId, tapX, tapY, radius = 4) {
     const exact = this.canExpandToPixel(countryId, tapX, tapY);
-    if (exact.valid) {
+    if (exact.valid || exact.isTreatyViolation) {
       return { x: tapX, y: tapY, check: exact };
     }
 
@@ -1906,6 +1924,331 @@ export class WorldSimulationEngine {
         this.dirtyPixels = true;
       })
       .catch(() => {});
+  }
+
+  // ==========================================
+  // TREATY & DIPLOMACY SYSTEM (İttifak & Haraç)
+  // ==========================================
+
+  _processPeriodicTributes() {
+    const now = Date.now();
+    if (this._lastTributeCheck && now - this._lastTributeCheck < 4000) return;
+    this._lastTributeCheck = now;
+
+    if (!Array.isArray(this.treaties) || this.treaties.length === 0) return;
+
+    for (const treaty of this.treaties) {
+      if (treaty.status !== "ACTIVE" || treaty.type !== "TRIBUTE") continue;
+      // Only the paying client (or my country if payer) handles their own tribute debit
+      if (treaty.tributePayerId !== this.myCountryId) continue;
+
+      const lastPay = treaty.lastPaymentTime || treaty.activatedAt || now;
+      if (now - lastPay >= 60000) { // 60 seconds
+        const payer = this.countryMap.get(treaty.tributePayerId);
+        const receiver = this.countryMap.get(treaty.tributeReceiverId);
+
+        if (payer && payer.gold >= treaty.tributeAmount) {
+          payer.gold -= treaty.tributeAmount;
+          if (receiver) {
+            receiver.gold += treaty.tributeAmount;
+          }
+          treaty.lastPaymentTime = now;
+
+          this.sync.broadcast({
+            type: "TREATY_PAYMENT",
+            treatyId: treaty.id,
+            amount: treaty.tributeAmount,
+            time: now,
+          });
+
+          this.onSound("cash");
+          this.onEvent(`💰 ${payer.name}, ${receiver?.name || "Devlet"} için dakikalık ${treaty.tributeAmount} Altın haraç ödedi.`);
+          if (this.onTreatyUpdate) this.onTreatyUpdate();
+        } else {
+          // Payer has insufficient gold -> treaty is broken due to non-payment!
+          this.breakTreaty(treaty.id, treaty.tributePayerId, "HARAÇ ÖDENEMEDİ (İFLAS)");
+        }
+      }
+    }
+  }
+
+  getActiveTreatyBetween(c1Id, c2Id) {
+    if (!c1Id || !c2Id || c1Id === c2Id) return null;
+    return (
+      this.treaties.find(
+        (t) =>
+          t.status === "ACTIVE" &&
+          ((t.fromId === c1Id && t.toId === c2Id) ||
+            (t.fromId === c2Id && t.toId === c1Id)),
+      ) || null
+    );
+  }
+
+  getMyTreaties() {
+    if (!this.myCountryId) return [];
+    return this.treaties.filter(
+      (t) => t.fromId === this.myCountryId || t.toId === this.myCountryId,
+    );
+  }
+
+  getMyPendingIncomingTreaties() {
+    if (!this.myCountryId) return [];
+    return this.treaties.filter(
+      (t) => t.toId === this.myCountryId && t.status === "PENDING",
+    );
+  }
+
+  proposeTreaty({ toCountryId, type, penalty, tributeAmount, tributeRole }) {
+    const fromC = this.getMyCountry();
+    if (!fromC || fromC.landCount <= 0) {
+      return { ok: false, reason: "Önce aktif bir devletin olmalı!" };
+    }
+    const toC = this.countryMap.get(toCountryId);
+    if (!toC || toC.landCount <= 0) {
+      return { ok: false, reason: "Hedef devlet haritada bulunamadı." };
+    }
+    if (fromC.id === toC.id) {
+      return { ok: false, reason: "Kendi kendine anlaşma yapamazsın!" };
+    }
+
+    const existingActive = this.getActiveTreatyBetween(fromC.id, toC.id);
+    if (existingActive) {
+      return {
+        ok: false,
+        reason: `Bu devletle zaten aktif bir "${existingActive.type === "ALLIANCE" ? "İttifak" : "Haraç"}" anlaşman var!`,
+      };
+    }
+
+    const existingPending = this.treaties.find(
+      (t) =>
+        t.status === "PENDING" &&
+        ((t.fromId === fromC.id && t.toId === toC.id) ||
+          (t.fromId === toC.id && t.toId === fromC.id)),
+    );
+    if (existingPending) {
+      return {
+        ok: false,
+        reason: "Bu devletle zaten bekleyen bir anlaşma teklifi var!",
+      };
+    }
+
+    const cleanPenalty = Math.max(100, Math.round(Number(penalty) || 1000));
+    const cleanTribute =
+      type === "TRIBUTE"
+        ? Math.max(10, Math.round(Number(tributeAmount) || 50))
+        : 0;
+
+    let tributePayerId = null;
+    let tributeReceiverId = null;
+    if (type === "TRIBUTE") {
+      tributePayerId = tributeRole === "RECEIVER" ? toC.id : fromC.id;
+      tributeReceiverId = tributeRole === "RECEIVER" ? fromC.id : toC.id;
+    }
+
+    const treaty = {
+      id: "tr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      type, // 'ALLIANCE' | 'TRIBUTE'
+      fromId: fromC.id,
+      toId: toC.id,
+      fromName: fromC.name,
+      toName: toC.name,
+      fromColor: fromC.color || "#FBBF24",
+      toColor: toC.color || "#38BDF8",
+      penalty: cleanPenalty,
+      tributeAmount: cleanTribute,
+      tributePayerId,
+      tributeReceiverId,
+      status: "PENDING",
+      createdAt: Date.now(),
+      activatedAt: null,
+      lastPaymentTime: null,
+    };
+
+    this.treaties.push(treaty);
+
+    this.sync.broadcast({
+      type: "TREATY_PROPOSAL",
+      treaty,
+    });
+
+    this.onSound("pencil");
+    this.onEvent(
+      `Diplomasi: ${toC.name} devletine ${type === "ALLIANCE" ? "İttifak" : "Haraç"} teklifi gönderildi.`,
+    );
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true, treaty };
+  }
+
+  acceptTreaty(treatyId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty || treaty.status !== "PENDING") {
+      return { ok: false, reason: "Anlaşma bulunamadı veya süresi geçmiş." };
+    }
+
+    treaty.status = "ACTIVE";
+    treaty.activatedAt = Date.now();
+    treaty.lastPaymentTime = Date.now();
+
+    this.sync.broadcast({
+      type: "TREATY_ACCEPT",
+      treatyId,
+      activatedAt: treaty.activatedAt,
+    });
+
+    this.onSound("celebration");
+    this.onEvent(
+      `🤝 ${treaty.fromName} ve ${treaty.toName} arasında ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması imzalandı!`,
+    );
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true, treaty };
+  }
+
+  rejectTreaty(treatyId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty || treaty.status !== "PENDING") return { ok: false };
+
+    treaty.status = "REJECTED";
+    this.sync.broadcast({
+      type: "TREATY_REJECT",
+      treatyId,
+    });
+
+    this.onSound("pencil");
+    this.onEvent(
+      `${treaty.toName}, ${treaty.fromName} tarafından yapılan anlaşma teklifini reddetti.`,
+    );
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true };
+  }
+
+  breakTreaty(treatyId, breakerCountryId, reason = "SALDIRI") {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty || treaty.status !== "ACTIVE") return { ok: false };
+
+    const breaker = this.countryMap.get(breakerCountryId);
+    const victimId =
+      breakerCountryId === treaty.fromId ? treaty.toId : treaty.fromId;
+    const victim = this.countryMap.get(victimId);
+
+    const penalty = treaty.penalty || 0;
+    let deducted = 0;
+
+    if (breaker && penalty > 0) {
+      deducted = Math.min(breaker.gold, penalty);
+      breaker.gold = Math.max(0, breaker.gold - penalty);
+      if (victim) {
+        victim.gold += deducted;
+      }
+    }
+
+    treaty.status = "BROKEN";
+    treaty.brokenAt = Date.now();
+    treaty.breakerId = breakerCountryId;
+    treaty.breakReason = reason;
+
+    this.sync.broadcast({
+      type: "TREATY_BREAK",
+      treatyId,
+      breakerId: breakerCountryId,
+      penalty: deducted,
+      reason,
+    });
+
+    this.onSound("celebration");
+    const breakerName = breaker ? breaker.name : "Devlet";
+    const victimName = victim ? victim.name : "Devlet";
+    this.onEvent(
+      `🚨 ${breakerName}, ${victimName} ile olan ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşmasını ${reason === "SALDIRI" ? "saldırarak" : "ödemeyerek"} ihlal etti! (${deducted} Altın ceza ödendi)`,
+    );
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true, deducted, treaty };
+  }
+
+  handleRemoteTreatyProposal(remoteTreaty, isReplay = false) {
+    if (!remoteTreaty || !remoteTreaty.id) return;
+    const existing = this.treaties.find((t) => t.id === remoteTreaty.id);
+    if (existing) {
+      Object.assign(existing, remoteTreaty);
+    } else {
+      this.treaties.push({ ...remoteTreaty });
+    }
+
+    if (!isReplay && remoteTreaty.toId === this.myCountryId) {
+      this.onSound("notification");
+      this.onEvent(
+        `📜 Diplomatik Teklif: ${remoteTreaty.fromName} size bir ${remoteTreaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması teklif etti!`,
+      );
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyAccept(treatyId, activatedAt, isReplay = false) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.status = "ACTIVE";
+    treaty.activatedAt = activatedAt || Date.now();
+    treaty.lastPaymentTime = treaty.activatedAt;
+
+    if (!isReplay) {
+      this.onSound("celebration");
+      this.onEvent(
+        `🤝 ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması yürürlüğe girdi!`,
+      );
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyReject(treatyId, isReplay = false) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.status = "REJECTED";
+
+    if (!isReplay && treaty.fromId === this.myCountryId) {
+      this.onSound("pencil");
+      this.onEvent(`${treaty.toName} anlaşma teklifinizi reddetti.`);
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyBreak(treatyId, breakerId, penalty = 0, reason = "SALDIRI", isReplay = false) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.status = "BROKEN";
+    treaty.breakerId = breakerId;
+    treaty.brokenAt = Date.now();
+
+    const breaker = this.countryMap.get(breakerId);
+    const victimId = breakerId === treaty.fromId ? treaty.toId : treaty.fromId;
+    const victim = this.countryMap.get(victimId);
+
+    if (!isReplay && penalty > 0) {
+      if (breaker) breaker.gold = Math.max(0, breaker.gold - penalty);
+      if (victim) victim.gold += penalty;
+      const breakerName = breaker ? breaker.name : "Devlet";
+      const victimName = victim ? victim.name : "Devlet";
+      this.onEvent(
+        `🚨 ${breakerName}, ${victimName} ile olan anlaşmasını ihlal etti! (${penalty} Altın tazminat)`,
+      );
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyPayment(treatyId, amount = 0, time = 0, isReplay = false) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.lastPaymentTime = time || Date.now();
+
+    if (!isReplay && amount > 0) {
+      const payer = this.countryMap.get(treaty.tributePayerId);
+      const receiver = this.countryMap.get(treaty.tributeReceiverId);
+      if (payer && payer.id !== this.myCountryId) payer.gold = Math.max(0, payer.gold - amount);
+      if (receiver && receiver.id === this.myCountryId) {
+        receiver.gold += amount;
+        this.onSound("cash");
+        this.onEvent(`💰 ${payer?.name || "Vasal"} size ${amount} Altın haraç ödedi.`);
+      }
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
 
   // ===== ADMIN POWERS (AUTHORIZED BY ADMIN IP ONLY) =====

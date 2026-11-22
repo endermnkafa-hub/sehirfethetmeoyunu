@@ -212,6 +212,7 @@ export class SharedWorldSync {
     const newCountries = new Map(); // countryId -> { idx, data }
     const updateFlags = new Map(); // countryId -> { idx, flagDataUrl }
     const pixelOps = []; // { idx, data }
+    const treatyOps = [];
     const chats = [];
 
     for (let i = startIdx; i < payloads.length; i++) {
@@ -230,6 +231,14 @@ export class SharedWorldSync {
         latestStats.set(p.countryId, { idx: i, data: p });
       } else if (p.type === 'CONQUER_BATCH' || p.type === 'CONQUER_PIXEL' || p.type === 'UNDO_PIXEL') {
         pixelOps.push({ idx: i, data: p });
+      } else if (
+        p.type === 'TREATY_PROPOSAL' ||
+        p.type === 'TREATY_ACCEPT' ||
+        p.type === 'TREATY_REJECT' ||
+        p.type === 'TREATY_BREAK' ||
+        p.type === 'TREATY_PAYMENT'
+      ) {
+        treatyOps.push(p);
       }
     }
 
@@ -310,6 +319,21 @@ export class SharedWorldSync {
 
     // 5. Reconnect player's own country from server state if it exists
     this.engine.restoreMyCountryFromServer();
+
+    // Replay diplomacy treaties (İttifak & Haraç)
+    for (const p of treatyOps) {
+      if (p.type === 'TREATY_PROPOSAL' && p.treaty) {
+        this.engine.handleRemoteTreatyProposal(p.treaty, true);
+      } else if (p.type === 'TREATY_ACCEPT' && p.treatyId) {
+        this.engine.handleRemoteTreatyAccept(p.treatyId, p.activatedAt || p._sentAt || 0, true);
+      } else if (p.type === 'TREATY_REJECT' && p.treatyId) {
+        this.engine.handleRemoteTreatyReject(p.treatyId, true);
+      } else if (p.type === 'TREATY_BREAK' && p.treatyId) {
+        this.engine.handleRemoteTreatyBreak(p.treatyId, p.breakerId, p.penalty, p.reason, true);
+      } else if (p.type === 'TREATY_PAYMENT' && p.treatyId) {
+        this.engine.handleRemoteTreatyPayment(p.treatyId, p.amount, p.time, true);
+      }
+    }
 
     // 6. Compute exact country bounds ONCE for the entire map
     this.engine.computeCountryBounds();
@@ -580,6 +604,21 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'UNDO_PIXEL') {
       this.engine.handleRemoteUndoPixel(data.countryId, data.x, data.y, data.prevOwner);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_PROPOSAL' && data.treaty) {
+      this.engine.handleRemoteTreatyProposal(data.treaty, false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_ACCEPT' && data.treatyId) {
+      this.engine.handleRemoteTreatyAccept(data.treatyId, data.activatedAt || data._sentAt || Date.now(), false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_REJECT' && data.treatyId) {
+      this.engine.handleRemoteTreatyReject(data.treatyId, false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_BREAK' && data.treatyId) {
+      this.engine.handleRemoteTreatyBreak(data.treatyId, data.breakerId, data.penalty, data.reason, false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_PAYMENT' && data.treatyId) {
+      this.engine.handleRemoteTreatyPayment(data.treatyId, data.amount, data.time, false);
       this.onRemoteUpdate();
     } else if (data.type === 'GLOBAL_CHAT' && data.chat) {
       this.engine.handleRemoteChatMessage(data.chat);

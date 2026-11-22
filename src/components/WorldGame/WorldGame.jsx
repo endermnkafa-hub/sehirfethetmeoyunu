@@ -49,6 +49,12 @@ import {
   Zap,
   Download,
   RefreshCw,
+  Handshake,
+  Coins,
+  Shield,
+  Check,
+  FileText,
+  XCircle,
 } from "lucide-react";
 import { checkAppVersion } from "../../utils/versionCheck";
 
@@ -95,6 +101,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const hasCenteredOnMyCountryRef = useRef(false);
+
+  // Diplomacy & Treaties State (İttifak & Haraç)
+  const [showDiplomacyModal, setShowDiplomacyModal] = useState(false);
+  const [diplomacyTab, setDiplomacyTab] = useState("ACTIVE"); // 'ACTIVE' | 'INCOMING' | 'NEW'
+  const [treatiesList, setTreatiesList] = useState([]);
+  const [treatyWarningModal, setTreatyWarningModal] = useState(null); // { x, y, treaty, targetCountry }
+
+  // New Treaty Form State
+  const [targetCountryId, setTargetCountryId] = useState("");
+  const [treatyType, setTreatyType] = useState("ALLIANCE"); // 'ALLIANCE' | 'TRIBUTE'
+  const [penaltyAmount, setPenaltyAmount] = useState(2500);
+  const [tributeAmount, setTributeAmount] = useState(150);
+  const [tributeRole, setTributeRole] = useState("RECEIVER"); // 'RECEIVER' | 'PAYER'
 
   // Real-time HUD state
   const [hud, setHud] = useState({
@@ -458,6 +477,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
           pos.y,
           6,
         );
+        if (smartTarget && smartTarget.check.isTreatyViolation) {
+          isPaintingRef.current = false;
+          conqueredOnDownRef.current = false;
+          setTreatyWarningModal({
+            x: smartTarget.x,
+            y: smartTarget.y,
+            treaty: smartTarget.check.treaty,
+            targetCountry: eng.countryMap.get(smartTarget.check.targetOwner),
+          });
+          return;
+        }
         if (
           smartTarget &&
           !smartTarget.check.isNaval &&
@@ -642,6 +672,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
             6,
           );
           if (smartTarget) {
+            if (smartTarget.check.isTreatyViolation) {
+              setTreatyWarningModal({
+                x: smartTarget.x,
+                y: smartTarget.y,
+                treaty: smartTarget.check.treaty,
+                targetCountry: eng.countryMap.get(smartTarget.check.targetOwner),
+              });
+              return;
+            }
             const res = eng.conquerPixel(
               myCountry.id,
               smartTarget.x,
@@ -652,6 +691,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
             }
           } else {
             const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
+            if (check.isTreatyViolation) {
+              setTreatyWarningModal({
+                x: pos.x,
+                y: pos.y,
+                treaty: check.treaty,
+                targetCountry: eng.countryMap.get(check.targetOwner),
+              });
+              return;
+            }
             if (check.valid && check.isNaval) {
               const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
               if (!res.ok && res.reason) {
@@ -768,6 +816,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
             undoSeconds: undoSec,
             time: now,
           });
+          if (Array.isArray(eng.treaties)) {
+            setTreatiesList([...eng.treaties]);
+          }
         }
       }
 
@@ -781,6 +832,84 @@ export default function WorldGame({ onReturnToModeSelect }) {
   }, []);
 
   const myCountry = hud.myCountry;
+
+  const pendingIncomingCount = useMemo(() => {
+    if (!myCountry) return 0;
+    return treatiesList.filter(
+      (t) => t.toId === myCountry.id && t.status === "PENDING",
+    ).length;
+  }, [treatiesList, myCountry]);
+
+  // Diplomacy Treaty Handlers
+  const handleSendTreatyProposal = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    if (!targetCountryId) {
+      showToast("Lütfen bir hedef devlet seçin!");
+      return;
+    }
+    const res = eng.proposeTreaty({
+      toCountryId: Number(targetCountryId),
+      type: treatyType,
+      penalty: Number(penaltyAmount),
+      tributeAmount: Number(tributeAmount),
+      tributeRole: tributeRole,
+    });
+    if (res.ok) {
+      showToast("Anlaşma teklifi başarıyla gönderildi!");
+      setDiplomacyTab("ACTIVE");
+    } else {
+      showToast(res.reason || "Teklif gönderilemedi.");
+    }
+  }, [myCountry, targetCountryId, treatyType, penaltyAmount, tributeAmount, tributeRole, showToast]);
+
+  const handleAcceptTreaty = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const res = eng.acceptTreaty(treatyId);
+    if (res.ok) {
+      showToast("Anlaşma kabul edildi ve yürürlüğe girdi!");
+    } else {
+      showToast(res.reason || "Hata oluştu.");
+    }
+  }, [showToast]);
+
+  const handleRejectTreaty = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    eng.rejectTreaty(treatyId);
+    showToast("Anlaşma teklifi reddedildi.");
+  }, [showToast]);
+
+  const handleCancelTreaty = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const treaty = eng.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    if (
+      window.confirm(
+        `DİKKAT! Bu anlaşmayı tek taraflı feshedersen ${treaty.penalty} Altın ceza ödeyeceksin. Onaylıyor musun?`,
+      )
+    ) {
+      const res = eng.breakTreaty(treatyId, myCountry.id, "FESİH");
+      if (res.ok) {
+        showToast(`Anlaşma feshedildi. ${res.deducted} Altın ceza ödendi.`);
+      }
+    }
+  }, [myCountry, showToast]);
+
+  const handleConfirmTreatyBreakAndAttack = useCallback(() => {
+    if (!treatyWarningModal) return;
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const { x, y, treaty } = treatyWarningModal;
+    const resBreak = eng.breakTreaty(treaty.id, myCountry.id, "SALDIRI");
+    if (resBreak.ok) {
+      showToast(`Anlaşma bozuldu! ${resBreak.deducted} Altın ceza ödendi.`);
+      eng.conquerPixel(myCountry.id, x, y);
+    }
+    setTreatyWarningModal(null);
+  }, [treatyWarningModal, myCountry, showToast]);
 
   const handleBuyUpgrade = useCallback(
     (key) => {
@@ -938,6 +1067,27 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <Globe size={15} />
             <span>{hud.totalCountriesCount}</span>
           </button>
+
+          {myCountry && (
+            <button
+              onClick={() => {
+                setShowDiplomacyModal(true);
+                if (pendingIncomingCount > 0) {
+                  setDiplomacyTab("INCOMING");
+                }
+              }}
+              className="relative px-2.5 sm:px-3 h-9 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-black text-[11px] sm:text-xs flex items-center gap-1.5 shadow-xl transition"
+              title="Diplomasi & Anlaşmalar (İttifak, Haraç)"
+            >
+              <Handshake size={15} />
+              <span className="hidden xs:inline sm:inline">Anlaşma</span>
+              {pendingIncomingCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-rose-500 text-white font-black text-[10px] flex items-center justify-center animate-bounce shadow-md">
+                  {pendingIncomingCount}
+                </span>
+              )}
+            </button>
+          )}
 
           {myCountry && (
             <button
@@ -2021,6 +2171,501 @@ export default function WorldGame({ onReturnToModeSelect }) {
               <Download size={18} />
               <span>Hemen Güncelle (APK İndir)</span>
             </a>
+          </div>
+        </div>
+      )}
+
+      {/* DIPLOMACY & TREATIES MODAL (İTTİFAK & HARAÇ SİSTEMİ) */}
+      {showDiplomacyModal && myCountry && (
+        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 select-none">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700/80 rounded-3xl p-4 sm:p-6 shadow-2xl text-left flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 flex items-center justify-center shrink-0">
+                  <Handshake size={20} />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
+                    <span>Diplomasi & Anlaşmalar</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Diğer devletlerle ittifak kur veya haraç bağla
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDiplomacyModal(false)}
+                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-950/60 rounded-2xl my-3 border border-slate-800/80">
+              <button
+                onClick={() => setDiplomacyTab("ACTIVE")}
+                className={`py-2 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                  diplomacyTab === "ACTIVE"
+                    ? "bg-indigo-600 text-white shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Shield size={14} />
+                <span>Aktif Anlaşmalar</span>
+              </button>
+
+              <button
+                onClick={() => setDiplomacyTab("INCOMING")}
+                className={`relative py-2 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                  diplomacyTab === "INCOMING"
+                    ? "bg-indigo-600 text-white shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <FileText size={14} />
+                <span>Gelenler</span>
+                {pendingIncomingCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white font-black text-[10px]">
+                    {pendingIncomingCount}
+                  </span>
+                )}
+              </button>
+
+              <button
+                onClick={() => setDiplomacyTab("NEW")}
+                className={`py-2 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                  diplomacyTab === "NEW"
+                    ? "bg-indigo-600 text-white shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Sparkles size={14} />
+                <span>Teklif Et</span>
+              </button>
+            </div>
+
+            {/* Tab Contents */}
+            <div className="flex-1 overflow-y-auto pr-1 space-y-2.5">
+              {/* TAB 1: ACTIVE TREATIES */}
+              {diplomacyTab === "ACTIVE" && (() => {
+                const activeList = treatiesList.filter(
+                  (t) =>
+                    t.status === "ACTIVE" &&
+                    (t.fromId === myCountry.id || t.toId === myCountry.id)
+                );
+
+                if (activeList.length === 0) {
+                  return (
+                    <div className="text-center py-8 px-4 rounded-2xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-400">
+                      <Shield size={32} className="mx-auto mb-2 text-slate-600" />
+                      <div className="text-xs font-bold text-slate-300">
+                        Henüz aktif bir anlaşmanız yok
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto">
+                        "Teklif Et" sekmesinden başka bir devlete İttifak veya Haraç teklifi gönderebilirsin.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return activeList.map((tr) => {
+                  const partnerId = tr.fromId === myCountry.id ? tr.toId : tr.fromId;
+                  const partner = engineRef.current?.countryMap.get(partnerId);
+                  const isAlliance = tr.type === "ALLIANCE";
+                  const isPayer = tr.tributePayerId === myCountry.id;
+
+                  return (
+                    <div
+                      key={tr.id}
+                      className="p-3 sm:p-3.5 rounded-2xl bg-slate-800/80 border border-slate-700/80 flex flex-col gap-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/40 shadow-sm"
+                            style={{ backgroundColor: partner?.color || "#94A3B8" }}
+                          />
+                          <span className="font-black text-sm text-white">
+                            {partner?.name || "Bilinmeyen Devlet"}
+                          </span>
+                        </div>
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full font-black text-[10px] tracking-wide uppercase ${
+                            isAlliance
+                              ? "bg-blue-500/20 text-blue-300 border border-blue-500/40"
+                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          }`}
+                        >
+                          {isAlliance ? "🛡️ İttifak (Saldırmazlık)" : "💰 Haraç Anlaşması"}
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-slate-300 bg-slate-900/60 rounded-xl p-2.5 border border-slate-800/80 space-y-1">
+                        {isAlliance ? (
+                          <div className="text-slate-300">
+                            İki devlet birbirinin topraklarına saldıramaz. Saldıran taraf ceza öder.
+                          </div>
+                        ) : (
+                          <div className="font-bold flex items-center gap-1.5">
+                            <Coins size={14} className="text-amber-400 shrink-0" />
+                            {isPayer ? (
+                              <span className="text-rose-300">
+                                Sen bu devlete barış için her dakika <strong className="text-amber-400">{tr.tributeAmount} Altın</strong> ödüyorsun.
+                              </span>
+                            ) : (
+                              <span className="text-emerald-300">
+                                Bu devlet sana barış için her dakika <strong className="text-amber-400">{tr.tributeAmount} Altın</strong> ödüyor.
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <div className="text-slate-400 text-[10px] flex items-center justify-between pt-1 border-t border-slate-800">
+                          <span>İhlal / Fesih Cezası:</span>
+                          <span className="font-black text-amber-400">{tr.penalty} Altın</span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleCancelTreaty(tr.id)}
+                        className="w-full py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold text-xs transition flex items-center justify-center gap-1.5"
+                      >
+                        <XCircle size={14} />
+                        <span>Anlaşmayı Feshet ({tr.penalty} Altın Ceza)</span>
+                      </button>
+                    </div>
+                  );
+                });
+              })()}
+
+              {/* TAB 2: INCOMING PROPOSALS */}
+              {diplomacyTab === "INCOMING" && (() => {
+                const incomingList = treatiesList.filter(
+                  (t) => t.status === "PENDING" && t.toId === myCountry.id
+                );
+
+                if (incomingList.length === 0) {
+                  return (
+                    <div className="text-center py-8 px-4 rounded-2xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-400">
+                      <FileText size={32} className="mx-auto mb-2 text-slate-600" />
+                      <div className="text-xs font-bold text-slate-300">
+                        Gelen bir anlaşma teklifi yok
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto">
+                        Diğer oyuncular sana bir ittifak veya haraç teklif ettiğinde burada görünecektir.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return incomingList.map((tr) => {
+                  const sender = engineRef.current?.countryMap.get(tr.fromId);
+                  const isAlliance = tr.type === "ALLIANCE";
+                  const iWouldPay = tr.tributePayerId === myCountry.id;
+
+                  return (
+                    <div
+                      key={tr.id}
+                      className="p-3 sm:p-3.5 rounded-2xl bg-slate-800/80 border border-indigo-500/40 flex flex-col gap-2.5 shadow-lg shadow-indigo-950/40"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/40 shadow-sm"
+                            style={{ backgroundColor: sender?.color || "#94A3B8" }}
+                          />
+                          <span className="font-black text-sm text-white">
+                            {sender?.name || "Bilinmeyen Devlet"}
+                          </span>
+                        </div>
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full font-black text-[10px] tracking-wide uppercase ${
+                            isAlliance
+                              ? "bg-blue-500/20 text-blue-300 border border-blue-500/40"
+                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          }`}
+                        >
+                          {isAlliance ? "🛡️ İttifak Teklifi" : "💰 Haraç Teklifi"}
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-slate-200 bg-slate-900/70 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
+                        {isAlliance ? (
+                          <div>
+                            Bu devlet seninle <strong>saldırmazlık paktı</strong> imzalamak istiyor. Anlaşma süresince birbirinize saldıramazsınız.
+                          </div>
+                        ) : iWouldPay ? (
+                          <div className="text-amber-200">
+                            ⚠️ Bu devlet sana saldırmama karşılığında dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> haraç talep ediyor.
+                          </div>
+                        ) : (
+                          <div className="text-emerald-300">
+                            🎁 Bu devlet ona saldırmaman karşılığında sana dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> ödemeyi teklif ediyor.
+                          </div>
+                        )}
+                        <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 flex items-center justify-between">
+                          <span>Anlaşmayı bozana ceza tazminatı:</span>
+                          <span className="font-black text-amber-400">{tr.penalty} Altın</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <button
+                          onClick={() => handleRejectTreaty(tr.id)}
+                          className="py-2 rounded-xl bg-slate-700/80 hover:bg-slate-700 text-slate-300 font-black text-xs transition flex items-center justify-center gap-1.5"
+                        >
+                          <XCircle size={14} />
+                          <span>Reddet</span>
+                        </button>
+                        <button
+                          onClick={() => handleAcceptTreaty(tr.id)}
+                          className="py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5"
+                        >
+                          <Check size={14} />
+                          <span>Kabul Et</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+
+              {/* TAB 3: NEW TREATY PROPOSAL FORM */}
+              {diplomacyTab === "NEW" && (() => {
+                const countries = [];
+                const seen = new Set();
+                for (const c of engineRef.current?.countries || []) {
+                  if (c.id !== myCountry.id && c.landCount > 0 && !seen.has(c.id)) {
+                    seen.add(c.id);
+                    countries.push(c);
+                  }
+                }
+                countries.sort((a, b) => b.landCount - a.landCount);
+
+                return (
+                  <div className="space-y-3.5">
+                    {/* Target Country Selection */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                        Hedef Devlet Seç
+                      </label>
+                      <select
+                        value={targetCountryId}
+                        onChange={(e) => setTargetCountryId(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white font-bold text-xs focus:outline-none focus:border-indigo-400"
+                      >
+                        <option value="">-- Devlet Seçin --</option>
+                        {countries.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.landCount} px)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Treaty Type Toggle */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1.5">
+                        Anlaşma Türü
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setTreatyType("ALLIANCE")}
+                          className={`p-3 rounded-2xl border text-left transition flex flex-col gap-1 ${
+                            treatyType === "ALLIANCE"
+                              ? "bg-indigo-600/20 border-indigo-500 text-white"
+                              : "bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 font-black text-xs text-white">
+                            <Shield size={14} className="text-indigo-400" />
+                            <span>İttifak (Barış Paktı)</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            İki taraf da birbirine saldıramaz. Bozan ceza öder.
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setTreatyType("TRIBUTE")}
+                          className={`p-3 rounded-2xl border text-left transition flex flex-col gap-1 ${
+                            treatyType === "TRIBUTE"
+                              ? "bg-amber-500/20 border-amber-500 text-white"
+                              : "bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 font-black text-xs text-white">
+                            <Coins size={14} className="text-amber-400" />
+                            <span>Haraç Anlaşması</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            Dakikalık düzenli altın ödemesi karşılığında barış.
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Tribute Specific Options */}
+                    {treatyType === "TRIBUTE" && (
+                      <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-3">
+                        <div>
+                          <label className="block text-[11px] font-bold text-amber-300 uppercase tracking-wider mb-1">
+                            Haraç Yönü
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setTributeRole("RECEIVER")}
+                              className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition ${
+                                tributeRole === "RECEIVER"
+                                  ? "bg-amber-500 text-slate-950 border-amber-400 font-black shadow"
+                                  : "bg-slate-800 border-slate-700 text-slate-300"
+                              }`}
+                            >
+                              Onlar Bana Ödesin
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTributeRole("PAYER")}
+                              className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition ${
+                                tributeRole === "PAYER"
+                                  ? "bg-amber-500 text-slate-950 border-amber-400 font-black shadow"
+                                  : "bg-slate-800 border-slate-700 text-slate-300"
+                              }`}
+                            >
+                              Ben Onlara Ödeyeyim
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-amber-300 uppercase tracking-wider mb-1">
+                            Dakikalık Altın Miktarı ({tributeAmount} Altın / dk)
+                          </label>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {[50, 100, 250, 500].map((amt) => (
+                              <button
+                                key={amt}
+                                type="button"
+                                onClick={() => setTributeAmount(amt)}
+                                className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                                  tributeAmount === amt
+                                    ? "bg-amber-400 text-slate-950 border-amber-300 font-black"
+                                    : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+                                }`}
+                              >
+                                {amt} / dk
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Penalty Selection */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                        Anlaşma İhlal / Fesih Cezası ({penaltyAmount} Altın)
+                      </label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[1000, 2500, 5000, 10000].map((amt) => (
+                          <button
+                            key={amt}
+                            type="button"
+                            onClick={() => setPenaltyAmount(amt)}
+                            className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                              penaltyAmount === amt
+                                ? "bg-rose-500 text-white border-rose-400 font-black"
+                                : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+                            }`}
+                          >
+                            {amt} Altın
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        Anlaşmayı tek taraflı bozan veya müttefikine saldıran taraf bu cezayı karşı tarafa tazminat olarak öder.
+                      </p>
+                    </div>
+
+                    {/* Submit Button */}
+                    <button
+                      type="button"
+                      onClick={handleSendTreatyProposal}
+                      disabled={!targetCountryId}
+                      className={`w-full py-3 rounded-2xl font-black text-xs transition flex items-center justify-center gap-2 shadow-xl ${
+                        targetCountryId
+                          ? "bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white active:scale-95 shadow-indigo-600/30"
+                          : "bg-slate-800 text-slate-500 cursor-not-allowed"
+                      }`}
+                    >
+                      <Handshake size={16} />
+                      <span>Teklifi Karşı Devlete Gönder</span>
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TREATY ATTACK VIOLATION CONFIRMATION MODAL */}
+      {treatyWarningModal && (
+        <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none">
+          <div className="w-full max-w-sm bg-slate-900 border-2 border-rose-500 rounded-3xl p-5 shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95">
+            <div className="w-14 h-14 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-400 flex items-center justify-center mx-auto shadow-lg shadow-rose-500/20">
+              <Shield size={28} />
+            </div>
+
+            <div>
+              <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 font-black text-[10px] tracking-wider uppercase">
+                Anlaşma İhlali Uyarısı
+              </span>
+              <h3 className="text-base font-black text-white mt-2">
+                Müttefik Toprağına Saldırıyorsun!
+              </h3>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                Bu toprak aranızda anlaşma olan{" "}
+                <strong className="text-amber-300">
+                  {treatyWarningModal.targetCountry?.name || "Müttefik Devlet"}
+                </strong>{" "}
+                devletine aittir.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-rose-950/50 border border-rose-500/40 text-left text-xs space-y-1">
+              <div className="text-rose-300 font-bold flex items-center gap-1.5">
+                <Coins size={14} className="text-amber-400 shrink-0" />
+                <span>Ödenecek Ceza Tazminatı:</span>
+              </div>
+              <div className="text-amber-400 font-black text-base">
+                {treatyWarningModal.treaty?.penalty || 2500} Altın
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Saldırıya devam ederseniz anlaşma derhal bozulacak ve bu ceza kasanızdan kesilip müttefikinize aktarılacaktır.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setTreatyWarningModal(null)}
+                className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition active:scale-95"
+              >
+                Vazgeç (Saldırma)
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmTreatyBreakAndAttack}
+                className="py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs transition shadow-lg shadow-rose-600/30 active:scale-95"
+              >
+                Anlaşmayı Boz & Saldır
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -101,48 +101,35 @@ export class WorldMapRenderer {
             dst[p4 + 1] = bg;
             dst[p4 + 2] = bb;
             dst[p4 + 3] = 255;
-          } else if (flagRgba) {
-            const isSmall = bw <= 18 && bh <= 12;
-            let fx = 0;
-            let fy = 0;
-
-            if (isSmall) {
-              // Center and fit within bounding box preserving 1.6 aspect ratio
-              const flagAspect = FLAG_W / FLAG_H;
-              const boxAspect = bw / bh;
-              let normU = (x - minX + 0.5) / bw;
-              let normV = (y - minY + 0.5) / bh;
-              if (boxAspect > flagAspect) {
-                const scaleFactor = boxAspect / flagAspect;
-                normU = (normU - 0.5) * scaleFactor + 0.5;
-              } else {
-                const scaleFactor = flagAspect / boxAspect;
-                normV = (normV - 0.5) * scaleFactor + 0.5;
-              }
-              normU = Math.max(0, Math.min(0.999, normU));
-              normV = Math.max(0, Math.min(0.999, normV));
-              fx = (normU * FLAG_W) | 0;
-              fy = (normV * FLAG_H) | 0;
+          } else if (flagRgba && bw <= 28 && bh <= 20) {
+            // For smaller/starter territory, fit the flag pattern cleanly
+            const flagAspect = FLAG_W / FLAG_H;
+            const boxAspect = bw / bh;
+            let normU = (x - minX + 0.5) / bw;
+            let normV = (y - minY + 0.5) / bh;
+            if (boxAspect > flagAspect) {
+              const scaleFactor = boxAspect / flagAspect;
+              normU = (normU - 0.5) * scaleFactor + 0.5;
             } else {
-              // Large territory: Repeating aspect-ratio-preserved flag texture (tiling)
-              // Each pattern tile is 24x15 map pixels (perfect 1.6:1 flag aspect ratio)
-              const TILE_W = 24;
-              const TILE_H = 15;
-              const tx = ((x % TILE_W) + TILE_W) % TILE_W;
-              const ty = ((y % TILE_H) + TILE_H) % TILE_H;
-              fx = Math.min(FLAG_W - 1, ((tx / TILE_W) * FLAG_W) | 0);
-              fy = Math.min(FLAG_H - 1, ((ty / TILE_H) * FLAG_H) | 0);
+              const scaleFactor = flagAspect / boxAspect;
+              normV = (normV - 0.5) * scaleFactor + 0.5;
             }
+            normU = Math.max(0, Math.min(0.999, normU));
+            normV = Math.max(0, Math.min(0.999, normV));
+            const fx = (normU * FLAG_W) | 0;
+            const fy = (normV * FLAG_H) | 0;
 
             const fp = (fy * FLAG_W + fx) * 4;
-            dst[p4] = (flagRgba[fp] * 0.90 + br * 0.10) | 0;
-            dst[p4 + 1] = (flagRgba[fp + 1] * 0.90 + bg * 0.10) | 0;
-            dst[p4 + 2] = (flagRgba[fp + 2] * 0.90 + bb * 0.10) | 0;
+            dst[p4] = (flagRgba[fp] * 0.85 + br * 0.15) | 0;
+            dst[p4 + 1] = (flagRgba[fp + 1] * 0.85 + bg * 0.15) | 0;
+            dst[p4 + 2] = (flagRgba[fp + 2] * 0.85 + bb * 0.15) | 0;
             dst[p4 + 3] = 255;
           } else {
-            dst[p4] = br;
-            dst[p4 + 1] = bg;
-            dst[p4 + 2] = bb;
+            // Large/expanding empire territory: Clean, solid, beautiful national territory color
+            // (The high-resolution crisp emblem banner is prominently rendered at the capital/core!)
+            dst[p4] = (br * 0.90) | 0;
+            dst[p4 + 1] = (bg * 0.90) | 0;
+            dst[p4 + 2] = (bb * 0.90) | 0;
             dst[p4 + 3] = 255;
           }
         }
@@ -265,8 +252,11 @@ export class WorldMapRenderer {
         });
 
         // Compute crest dimensions based on country size and camera scale
-        const baseW = Math.max(14, Math.min(30, Math.sqrt(country.landCount) * 1.6));
-        const screenW = Math.max(26, Math.min(92, baseW * scale));
+        const landFactor = Math.sqrt(country.landCount);
+        // Proportional scale: small country ~20px, medium ~45px, massive empire ~90-120px
+        const baseW = Math.max(18, Math.min(100, 14 + landFactor * 0.9));
+        // Screen width: smoothly clamped between 30px and 150px so it's always majestic and visible
+        const screenW = Math.max(30, Math.min(150, Math.round(baseW * Math.max(0.65, Math.min(1.8, scale)))));
         const screenH = Math.round(screenW * (FLAG_H / FLAG_W));
 
         ctx.save();

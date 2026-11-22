@@ -1,8 +1,8 @@
 {
-  "versionCode": 2,
-  "versionName": "1.1",
-  "minVersionCode": 2,
+  "versionCode": 3,
+  "versionName": "1.2",
+  "minVersionCode": 3,
   "apkUrl": "https://github.com/endermnkafa-hub/sehirfethetmeoyunu/releases/download/v1.0-latest/sehir-fethetme-oyunu.apk",
-  "releaseNotes": "Zorunlu güncelleme sistemi, anti-snaking ve iç boşluk koruması, Chrome mobil otomatik devlet kurtarma ve bağlantı iyileştirmeleri.",
+  "releaseNotes": "Diplomasi & Anlaşma Sistemi (İttifak ve Haraç paktları), ceza tazminatları, harita arma netleştirme ve optimizasyonlar.",
   "updatedAt": "2026-11-22"
 }
