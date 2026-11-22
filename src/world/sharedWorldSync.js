@@ -4,8 +4,8 @@
 
 import { FLAG_W, FLAG_H } from './flagLibrary';
 
-const CLOUD_TOPIC = 'sf_world_mmo_v12_global_sync';
-const CLOUD_ROOT_URL = 'https://ntfy.envs.net';
+const CLOUD_TOPIC = 'sf_mmo_turkey_v15_fast';
+const CLOUD_ROOT_URL = 'https://ntfy.sh';
 const CLOUD_TOPIC_URL = `${CLOUD_ROOT_URL}/${CLOUD_TOPIC}`;
 
 export class SharedWorldSync {
@@ -102,14 +102,22 @@ export class SharedWorldSync {
           this.onRemoteUpdate();
         };
 
-        es.onmessage = (ev) => {
+        es.onmessage = async (ev) => {
           if (!ev || !ev.data) return;
           try {
             const env = JSON.parse(ev.data);
             if (env && env.time) {
               this._lastPollTime = env.time;
             }
-            if (env && env.event === 'message' && env.message) {
+            if (env && env.attachment && env.attachment.url) {
+              try {
+                const aRes = await fetch(env.attachment.url, { cache: 'no-store' });
+                if (aRes.ok) {
+                  const aData = await aRes.json();
+                  if (aData) this._handleRemoteMessage(aData, false);
+                }
+              } catch {}
+            } else if (env && env.event === 'message' && env.message) {
               const payload = typeof env.message === 'string' ? JSON.parse(env.message) : env.message;
               this._handleRemoteMessage(payload, false);
             }
@@ -167,7 +175,18 @@ export class SharedWorldSync {
           if (env && typeof env.time === 'number' && env.time > maxTime) {
             maxTime = env.time;
           }
-          if (env && env.event === 'message' && env.message) {
+          if (env && env.attachment && env.attachment.url) {
+            try {
+              const aRes = await fetch(env.attachment.url, { cache: 'no-store' });
+              if (aRes.ok) {
+                const aData = await aRes.json();
+                if (aData) {
+                  aData._envTime = (env.time || 0) * 1000;
+                  parsedPayloads.push(aData);
+                }
+              }
+            } catch {}
+          } else if (env && env.event === 'message' && env.message) {
             const data = typeof env.message === 'string' ? JSON.parse(env.message) : env.message;
             if (data) {
               data._envTime = (env.time || 0) * 1000;

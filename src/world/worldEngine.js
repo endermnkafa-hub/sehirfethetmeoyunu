@@ -132,6 +132,9 @@ export class WorldSimulationEngine {
     // 100% Server-Backed Global World: purge any legacy localStorage world/chat caches
     this._clearLegacyLocalWorldCache();
 
+    // Restore any persistent wasteland & nuclear strikes immediately so initial render is irradiated
+    this._loadPersistedNuclearStrikes();
+
     this.sync = new SharedWorldSync(this, () => {
       this.dirtyPixels = true;
       this.dirtyRegions = true;
@@ -170,6 +173,32 @@ export class WorldSimulationEngine {
     try {
       if (typeof localStorage !== "undefined") {
         localStorage.setItem(`sf_inventory_${c.id}`, JSON.stringify(c.inventory));
+      }
+    } catch {}
+  }
+
+  _persistNuclearStrikes() {
+    try {
+      if (typeof localStorage !== "undefined" && Array.isArray(this.nuclearStrikes)) {
+        localStorage.setItem("sf_nuclear_strikes_v1", JSON.stringify(this.nuclearStrikes.slice(-60)));
+      }
+    } catch {}
+  }
+
+  _loadPersistedNuclearStrikes() {
+    try {
+      if (typeof localStorage !== "undefined") {
+        const raw = localStorage.getItem("sf_nuclear_strikes_v1");
+        if (raw) {
+          const list = JSON.parse(raw);
+          if (Array.isArray(list)) {
+            for (const strike of list) {
+              if (strike && strike.id && !this.nuclearStrikes.some((s) => s.id === strike.id)) {
+                this.handleRemoteNuclearStrike(strike, true);
+              }
+            }
+          }
+        }
       }
     } catch {}
   }
@@ -830,6 +859,16 @@ export class WorldSimulationEngine {
 
     this.handleRemoteNuclearStrike(strike, true);
 
+    // Save wasteland and strikes locally so refresh never wipes nuclear fallout
+    this._persistNuclearStrikes();
+
+    // Immediately publish our country's updated inventory & territory
+    if (this.sync && typeof this.sync.publishMyCountrySnapshot === "function") {
+      setTimeout(() => {
+        this.sync.publishMyCountrySnapshot();
+      }, 500);
+    }
+
     this.sync.broadcast({
       type: "NUCLEAR_STRIKE",
       strike,
@@ -916,6 +955,7 @@ export class WorldSimulationEngine {
 
     this.dirtyPixels = true;
     this.dirtyRegions = true;
+    this._persistNuclearStrikes();
 
     if (this.onEvent) {
       this.onEvent({
@@ -2148,16 +2188,24 @@ export class WorldSimulationEngine {
           }
         }
 
-        // Set all authoritative pixels
+        // Set all authoritative pixels (scorched radioactive wasteland cannot be owned)
         for (const idx of validPtsSet) {
           if (this.worldData.isLand[idx]) {
-            this.owners[idx] = country.id;
+            if (this.isWasteland && this.isWasteland[idx]) {
+              this.owners[idx] = 0;
+            } else {
+              this.owners[idx] = country.id;
+            }
           }
         }
       } else if (country.id === this.myCountryId) {
         for (const idx of validPtsSet) {
           if (this.worldData.isLand[idx] && this.owners[idx] === 0) {
-            this.owners[idx] = country.id;
+            if (this.isWasteland && this.isWasteland[idx]) {
+              this.owners[idx] = 0;
+            } else {
+              this.owners[idx] = country.id;
+            }
           }
         }
       }
@@ -2907,6 +2955,7 @@ export class WorldSimulationEngine {
       }
     }
     this.nuclearStrikes = [];
+    this._persistNuclearStrikes();
     this.dirtyPixels = true;
     this.saveState();
 
