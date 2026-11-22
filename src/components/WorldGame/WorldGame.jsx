@@ -35,6 +35,9 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
+  Crown,
+  Trash2,
+  Zap,
 } from 'lucide-react';
 
 export default function WorldGame({ onReturnToModeSelect }) {
@@ -54,6 +57,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [networkInfo, setNetworkInfo] = useState({
     clientIp: '',
     isVpnOrProxy: false,
+    isAdmin: false,
     hasExistingCountry: false,
     checked: false,
   });
@@ -73,7 +77,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [showRules, setShowRules] = useState(false);
   const [showUpgrades, setShowUpgrades] = useState(false);
   const [showCountriesList, setShowCountriesList] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
+  const hasCenteredOnMyCountryRef = useRef(false);
 
   // Real-time HUD state
   const [hud, setHud] = useState({
@@ -164,9 +170,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!chatInput.trim()) return;
     const eng = engineRef.current;
     if (!eng || !eng.sync) return;
-    eng.sync.sendChatMessage(chatInput.trim());
+    eng.sync.sendChatMessage(chatInput.trim(), networkInfo.isAdmin);
     setChatInput('');
-  }, [chatInput]);
+  }, [chatInput, networkInfo.isAdmin]);
 
   // Network & Security Check on Mount
   useEffect(() => {
@@ -208,18 +214,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
     cameraRef.current.panY *= ratio;
   }, []);
 
-  // Initial center on player's country if exists (or Europe/Mediterranean at 2.8x on mobile so map isn't tiny)
+  // Initial center on Europe/Mediterranean; auto-focus on player's country as soon as server loads it
+  useEffect(() => {
+    centerOnCoords(550, 175, 2.8);
+  }, [centerOnCoords]);
+
   useEffect(() => {
     const eng = engineRef.current;
-    if (!eng) return;
-    const myC = eng.getMyCountry();
-    if (myC) {
-      const center = eng.getCountryCenter(myC.id);
-      centerOnCoords(center.x, center.y, 16.0);
-    } else {
-      centerOnCoords(550, 175, 2.8);
-    }
-  }, [centerOnCoords]);
+    if (!eng || !hud.myCountry || hasCenteredOnMyCountryRef.current) return;
+    hasCenteredOnMyCountryRef.current = true;
+    const center = eng.getCountryCenter(hud.myCountry.id);
+    centerOnCoords(center.x, center.y, 16.0);
+  }, [hud.myCountry, centerOnCoords]);
 
   // Handle Custom Flag Upload
   const handleFileUpload = useCallback((e) => {
@@ -415,7 +421,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
           if (myCountry) {
             const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 5);
             if (smartTarget && !smartTarget.check.isNaval) {
-              eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
+              const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
+              if (!res.ok) {
+                isPaintingRef.current = false;
+              }
             }
           }
           lastCellRef.current = { x: pos.x, y: pos.y };
@@ -654,94 +663,110 @@ export default function WorldGame({ onReturnToModeSelect }) {
         className="hidden"
       />
 
-      {/* SLEEK MINIMALIST TOP BAR (COMPACT FOR PORTRAIT & LANDSCAPE MOBILE) */}
-      <div className="absolute top-1.5 sm:top-3 left-2 right-2 sm:left-4 sm:right-4 flex flex-wrap items-center justify-between gap-1.5 pointer-events-none z-10">
-        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2 py-1.5 shadow-2xl flex items-center gap-2 max-w-full overflow-x-auto">
+      {/* SLEEK COMPACT TOP BAR (ERGONOMIC FOR MOBILE PORTRAIT, LANDSCAPE & DESKTOP) */}
+      <div
+        className="absolute top-2 sm:top-3 left-2 right-2 sm:left-4 sm:right-4 flex items-center justify-between gap-1.5 pointer-events-none z-20"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      >
+        {/* Left Country Status Pill */}
+        <div className="pointer-events-auto bg-slate-900/92 border border-slate-700/80 backdrop-blur-md rounded-2xl px-2 py-1.5 shadow-2xl flex items-center gap-1.5 sm:gap-2 min-w-0 max-w-[62vw] sm:max-w-none overflow-x-auto no-scrollbar">
           <button
             onClick={onReturnToModeSelect}
-            className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition shrink-0"
+            className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 flex items-center justify-center transition shrink-0"
             title="Menüye Dön"
           >
-            <ArrowLeft size={15} />
+            <ArrowLeft size={16} />
           </button>
 
           {myCountry ? (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
               {/* Flag & Country Name */}
-              <div className="flex items-center gap-1.5 pr-2 border-r border-slate-700/80">
+              <div className="flex items-center gap-1.5 pr-1.5 sm:pr-2 border-r border-slate-700/80">
                 <div
-                  className="w-7 h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
+                  className="w-6 h-4 sm:w-7 sm:h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
                   style={{ borderColor: myCountry.color || '#FBBF24' }}
                 >
                   {myCountry.flagDataUrl && (
                     <img src={myCountry.flagDataUrl} alt="Bayrak" className="w-full h-full object-cover" />
                   )}
                 </div>
-                <span className="text-xs sm:text-sm font-black text-white tracking-tight truncate max-w-[110px] sm:max-w-none">
+                <span className="text-[11px] sm:text-sm font-black text-white tracking-tight truncate max-w-[74px] sm:max-w-[140px]">
                   {myCountry.name}
                 </span>
               </div>
 
               {/* Clean Metrics with Vector Logos */}
-              <div className="flex flex-wrap items-center gap-2.5 sm:gap-3.5 text-[11px] sm:text-xs font-bold">
+              <div className="flex items-center gap-2 sm:gap-3 text-[11px] sm:text-xs font-bold">
                 <span className="text-amber-400 flex items-center gap-1" title="Mevcut Asker / Maksimum Kapasite">
-                  <LogoSwords size={15} />
+                  <LogoSwords size={14} />
                   <span>
-                    {myCountry.troops.toFixed(1)}/{myCountry.capacity}
+                    {Math.floor(myCountry.troops)}/{myCountry.capacity}
                   </span>
-                  <span className="text-emerald-400 text-[10px] hidden sm:inline">
+                  <span className="text-emerald-400 text-[10px] hidden md:inline">
                     (+{(myCountry.productionRate || 0).toFixed(2)}/sn)
                   </span>
                 </span>
 
                 <span className="text-slate-200 flex items-center gap-1" title="Toplam Toprak (Piksel)">
-                  <LogoTerritory size={15} />
-                  <span>{myCountry.landCount}px</span>
+                  <LogoTerritory size={14} />
+                  <span>{myCountry.landCount}</span>
                 </span>
 
-                <span className="text-sky-300 hidden md:flex items-center gap-1" title="Ülkende Yaşayan Halk Nüfusu">
-                  <LogoPopulation size={15} />
-                  <span>{Math.floor(myCountry.population || 15)} Halk</span>
+                <span className="text-sky-300 hidden lg:flex items-center gap-1" title="Ülkende Yaşayan Halk Nüfusu">
+                  <LogoPopulation size={14} />
+                  <span>{Math.floor(myCountry.population || 15)}</span>
                 </span>
 
-                <span className="text-amber-300 flex items-center gap-1" title="Vergi Hazinesi (Geliştirmeler için kullanılır)">
-                  <LogoGold size={15} />
+                <span className="text-amber-300 flex items-center gap-1" title="Vergi Hazinesi">
+                  <LogoGold size={14} />
                   <span>{Math.floor(myCountry.gold || 0)}</span>
                 </span>
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2 text-[11px] sm:text-xs font-bold text-amber-400 pr-1.5">
+            <div className="flex items-center gap-1.5 text-[11px] sm:text-xs font-bold text-amber-400 pr-1 truncate">
               <Sparkles size={14} className="shrink-0" />
-              <span>Haritada sahipsiz gri bir piksele dokunarak kendi devletini kur!</span>
+              <span className="truncate">Gri piksele dokunup devlet kur!</span>
             </div>
           )}
         </div>
 
-        {/* Right Controls */}
-        <div className="pointer-events-auto flex items-center gap-1.5">
+        {/* Right Compact Action Buttons */}
+        <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {networkInfo.isAdmin && (
+            <button
+              onClick={() => setShowAdminModal(true)}
+              className="px-2 sm:px-2.5 h-9 rounded-xl bg-gradient-to-r from-rose-600 to-amber-500 hover:from-rose-500 hover:to-amber-400 active:scale-95 text-white font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
+              title="Admin Yönetim Paneli"
+            >
+              <Crown size={14} />
+              <span className="hidden sm:inline">Admin</span>
+            </button>
+          )}
+
           <button
             onClick={() => setShowCountriesList(true)}
-            className="px-2.5 h-8 sm:h-9 rounded-xl bg-slate-900/90 border border-emerald-500/40 text-emerald-300 hover:bg-slate-800 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
-            title="Haritadaki tüm devletleri gör, odaklan veya kendi devletini bağla"
+            className="px-2 sm:px-2.5 h-9 rounded-xl bg-slate-900/92 border border-emerald-500/45 text-emerald-300 hover:bg-slate-800 active:scale-95 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
+            title="Haritadaki tüm devletleri gör"
           >
-            <Globe size={14} />
-            <span>Ülkeler ({hud.totalCountriesCount})</span>
+            <Globe size={15} />
+            <span>{hud.totalCountriesCount}</span>
           </button>
 
           {myCountry && (
             <button
               onClick={() => setShowUpgrades(true)}
-              className="px-2.5 sm:px-3 h-8 sm:h-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
+              className="px-2.5 sm:px-3 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
+              title="Devlet Geliştirmeleri"
             >
               <LogoCitadel size={15} />
-              <span>Geliştir</span>
+              <span className="hidden xs:inline sm:inline">Geliştir</span>
             </button>
           )}
 
           <button
             onClick={() => setSoundEnabled((prev) => !prev)}
-            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
+            className="w-9 h-9 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 active:scale-95 transition shadow"
             title={soundEnabled ? 'Sesi Kapat' : 'Sesi Aç'}
           >
             {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
@@ -749,42 +774,53 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
           <button
             onClick={() => setShowRules(true)}
-            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
-            title="Kurallar"
+            className="w-9 h-9 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 active:scale-95 transition shadow"
+            title="Kurallar & Ayarlar"
           >
             <HelpCircle size={15} />
           </button>
         </div>
       </div>
 
-      {/* GLOBAL CHAT (SOL ÜST TARAF) */}
-      <div className="absolute top-24 sm:top-16 left-2 sm:left-4 z-20 flex flex-col pointer-events-none max-w-[260px] sm:max-w-xs w-full">
-        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-2xl p-2 sm:p-2.5 shadow-2xl transition">
-          {/* Header */}
-          <div className="flex items-center justify-between pb-1.5 border-b border-slate-700/60 mb-1.5">
+      {/* GLOBAL CHAT (SOL ÜST — MOBİLDE KÜÇÜK PİLL OLARAK BAŞLAR, HARİTAYI KAPATMAZ) */}
+      <div
+        className={`absolute top-14 sm:top-16 left-2 sm:left-4 z-20 flex flex-col pointer-events-none transition-all ${
+          chatMinimized ? 'w-auto' : 'w-[84vw] max-w-[300px] sm:max-w-xs'
+        }`}
+      >
+        <div className="pointer-events-auto bg-slate-900/92 border border-slate-700/80 backdrop-blur-md rounded-2xl p-2 shadow-2xl transition">
+          {/* Header / Toggle Pill */}
+          <button
+            type="button"
+            onClick={() => setChatMinimized((prev) => !prev)}
+            className={`w-full flex items-center justify-between gap-2 ${
+              chatMinimized ? '' : 'pb-1.5 border-b border-slate-700/60 mb-1.5'
+            }`}
+          >
             <div className="flex items-center gap-1.5 text-xs font-black text-amber-400">
-              <MessageSquare size={14} className="text-amber-400" />
-              <span>Global Sohbet</span>
+              <MessageSquare size={14} className="text-amber-400 shrink-0" />
+              <span>{chatMinimized ? 'Sohbet' : 'Global Sohbet'}</span>
+              {chatMinimized && chatMessages.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px] text-slate-300 font-bold">
+                  {chatMessages.length}
+                </span>
+              )}
               <span
-                className={`w-2 h-2 rounded-full ml-0.5 ${
+                className={`w-2 h-2 rounded-full ml-0.5 shrink-0 ${
                   hud.isCloudConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
                 }`}
-                title={hud.isCloudConnected ? 'Canlı Bulut Bağlı' : 'Buluta Bağlanıyor...'}
+                title={hud.isCloudConnected ? 'Sunucuya Bağlı' : 'Sunucuya Bağlanıyor...'}
               />
             </div>
-            <button
-              onClick={() => setChatMinimized((prev) => !prev)}
-              className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-              title={chatMinimized ? 'Sohbeti Genişlet' : 'Sohbeti Küçült'}
-            >
+            <span className="p-0.5 rounded-lg bg-slate-800 text-slate-300">
               {chatMinimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-            </button>
-          </div>
+            </span>
+          </button>
 
           {!chatMinimized && (
             <>
               {/* Message List */}
-              <div className="max-h-36 sm:max-h-44 overflow-y-auto space-y-1.5 pr-1 text-xs">
+              <div className="max-h-36 sm:max-h-48 overflow-y-auto space-y-1.5 pr-1 text-xs">
                 {chatMessages.length === 0 ? (
                   <div className="text-[11px] text-slate-400 italic py-2 text-center">
                     Henüz mesaj yok. İlk mesajı sen gönder!
@@ -793,7 +829,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   chatMessages.map((msg) => (
                     <div
                       key={msg.id}
-                      className="p-1.5 rounded-xl bg-slate-800/70 border border-slate-700/50 flex flex-col gap-0.5"
+                      className={`p-1.5 rounded-xl border flex flex-col gap-0.5 ${
+                        msg.isAdmin
+                          ? 'bg-amber-500/15 border-amber-500/50'
+                          : 'bg-slate-800/75 border-slate-700/50'
+                      }`}
                     >
                       <div className="flex items-center justify-between gap-1 text-[10px]">
                         <div className="flex items-center gap-1.5 min-w-0">
@@ -810,6 +850,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                               style={{ backgroundColor: msg.countryColor || '#38BDF8' }}
                             />
                           )}
+                          {msg.isAdmin && (
+                            <span className="px-1 py-0.2 rounded bg-gradient-to-r from-rose-600 to-amber-500 text-white font-black text-[8px] shrink-0">
+                              ADMIN
+                            </span>
+                          )}
                           <span
                             className="font-black truncate max-w-[120px]"
                             style={{ color: msg.countryColor || '#FBBF24' }}
@@ -824,7 +869,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           })}
                         </span>
                       </div>
-                      <div className="text-[11px] text-slate-200 break-words pl-4">
+                      <div className="text-[11px] text-slate-100 break-words pl-4">
                         {msg.text}
                       </div>
                     </div>
@@ -839,17 +884,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder={myCountry ? `${myCountry.name} olarak mesaj yaz...` : 'Mesaj yaz...'}
+                  placeholder={myCountry ? `${myCountry.name} olarak yaz...` : 'Mesaj yaz...'}
                   maxLength={140}
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
                 />
                 <button
                   type="submit"
                   disabled={!chatInput.trim()}
-                  className="p-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-slate-950 transition shrink-0"
+                  className="w-9 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-slate-950 flex items-center justify-center transition shrink-0"
                   title="Gönder"
                 >
-                  <Send size={14} />
+                  <Send size={15} />
                 </button>
               </form>
             </>
@@ -857,21 +902,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
         </div>
       </div>
 
-      {/* FLOATING CAMERA CONTROLS */}
-      <div className="absolute right-2.5 sm:right-4 bottom-16 sm:bottom-20 flex flex-col gap-1.5 z-10">
+      {/* FLOATING CAMERA CONTROLS (ERGONOMIC 44px THUMB TARGETS) */}
+      <div className="absolute right-2.5 sm:right-4 bottom-24 sm:bottom-24 flex flex-col gap-2 z-10">
         <button
           onClick={() => handleZoom(1.45)}
-          className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 active:scale-95 shadow-xl transition"
+          className="w-11 h-11 rounded-2xl bg-slate-900/92 border border-slate-700/90 text-slate-100 flex items-center justify-center hover:bg-slate-800 active:scale-90 shadow-2xl transition"
           title="Yakınlaştır"
         >
-          <ZoomIn size={18} />
+          <ZoomIn size={20} />
         </button>
         <button
           onClick={() => handleZoom(0.7)}
-          className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 active:scale-95 shadow-xl transition"
+          className="w-11 h-11 rounded-2xl bg-slate-900/92 border border-slate-700/90 text-slate-100 flex items-center justify-center hover:bg-slate-800 active:scale-90 shadow-2xl transition"
           title="Uzaklaştır"
         >
-          <ZoomOut size={18} />
+          <ZoomOut size={20} />
         </button>
         <button
           onClick={() => {
@@ -879,30 +924,32 @@ export default function WorldGame({ onReturnToModeSelect }) {
             if (myCountry && eng) {
               const center = eng.getCountryCenter(myCountry.id);
               centerOnCoords(center.x, center.y, 16.0);
+            } else {
+              centerOnCoords(550, 175, 2.8);
             }
           }}
-          className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-amber-400 flex items-center justify-center hover:bg-slate-800 active:scale-95 shadow-xl transition"
-          title="Ülkeme Yakından Odaklan (16x)"
+          className="w-11 h-11 rounded-2xl bg-slate-900/92 border border-amber-500/50 text-amber-400 flex items-center justify-center hover:bg-slate-800 active:scale-90 shadow-2xl transition"
+          title="Ülkeme Odaklan"
         >
-          <Compass size={18} />
+          <Compass size={20} />
         </button>
       </div>
 
-      {/* CLEAN BOTTOM TOOLBAR — LOCKED INSIDE SAFE MOBILE VIEWPORT */}
+      {/* ERGONOMIC BOTTOM ACTION DOCK (SAFE-AREA LOCKED FOR MOBILE WEB & ANDROID APK) */}
       <div
-        className="absolute bottom-2 sm:bottom-3.5 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-2.5 pointer-events-none"
+        className="absolute bottom-2.5 sm:bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-2.5 pointer-events-none"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >
-        <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/85 backdrop-blur-lg rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
+        <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/90 backdrop-blur-xl rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
           <button
             onClick={() => setToolMode('CONQUER')}
-            className={`flex-1 py-2 px-2 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition ${
+            className={`flex-1 min-h-[44px] px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition ${
               toolMode === 'CONQUER'
-                ? 'bg-amber-500 text-slate-950 shadow'
+                ? 'bg-amber-500 text-slate-950 shadow-lg'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <LogoSwords size={15} />
+            <LogoSwords size={16} />
             <span>Fethet</span>
           </button>
 
@@ -917,11 +964,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     showToast(res.reason);
                   }
                 }}
-                className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow transition"
+                className="min-h-[44px] px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg transition shrink-0"
                 title="Sınırındaki en uygun komşu pikseli tek dokunuşla fetheder"
               >
                 <LogoTerritory size={15} />
-                <span>+1 Piksel</span>
+                <span>+1</span>
               </button>
 
               <button
@@ -938,7 +985,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     }
                   }
                 }}
-                className="py-2 px-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow transition"
+                className="min-h-[44px] px-3 rounded-xl bg-teal-400 hover:bg-teal-300 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg transition shrink-0"
                 title="Sınırındaki 5 komşu pikseli tek dokunuşla hızlıca fetheder"
               >
                 <span>+5</span>
@@ -947,11 +994,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
               {hud.canUndo && hud.undoSeconds > 0 && (
                 <button
                   onClick={handleUndo}
-                  className="py-2 px-2 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow transition animate-pulse"
-                  title="Son 5 saniye içinde fethettiğin pikseli geri al ve harcanan askeri geri kazan"
+                  className="min-h-[44px] px-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg transition animate-pulse shrink-0"
+                  title="Son 5 saniye içinde fethettiğin pikseli geri al"
                 >
-                  <RotateCcw size={14} />
-                  <span>Geri Al ({hud.undoSeconds}s)</span>
+                  <RotateCcw size={15} />
+                  <span>{hud.undoSeconds}s</span>
                 </button>
               )}
             </>
@@ -959,13 +1006,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
           <button
             onClick={() => setToolMode('PAN')}
-            className={`flex-1 py-2 px-2 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition ${
+            className={`flex-1 min-h-[44px] px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition ${
               toolMode === 'PAN'
-                ? 'bg-indigo-500 text-white shadow'
+                ? 'bg-indigo-500 text-white shadow-lg'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <LogoPan size={15} />
+            <LogoPan size={16} />
             <span>Kaydır</span>
           </button>
         </div>
@@ -1392,6 +1439,124 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 Devletimi Bırak (Sıfırdan Yeni Devlet Kur)
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN PANEL MODAL (ONLY ACCESSIBLE FROM AUTHORIZED ADMIN IP) */}
+      {showAdminModal && networkInfo.isAdmin && (
+        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3">
+          <div className="w-full max-w-md bg-slate-900 border-2 border-amber-500/70 rounded-3xl p-4 sm:p-5 shadow-2xl text-left">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-sm sm:text-base font-black text-amber-400 flex items-center gap-2">
+                  <Crown size={18} className="text-amber-400" />
+                  <span>Admin Yönetim Paneli</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  IP doğrulandı • Tüm işlemler anında bulut sunucusuna işlenir.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowAdminModal(false)}
+                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
+              {/* Self Boost Controls */}
+              {myCountry && (
+                <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-2">
+                  <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                    <Zap size={14} />
+                    <span>Kendi Devletini Güçlendir ({myCountry.name})</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => engineRef.current?.adminGiveResources(myCountry.id, 100, 5000)}
+                      className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                    >
+                      +100 Asker & +5000 Altın
+                    </button>
+                    <button
+                      onClick={() => engineRef.current?.adminMaxUpgrades(myCountry.id)}
+                      className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
+                    >
+                      Tüm Geliştirmeler Sv.25
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Active Countries Moderation */}
+              <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-2">
+                <div className="text-xs font-black text-white">
+                  Haritadaki Devletleri Yönet ({hud.totalCountriesCount})
+                </div>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {(engineRef.current?.countries || [])
+                    .filter((c) => c.landCount > 0)
+                    .sort((a, b) => b.landCount - a.landCount)
+                    .map((c) => (
+                      <div
+                        key={c.id}
+                        className="p-2 rounded-xl bg-slate-900/90 border border-slate-700/70 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-black text-white truncate">{c.name}</div>
+                          <div className="text-[10px] text-slate-400">
+                            {c.landCount}px • {Math.floor(c.troops)} Asker
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`"${c.name}" devletini haritadan tamamen silmek istiyor musun?`)) {
+                              engineRef.current?.adminDeleteCountry(c.id, true);
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] flex items-center gap-1 shrink-0 transition"
+                        >
+                          <Trash2 size={12} />
+                          <span>Sil</span>
+                        </button>
+                      </div>
+                    ))}
+                  {(!engineRef.current?.countries || engineRef.current.countries.filter((c) => c.landCount > 0).length === 0) && (
+                    <div className="text-[11px] text-slate-500 text-center py-2">Aktif devlet yok.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Server Maintenance Controls */}
+              <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/40 space-y-2">
+                <div className="text-xs font-black text-rose-300">Sunucu & Sohbet Kontrolleri</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      if (window.confirm('Global sohbetteki tüm mesajları herkesten silmek istiyor musun?')) {
+                        engineRef.current?.adminClearChat(true);
+                      }
+                    }}
+                    className="py-2 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-bold text-[11px] transition"
+                  >
+                    Sohbeti Temizle
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (window.confirm('DİKKAT! Tüm devletler, topraklar ve sohbet herkesten sıfırlanacak. Onaylıyor musun?')) {
+                        engineRef.current?.adminResetWorld(true);
+                        setShowAdminModal(false);
+                      }
+                    }}
+                    className="py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow"
+                  >
+                    Tüm Haritayı Sıfırla
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

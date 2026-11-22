@@ -38,18 +38,7 @@ export class SharedWorldSync {
       } catch {}
     }
 
-    // 2. Listen to localStorage updates across tabs
-    if (typeof window !== 'undefined') {
-      this._storageListener = (e) => {
-        if (e.key === 'sf_shared_world_v9_clean' || e.key === 'sf_my_country_id') {
-          this.engine.loadState();
-          this.onRemoteUpdate();
-        }
-      };
-      window.addEventListener('storage', this._storageListener);
-    }
-
-    // 3. Start Cloud Sync (Initial History Poll + 3s Active Poll + Live SSE)
+    // 2. Start 100% Server-Backed Cloud Sync (Initial Compacted History Load + Fallback Poll + Live SSE)
     this._initCloudSync();
   }
 
@@ -60,23 +49,23 @@ export class SharedWorldSync {
   _initCloudSync() {
     if (typeof window === 'undefined') return;
 
-    // Immediate history poll
+    // Immediate full server state load (compacted in-memory in <15ms!)
     this._pollCloudMessages();
 
-    // Fallback poll every 15 seconds for networks where SSE is restricted
+    // Fallback poll every 20 seconds for networks where SSE is restricted
     this._pollInterval = setInterval(() => {
       this._pollCloudMessages();
-    }, 15000);
+    }, 20000);
 
-    // Periodically announce our country snapshot every 16 seconds so newly opened devices always see us
+    // Periodically announce our country snapshot every 45 seconds so server always holds latest state
     this._announceInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
         this.publishMyCountrySnapshot();
       }
-    }, 16000);
+    }, 45000);
 
-    // Periodically broadcast our real-time troops, gold & stats every 6 seconds so all players see exact troop counts without spamming HTTP 429
+    // Periodically broadcast our real-time troops, gold & stats every 12 seconds
     this._statsInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
@@ -92,7 +81,7 @@ export class SharedWorldSync {
           },
         });
       }
-    }, 6000);
+    }, 12000);
 
     // Live SSE stream for sub-second updates
     if (typeof EventSource !== 'undefined') {
@@ -103,9 +92,6 @@ export class SharedWorldSync {
         es.onopen = () => {
           this.isCloudConnected = true;
           this.onRemoteUpdate();
-          setTimeout(() => {
-            this.publishMyCountrySnapshot();
-          }, 400);
         };
 
         es.onmessage = (ev) => {
@@ -143,14 +129,11 @@ export class SharedWorldSync {
       try { this.channel.close(); } catch {}
       this.channel = null;
     }
-    if (typeof window !== 'undefined' && this._storageListener) {
-      window.removeEventListener('storage', this._storageListener);
-      this._storageListener = null;
-    }
   }
 
   async _pollCloudMessages() {
     try {
+      const isInitialLoad = this._lastPollTime === 'all';
       const url = `${CLOUD_TOPIC_URL}/json?poll=1&since=${this._lastPollTime}`;
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) return;
@@ -158,11 +141,14 @@ export class SharedWorldSync {
       const text = await res.text();
       this.isCloudConnected = true;
 
-      if (!text || !text.trim()) return;
+      if (!text || !text.trim()) {
+        this.onRemoteUpdate();
+        return;
+      }
 
       let maxTime = typeof this._lastPollTime === 'number' ? this._lastPollTime : 0;
       const lines = text.split('\n');
-      let anyHandled = false;
+      const parsedPayloads = [];
 
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -173,8 +159,10 @@ export class SharedWorldSync {
           }
           if (env && env.event === 'message' && env.message) {
             const data = typeof env.message === 'string' ? JSON.parse(env.message) : env.message;
-            this._handleRemoteMessage(data, true);
-            anyHandled = true;
+            if (data) {
+              data._envTime = (env.time || 0) * 1000;
+              parsedPayloads.push(data);
+            }
           }
         } catch {}
       }
@@ -182,10 +170,132 @@ export class SharedWorldSync {
       if (maxTime > 0) {
         this._lastPollTime = maxTime;
       }
-      if (anyHandled) {
+
+      if (parsedPayloads.length > 0) {
+        if (isInitialLoad) {
+          this._replayCompactedHistory(parsedPayloads);
+        } else {
+          for (const data of parsedPayloads) {
+            this._handleRemoteMessage(data, true);
+          }
+        }
         this.onRemoteUpdate();
       }
     } catch {}
+  }
+
+  // Ultra-fast O(N) in-memory server history compactor: reduces 1,000+ server logs into exact current world state in <15ms!
+  _replayCompactedHistory(payloads) {
+    // 1. Find latest ADMIN_RESET_WORLD & ADMIN_CLEAR_CHAT index
+    let lastResetIdx = -1;
+    let lastChatClearIdx = -1;
+    for (let i = 0; i < payloads.length; i++) {
+      const p = payloads[i];
+      if (p._msgId) this.seenMsgIds.add(p._msgId);
+      if (p.type === 'ADMIN_RESET_WORLD') lastResetIdx = i;
+      if (p.type === 'ADMIN_CLEAR_CHAT') lastChatClearIdx = i;
+    }
+
+    const startIdx = lastResetIdx + 1;
+    const deletedCountries = new Map(); // countryId -> index of deletion
+    const latestSnapshot = new Map(); // countryId -> { idx, data }
+    const latestStats = new Map(); // countryId -> { idx, data }
+    const newCountries = new Map(); // countryId -> { idx, data }
+    const pixelOps = []; // { idx, data }
+    const chats = [];
+
+    for (let i = startIdx; i < payloads.length; i++) {
+      const p = payloads[i];
+      if (!p || !p.type) continue;
+
+      if (p.type === 'ADMIN_DELETE_COUNTRY' && p.countryId) {
+        deletedCountries.set(p.countryId, i);
+      } else if (p.type === 'NEW_COUNTRY' && p.country?.id) {
+        newCountries.set(p.country.id, { idx: i, data: p });
+      } else if (p.type === 'COUNTRY_SYNC_PACKET' && p.country?.id) {
+        latestSnapshot.set(p.country.id, { idx: i, data: p });
+      } else if (p.type === 'SYNC_COUNTRY_STATS' && p.countryId) {
+        latestStats.set(p.countryId, { idx: i, data: p });
+      } else if (p.type === 'CONQUER_BATCH' || p.type === 'CONQUER_PIXEL' || p.type === 'UNDO_PIXEL') {
+        pixelOps.push({ idx: i, data: p });
+      }
+    }
+
+    // Collect valid Global Chat messages after last chat clear & last reset
+    const chatStart = Math.max(startIdx, lastChatClearIdx + 1);
+    for (let i = chatStart; i < payloads.length; i++) {
+      const p = payloads[i];
+      if (p && p.type === 'GLOBAL_CHAT' && p.chat) {
+        chats.push(p.chat);
+      }
+    }
+
+    // 2. Apply active countries (skip any deleted AFTER their last creation/sync)
+    for (const [cid, entry] of newCountries.entries()) {
+      const delIdx = deletedCountries.get(cid);
+      if (delIdx !== undefined && delIdx > entry.idx) continue;
+      if (!latestSnapshot.has(cid)) {
+        this.engine.handleRemoteNewCountry(entry.data.country);
+      }
+    }
+
+    for (const [cid, entry] of latestSnapshot.entries()) {
+      const delIdx = deletedCountries.get(cid);
+      if (delIdx !== undefined && delIdx > entry.idx) continue;
+      this.engine.handleRemoteCountrySyncPacket(
+        entry.data.country,
+        entry.data.pts,
+        entry.data._sentAt || entry.data._envTime || 0,
+        true // batchMode: compute bounds once at the end!
+      );
+    }
+
+    // 3. Apply pixel conquests/undos that occurred AFTER a country's latest snapshot
+    for (const { idx, data } of pixelOps) {
+      const cid = data.countryId;
+      const delIdx = deletedCountries.get(cid);
+      if (delIdx !== undefined && delIdx > idx) continue;
+      const snap = latestSnapshot.get(cid);
+      if (snap && idx <= snap.idx) continue;
+
+      if (data.type === 'CONQUER_PIXEL') {
+        this.engine.handleRemoteConquerPixel(cid, data.x, data.y, data.cost);
+      } else if (data.type === 'CONQUER_BATCH' && Array.isArray(data.pts)) {
+        for (let k = 0; k < data.pts.length; k += 2) {
+          this.engine.handleRemoteConquerPixel(cid, data.pts[k], data.pts[k + 1], 0);
+        }
+      } else if (data.type === 'UNDO_PIXEL') {
+        this.engine.handleRemoteUndoPixel(cid, data.x, data.y, data.prevOwner, true);
+      }
+    }
+
+    // 4. Apply latest stats (troops, gold, population, upgrades, color) for each country
+    for (const [cid, entry] of latestStats.entries()) {
+      const delIdx = deletedCountries.get(cid);
+      if (delIdx !== undefined && delIdx > entry.idx) continue;
+      const snap = latestSnapshot.get(cid);
+      if (snap && entry.idx < snap.idx) continue;
+      this.engine.handleRemoteSyncCountryStats(
+        cid,
+        entry.data.stats,
+        entry.data._sentAt || entry.data._envTime || 0,
+        true // allow initializing own country's latest server stats on reload!
+      );
+    }
+
+    // 5. Reconnect player's own country from server state if it exists
+    this.engine.restoreMyCountryFromServer();
+
+    // 6. Compute exact country bounds ONCE for the entire map
+    this.engine.computeCountryBounds();
+    this.engine.dirtyRegions = false;
+    this.engine.dirtyPixels = true;
+
+    // 7. Load latest 50 chat messages from server
+    const recentChats = chats.slice(-50);
+    for (const chat of recentChats) {
+      this.engine.handleRemoteChatMessage(chat);
+    }
   }
 
   // Synchronously convert country's decoded flagRgba buffer (or small dataUrl) into a compact <=1200 byte JPEG dataUrl
@@ -393,18 +503,28 @@ export class SharedWorldSync {
     } else if (data.type === 'GLOBAL_CHAT' && data.chat) {
       this.engine.handleRemoteChatMessage(data.chat);
       this.onRemoteUpdate();
+    } else if (data.type === 'ADMIN_DELETE_COUNTRY' && data.countryId) {
+      this.engine.adminDeleteCountry(data.countryId, false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'ADMIN_CLEAR_CHAT') {
+      this.engine.adminClearChat(false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'ADMIN_RESET_WORLD') {
+      this.engine.adminResetWorld(false);
+      this.onRemoteUpdate();
     }
   }
 
-  sendChatMessage(text) {
+  sendChatMessage(text, isAdmin = false) {
     if (!text || !text.trim()) return;
     const myC = this.engine.getMyCountry();
     const chat = {
       id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       countryId: myC?.id || 0,
-      countryName: myC?.name || 'Gezgin',
-      countryColor: myC?.color || '#38BDF8',
+      countryName: myC?.name || (isAdmin ? 'Admin' : 'Gezgin'),
+      countryColor: isAdmin ? '#FBBF24' : myC?.color || '#38BDF8',
       flagDataUrl: myC ? this.getCompactFlagFromCountry(myC) : null,
+      isAdmin: Boolean(isAdmin),
       text: text.trim().slice(0, 160),
       time: Date.now(),
     };

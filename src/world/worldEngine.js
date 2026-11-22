@@ -119,9 +119,8 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.dirtyRegions = true;
 
-    this.loadChatMessages();
-    this.loadState();
-    this.cleanupInactiveCountries();
+    // 100% Server-Backed Global World: purge any legacy localStorage world/chat caches
+    this._clearLegacyLocalWorldCache();
 
     this.sync = new SharedWorldSync(this, () => {
       this.dirtyPixels = true;
@@ -129,20 +128,36 @@ export class WorldSimulationEngine {
     });
   }
 
-  loadChatMessages() {
+  _clearLegacyLocalWorldCache() {
     try {
-      const raw = localStorage.getItem('sf_global_chat_v1');
-      if (raw) {
-        this.chatMessages = JSON.parse(raw);
-      }
+      localStorage.removeItem('sf_shared_world_v4_data');
+      localStorage.removeItem('sf_shared_world_v5_worldbox');
+      localStorage.removeItem('sf_shared_world_v7_fresh');
+      localStorage.removeItem('sf_shared_world_v8_clean');
+      localStorage.removeItem(WORLD_SAVE_KEY);
+      localStorage.removeItem('sf_global_chat_v1');
     } catch {}
   }
 
-  saveChatMessages() {
-    try {
-      localStorage.setItem('sf_global_chat_v1', JSON.stringify(this.chatMessages.slice(-50)));
-    } catch {}
+  restoreMyCountryFromServer() {
+    const storedId = getMyCountryId();
+    if (storedId) {
+      const parsed = parseInt(storedId, 10);
+      if (this.countryMap.has(parsed)) {
+        this.myCountryId = parsed;
+        return;
+      }
+    }
+    const devCountry = this.countries.find((c) => c.deviceId === this.myDeviceId && c.landCount > 0);
+    if (devCountry) {
+      this.myCountryId = devCountry.id;
+      saveMyCountryId(devCountry.id);
+    }
   }
+
+  loadChatMessages() {}
+
+  saveChatMessages() {}
 
   handleRemoteChatMessage(chat) {
     if (!chat || !chat.id) return;
@@ -151,7 +166,6 @@ export class WorldSimulationEngine {
     if (this.chatMessages.length > 50) {
       this.chatMessages.shift();
     }
-    this.saveChatMessages();
     this.onChat(this.chatMessages);
   }
 
@@ -601,7 +615,7 @@ export class WorldSimulationEngine {
     };
   }
 
-  // Prevent 1-pixel wide snaking across continents
+  // Prevent 1-pixel wide snaking across open continents, while ALWAYS allowing overseas naval beachheads & narrow coastlines to grow!
   isSnakingConquest(countryId, x, y) {
     const country = this.countryMap.get(countryId);
     if (!country || country.landCount < 6) return false;
@@ -631,22 +645,54 @@ export class WorldSimulationEngine {
     if (ownedNeighbors >= 2) return false;
     if (ownedNeighbors === 0 || !singleNeighbor) return false;
 
-    // Touches only 1 owned pixel. Check if that neighbor is already a 1-pixel thin tip:
+    // 1. Check if this neighbor belongs to a small overseas naval beachhead / island colony (< 6 connected pixels)
+    // If so, ALWAYS allow expanding so naval landings (like crossing the Bosphorus) can establish a foothold!
+    const startIdx = singleNeighbor.y * MAP_W + singleNeighbor.x;
+    const visited = new Set([startIdx]);
+    const queue = [startIdx];
+    let head = 0;
+    while (head < queue.length && visited.size < 6) {
+      const cur = queue[head++];
+      const cx = cur % MAP_W;
+      const cy = (cur / MAP_W) | 0;
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
+          const nIdx = ny * MAP_W + nx;
+          if (this.owners[nIdx] === countryId && !visited.has(nIdx)) {
+            visited.add(nIdx);
+            queue.push(nIdx);
+          }
+        }
+      }
+    }
+    if (visited.size < 6) {
+      return false;
+    }
+
+    // 2. Check 3x3 body support & whether the terrain itself is a narrow coastal peninsula/isthmus
     let neighborBodySupport = 0;
+    let landIn3x3 = 0;
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         if (dx === 0 && dy === 0) continue;
         const px = singleNeighbor.x + dx;
         const py = singleNeighbor.y + dy;
         if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
-          if (this.owners[py * MAP_W + px] === countryId) {
+          const pIdx = py * MAP_W + px;
+          if (this.worldData.isLand[pIdx]) landIn3x3++;
+          if (this.owners[pIdx] === countryId) {
             neighborBodySupport++;
           }
         }
       }
     }
 
-    // If the base neighbor has <= 2 pixels supporting it in its 3x3 box, extending it creates a 1-pixel snake string
+    // On narrow coastlines/isthmuses bordered by sea, allow natural coastal expansion
+    if (landIn3x3 <= 4) return false;
+
+    // If the base neighbor has <= 2 pixels supporting it in open land, extending it creates a 1-pixel snake string
     return neighborBodySupport <= 2;
   }
 
@@ -939,7 +985,7 @@ export class WorldSimulationEngine {
     return { ok: true, x: item.x, y: item.y, remainingUndos: this.undoStack.length };
   }
 
-  handleRemoteUndoPixel(countryId, x, y, prevOwner) {
+  handleRemoteUndoPixel(countryId, x, y, prevOwner, batchMode = false) {
     if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
     const idx = y * MAP_W + x;
     this.owners[idx] = prevOwner;
@@ -955,10 +1001,11 @@ export class WorldSimulationEngine {
         this._recalculateDerivedStats(pc);
       }
     }
-    this.computeCountryBounds();
-    this.dirtyPixels = true;
-    this.dirtyRegions = false;
-    this.scheduleSave();
+    if (!batchMode) {
+      this.computeCountryBounds();
+      this.dirtyPixels = true;
+      this.dirtyRegions = false;
+    }
   }
 
   // O(1) incremental bounding box expansion when conquering a pixel
@@ -1233,7 +1280,7 @@ export class WorldSimulationEngine {
   }
 
   // Handle remote country + territory sync packet from cloud (Phone <-> PC) — 100% SYNCHRONOUS to avoid async race overwrites!
-  handleRemoteCountrySyncPacket(remoteCountry, pts, packetTime = 0) {
+  handleRemoteCountrySyncPacket(remoteCountry, pts, packetTime = 0, batchMode = false) {
     if (!remoteCountry || !remoteCountry.id) return;
 
     let country = this.countryMap.get(remoteCountry.id);
@@ -1279,7 +1326,7 @@ export class WorldSimulationEngine {
       }
     }
 
-    if (country.id !== this.myCountryId) {
+    if (batchMode || country.id !== this.myCountryId) {
       if (typeof remoteCountry.troops === 'number') country.troops = remoteCountry.troops;
       if (typeof remoteCountry.gold === 'number') country.gold = remoteCountry.gold;
       if (typeof remoteCountry.population === 'number') country.population = remoteCountry.population;
@@ -1300,13 +1347,15 @@ export class WorldSimulationEngine {
         }
       }
 
-      // If we are not the owner of this country, synchronize its territory exactly with the owner's authoritative pts
-      if (country.id !== this.myCountryId && validPtsSet.size > 0) {
-        // Clear any old/orphaned pixels that this country no longer owns across the entire map
-        const total = MAP_W * MAP_H;
-        for (let idx = 0; idx < total; idx++) {
-          if (this.owners[idx] === country.id && !validPtsSet.has(idx)) {
-            this.owners[idx] = 0;
+      // Synchronize territory exactly with the authoritative pts
+      if ((batchMode || country.id !== this.myCountryId) && validPtsSet.size > 0) {
+        if (!batchMode) {
+          // Clear any old/orphaned pixels that this country no longer owns across the entire map
+          const total = MAP_W * MAP_H;
+          for (let idx = 0; idx < total; idx++) {
+            if (this.owners[idx] === country.id && !validPtsSet.has(idx)) {
+              this.owners[idx] = 0;
+            }
           }
         }
 
@@ -1317,7 +1366,6 @@ export class WorldSimulationEngine {
           }
         }
       } else if (country.id === this.myCountryId) {
-        // If this is our own country, fill any valid land points
         for (const idx of validPtsSet) {
           if (this.worldData.isLand[idx] && this.owners[idx] === 0) {
             this.owners[idx] = country.id;
@@ -1326,28 +1374,29 @@ export class WorldSimulationEngine {
       }
     }
 
-    // Immediately recompute full country bounds & stats so rendering and territory size are 100% exact!
-    this.computeCountryBounds();
-    this.dirtyRegions = false;
-    this.dirtyPixels = true;
+    if (!batchMode) {
+      // Immediately recompute full country bounds & stats so rendering and territory size are 100% exact!
+      this.computeCountryBounds();
+      this.dirtyRegions = false;
+      this.dirtyPixels = true;
+    }
     this._recalculateDerivedStats(country);
-    this.scheduleSave();
   }
 
   handleRemoteConquerPixel(countryId, x, y, cost = 1) {
     if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
+    const country = this.countryMap.get(countryId);
+    if (!country) return; // Ignore orphaned pixel packets for unknown countries
+
     const idx = y * MAP_W + x;
     const prevOwner = this.owners[idx];
     if (prevOwner === countryId) return;
 
     this.owners[idx] = countryId;
 
-    const country = this.countryMap.get(countryId);
-    if (country) {
-      country.landCount++;
-      country.troops = Math.max(0, country.troops - (cost || 0));
-      this._recalculateDerivedStats(country);
-    }
+    country.landCount++;
+    country.troops = Math.max(0, country.troops - (cost || 0));
+    this._recalculateDerivedStats(country);
 
     if (prevOwner > 0) {
       const prevC = this.countryMap.get(prevOwner);
@@ -1360,17 +1409,10 @@ export class WorldSimulationEngine {
     this._expandCountryBound(countryId, x, y);
 
     this.dirtyPixels = true;
-    this.scheduleSave();
   }
 
-  // Non-blocking debounced save so mobile touch dragging never freezes the main thread!
-  scheduleSave() {
-    if (this._saveDebounceTimer) return;
-    this._saveDebounceTimer = setTimeout(() => {
-      this._saveDebounceTimer = null;
-      this.saveState();
-    }, 1800);
-  }
+  // Server-backed mode: world state lives on the cloud server, not in browser localStorage/cookies!
+  scheduleSave() {}
 
   handleRemoteLaunchShip(remoteShip) {
     if (!remoteShip || !remoteShip.id) return;
@@ -1378,8 +1420,8 @@ export class WorldSimulationEngine {
     this.ships.push({ ...remoteShip });
   }
 
-  handleRemoteSyncCountryStats(countryId, stats, packetTime = 0) {
-    if (countryId === this.myCountryId) return;
+  handleRemoteSyncCountryStats(countryId, stats, packetTime = 0, forceInit = false) {
+    if (!forceInit && countryId === this.myCountryId) return;
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
     if (packetTime > 0 && country._lastStatsTime && packetTime < country._lastStatsTime) return;
@@ -1393,6 +1435,111 @@ export class WorldSimulationEngine {
     if (typeof stats.troops === 'number') country.troops = stats.troops;
     if (stats.upgrades) country.upgrades = { ...DEFAULT_UPGRADES, ...stats.upgrades };
     this._recalculateDerivedStats(country);
+  }
+
+  // ===== ADMIN POWERS (AUTHORIZED BY ADMIN IP ONLY) =====
+  adminGiveResources(countryId, troopsDelta = 50, goldDelta = 5000) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: 'Önce haritada bir devletin olmalı.' };
+    c.gold = Math.max(0, (c.gold || 0) + goldDelta);
+    c.troops = Math.min(Math.max(c.capacity, c.troops + troopsDelta), c.troops + troopsDelta);
+    this._recalculateDerivedStats(c);
+    this.sync.broadcast({
+      type: 'SYNC_COUNTRY_STATS',
+      countryId: c.id,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+      },
+    });
+    this.onEvent(`[ADMIN] +${troopsDelta} Asker & +${goldDelta} Altın eklendi!`);
+    return { ok: true };
+  }
+
+  adminMaxUpgrades(countryId) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: 'Önce haritada bir devletin olmalı.' };
+    for (const def of UPGRADE_DEFINITIONS) {
+      c.upgrades[def.key] = def.maxLevel;
+    }
+    this._recalculateDerivedStats(c);
+    this.sync.broadcast({
+      type: 'SYNC_COUNTRY_STATS',
+      countryId: c.id,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+      },
+    });
+    this.onSound('celebration');
+    this.onEvent('[ADMIN] Tüm geliştirmeler Maksimum Sv.25 yapıldı!');
+    return { ok: true };
+  }
+
+  adminDeleteCountry(countryId, broadcast = true) {
+    const c = this.countryMap.get(countryId);
+    const total = MAP_W * MAP_H;
+    for (let i = 0; i < total; i++) {
+      if (this.owners[i] === countryId) {
+        this.owners[i] = 0;
+      }
+    }
+    this.countries = this.countries.filter((x) => x.id !== countryId);
+    this.countryMap.delete(countryId);
+    this.ships = this.ships.filter((s) => s.countryId !== countryId);
+    if (this.myCountryId === countryId) {
+      this.myCountryId = null;
+      try { localStorage.removeItem('sf_my_country_id'); } catch {}
+    }
+    this.computeCountryBounds();
+    this.dirtyRegions = false;
+    this.dirtyPixels = true;
+
+    if (broadcast) {
+      this.sync.broadcast({
+        type: 'ADMIN_DELETE_COUNTRY',
+        countryId,
+      });
+      this.onEvent(`[ADMIN] ${c?.name || 'Devlet'} haritadan silindi!`);
+    }
+  }
+
+  adminClearChat(broadcast = true) {
+    this.chatMessages = [];
+    this.onChat([]);
+    if (broadcast) {
+      this.sync.broadcast({ type: 'ADMIN_CLEAR_CHAT' });
+      this.onEvent('[ADMIN] Global Sohbet temizlendi!');
+    }
+  }
+
+  adminResetWorld(broadcast = true) {
+    const total = MAP_W * MAP_H;
+    for (let i = 0; i < total; i++) {
+      this.owners[i] = this.worldData.isLand[i] ? 0 : -1;
+    }
+    this.countries = [];
+    this.countryMap.clear();
+    this.ships = [];
+    this.chatMessages = [];
+    this.undoStack = [];
+    this.myCountryId = null;
+    try { localStorage.removeItem('sf_my_country_id'); } catch {}
+    this.computeCountryBounds();
+    this.dirtyRegions = false;
+    this.dirtyPixels = true;
+    this.onChat([]);
+
+    if (broadcast) {
+      this.sync.broadcast({ type: 'ADMIN_RESET_WORLD' });
+      this.onEvent('[ADMIN] Tüm Dünya Haritası sıfırlandı!');
+    }
   }
 
   // Export compact world snapshot for cross-device WebRTC synchronization (Phone <-> PC)
@@ -1565,123 +1712,10 @@ export class WorldSimulationEngine {
     return bounds;
   }
 
-  saveState() {
-    try {
-      const total = MAP_W * MAP_H;
-      const rle = [];
-      let cur = this.owners[0];
-      let len = 1;
-
-      for (let i = 1; i < total; i++) {
-        const v = this.owners[i];
-        if (v === cur && len < 65535) {
-          len++;
-        } else {
-          rle.push(cur, len);
-          cur = v;
-          len = 1;
-        }
-      }
-      rle.push(cur, len);
-
-      const payload = {
-        v: 9,
-        w: MAP_W,
-        h: MAP_H,
-        countries: this.countries.map((c) => ({
-          id: c.id,
-          name: c.name,
-          color: c.color,
-          flagDataUrl: c.flagDataUrl,
-          capitalX: c.capitalX,
-          capitalY: c.capitalY,
-          creatorIp: c.creatorIp,
-          deviceId: c.deviceId,
-          troops: c.troops,
-          landCount: c.landCount,
-          population: c.population,
-          gold: c.gold,
-          upgrades: c.upgrades,
-          createdAt: c.createdAt,
-        })),
-        rle,
-      };
-
-      localStorage.setItem(WORLD_SAVE_KEY, JSON.stringify(payload));
-    } catch (e) {
-      console.warn('World save error:', e);
-    }
-  }
+  // 100% Server-Authoritative Mode: World map, countries, stats & chat are stored on the cloud server (never in localStorage/cookies)
+  saveState() {}
 
   loadState() {
-    try {
-      if (!localStorage.getItem('sf_world_reset_v9_done')) {
-        localStorage.removeItem('sf_shared_world_v4_data');
-        localStorage.removeItem('sf_shared_world_v5_worldbox');
-        localStorage.removeItem('sf_shared_world_v7_fresh');
-        localStorage.removeItem('sf_shared_world_v8_clean');
-        localStorage.removeItem('sf_my_country_id');
-        localStorage.setItem('sf_world_reset_v9_done', '1');
-        return false;
-      }
-
-      const raw = localStorage.getItem(WORLD_SAVE_KEY);
-      if (!raw) return false;
-      const data = JSON.parse(raw);
-      if (data.v !== 9 || data.w !== MAP_W || data.h !== MAP_H || !Array.isArray(data.rle)) {
-        return false;
-      }
-
-      const total = MAP_W * MAP_H;
-      let ptr = 0;
-      for (let i = 0; i < data.rle.length; i += 2) {
-        const val = data.rle[i];
-        const count = data.rle[i + 1];
-        for (let k = 0; k < count && ptr < total; k++) {
-          this.owners[ptr++] = val;
-        }
-      }
-
-      this.countries = [];
-      this.countryMap.clear();
-
-      const landCounts = new Map();
-      for (let i = 0; i < total; i++) {
-        const o = this.owners[i];
-        if (o > 0) {
-          landCounts.set(o, (landCounts.get(o) || 0) + 1);
-        }
-      }
-
-      for (const cd of data.countries || []) {
-        const actualLand = landCounts.get(cd.id) ?? 0;
-        if (actualLand <= 0) continue;
-
-        const country = this._normalizeCountry({
-          ...cd,
-          landCount: actualLand,
-        });
-
-        if (cd.flagDataUrl) {
-          loadDataUrlToFlagBuffer(cd.flagDataUrl)
-            .then((res) => {
-              country.flagRgba = res.rgba;
-              this.dirtyPixels = true;
-            })
-            .catch(() => {});
-        }
-
-        this.countries.push(country);
-        this.countryMap.set(country.id, country);
-      }
-
-      this.myCountryId = getMyCountryId() ? parseInt(getMyCountryId(), 10) : null;
-      this.dirtyPixels = true;
-      this.dirtyRegions = true;
-      return true;
-    } catch (e) {
-      console.warn('World load error:', e);
-      return false;
-    }
+    return false;
   }
 }

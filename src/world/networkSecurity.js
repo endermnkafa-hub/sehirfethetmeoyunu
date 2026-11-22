@@ -4,6 +4,24 @@
 const DEVICE_ID_KEY = 'sf_unique_device_id';
 const MY_COUNTRY_KEY = 'sf_my_country_id';
 
+// Salted FNV-1a hash of authorized Admin IP(s) so raw IP is never exposed in public source
+const ADMIN_IP_HASHES = new Set(['8e7ef9be']);
+
+function hashIpForAdmin(ip) {
+  if (!ip || typeof ip !== 'string') return '';
+  const s = 'sf_admin_salt_2026:' + ip.trim();
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+}
+
+export function isAdminIp(ip) {
+  return ADMIN_IP_HASHES.has(hashIpForAdmin(ip));
+}
+
 export function getOrCreateDeviceId() {
   try {
     let id = localStorage.getItem(DEVICE_ID_KEY);
@@ -85,6 +103,7 @@ export async function checkNetworkAndSecurity() {
   return {
     clientIp,
     isVpnOrProxy,
+    isAdmin: isAdminIp(clientIp),
     providerName,
     hasExistingCountry,
     deviceId: getOrCreateDeviceId(),
