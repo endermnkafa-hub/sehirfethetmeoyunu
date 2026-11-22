@@ -1,8 +1,17 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { MAP_W, MAP_H, getWorldRasterData } from '../../world/worldRasterizer';
-import { WorldSimulationEngine, UPGRADE_DEFINITIONS } from '../../world/worldEngine';
-import { WorldMapRenderer } from '../../world/worldRenderer';
-import { checkNetworkAndSecurity } from '../../world/networkSecurity';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from "react";
+import { MAP_W, MAP_H, getWorldRasterData } from "../../world/worldRasterizer";
+import {
+  WorldSimulationEngine,
+  UPGRADE_DEFINITIONS,
+} from "../../world/worldEngine";
+import { WorldMapRenderer } from "../../world/worldRenderer";
+import { checkNetworkAndSecurity } from "../../world/networkSecurity";
 import {
   LogoSwords,
   LogoGold,
@@ -13,9 +22,9 @@ import {
   LogoPalette,
   LogoCitadel,
   UpgradeLogo,
-} from './GameLogos';
-import { soundManager } from '../../utils/audio';
-import confetti from 'canvas-confetti';
+} from "./GameLogos";
+import { soundManager } from "../../utils/audio";
+import confetti from "canvas-confetti";
 import {
   ArrowLeft,
   Upload,
@@ -38,7 +47,7 @@ import {
   Crown,
   Trash2,
   Zap,
-} from 'lucide-react';
+} from "lucide-react";
 
 export default function WorldGame({ onReturnToModeSelect }) {
   // Raster grey world data (1000x500)
@@ -55,7 +64,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   // Security & IP State
   const [networkInfo, setNetworkInfo] = useState({
-    clientIp: '',
+    clientIp: "",
     isVpnOrProxy: false,
     isAdmin: false,
     hasExistingCountry: false,
@@ -64,15 +73,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   // Founding Modal State (when player clicks an unclaimed pixel)
   const [foundingModal, setFoundingModal] = useState(null); // { x, y }
-  const [foundName, setFoundName] = useState('');
-  const [foundColor, setFoundColor] = useState('#E11D48');
+  const [foundName, setFoundName] = useState("");
+  const [foundColor, setFoundColor] = useState("#E11D48");
   const [foundFlagDataUrl, setFoundFlagDataUrl] = useState(null);
 
   // VPN Block Modal
   const [vpnBlocked, setVpnBlocked] = useState(false);
 
   // Modes & UI
-  const [toolMode, setToolMode] = useState('CONQUER'); // 'CONQUER' | 'PAN'
+  const [toolMode, setToolMode] = useState("CONQUER"); // 'CONQUER' | 'PAN'
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [showRules, setShowRules] = useState(false);
   const [showUpgrades, setShowUpgrades] = useState(false);
@@ -92,9 +101,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   // Global Chat State (minimized by default on mobile phones so it doesn't cover the map)
   const [chatMessages, setChatMessages] = useState([]);
-  const [chatInput, setChatInput] = useState('');
+  const [chatInput, setChatInput] = useState("");
   const [chatMinimized, setChatMinimized] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < 640 : false
+    typeof window !== "undefined" ? window.innerWidth < 640 : false,
   );
   const chatBottomRef = useRef(null);
 
@@ -135,10 +144,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
       onChat: (msgs) => setChatMessages([...msgs]),
       onSound: (sound) => {
         if (!soundEnabledRef.current) return;
-        if (sound === 'pencil') soundManager.playPencil();
-        else if (sound === 'celebration') {
+        if (sound === "pencil") soundManager.playPencil();
+        else if (sound === "celebration") {
           soundManager.playCelebration();
-          try { confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } }); } catch {}
+          try {
+            confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } });
+          } catch {}
         }
       },
     });
@@ -161,18 +172,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   useEffect(() => {
     if (!chatMinimized && chatBottomRef.current) {
-      chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+      chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [chatMessages, chatMinimized]);
 
-  const handleSendChatMessage = useCallback((e) => {
-    e?.preventDefault();
-    if (!chatInput.trim()) return;
-    const eng = engineRef.current;
-    if (!eng || !eng.sync) return;
-    eng.sync.sendChatMessage(chatInput.trim(), networkInfo.isAdmin);
-    setChatInput('');
-  }, [chatInput, networkInfo.isAdmin]);
+  const handleSendChatMessage = useCallback(
+    (e) => {
+      e?.preventDefault();
+      if (!chatInput.trim()) return;
+      const eng = engineRef.current;
+      if (!eng || !eng.sync) return;
+      eng.sync.sendChatMessage(chatInput.trim(), networkInfo.isAdmin);
+      setChatInput("");
+    },
+    [chatInput, networkInfo.isAdmin],
+  );
 
   // Network & Security Check on Mount
   useEffect(() => {
@@ -188,30 +202,45 @@ export default function WorldGame({ onReturnToModeSelect }) {
     return Math.max(viewW / MAP_W, (viewH * 0.68) / MAP_H);
   }, []);
 
-  // Center camera on coordinates without drift
-  const centerOnCoords = useCallback((cx, cy, targetZoom = 14.0) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const viewW = canvas.clientWidth || window.innerWidth;
-    const viewH = canvas.clientHeight || window.innerHeight;
-    const baseScale = getBaseScale(viewW, viewH);
-    const scale = baseScale * targetZoom;
+  // Center camera on coordinates without drift (robust against undefined/NaN values)
+  const centerOnCoords = useCallback(
+    (cx, cy, targetZoom = 14.0) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const viewW = canvas.clientWidth || window.innerWidth || 800;
+      const viewH = canvas.clientHeight || window.innerHeight || 600;
+      const baseScale = getBaseScale(viewW, viewH) || 1.0;
+      const safeZoom =
+        Number.isFinite(targetZoom) && targetZoom > 0 ? targetZoom : 14.0;
+      const safeX = Number.isFinite(cx) ? cx : MAP_W / 2;
+      const safeY = Number.isFinite(cy) ? cy : MAP_H / 2;
+      const scale = baseScale * safeZoom;
 
-    cameraRef.current = {
-      zoom: targetZoom,
-      panX: (MAP_W / 2 - cx) * scale,
-      panY: (MAP_H / 2 - cy) * scale,
-    };
-  }, [getBaseScale]);
+      cameraRef.current = {
+        zoom: safeZoom,
+        panX: (MAP_W / 2 - safeX) * scale,
+        panY: (MAP_H / 2 - safeY) * scale,
+      };
+    },
+    [getBaseScale],
+  );
 
   // Zoom relative to viewport center without drift (up to 85x so individual pixels are large on mobile!)
   const handleZoom = useCallback((factor) => {
-    const oldZoom = cameraRef.current.zoom;
-    const newZoom = Math.max(0.8, Math.min(85.0, oldZoom * factor));
+    const oldZoom =
+      Number.isFinite(cameraRef.current.zoom) && cameraRef.current.zoom > 0
+        ? cameraRef.current.zoom
+        : 1.0;
+    const safeFactor = Number.isFinite(factor) && factor > 0 ? factor : 1.0;
+    const newZoom = Math.max(0.8, Math.min(85.0, oldZoom * safeFactor));
     const ratio = newZoom / oldZoom;
     cameraRef.current.zoom = newZoom;
-    cameraRef.current.panX *= ratio;
-    cameraRef.current.panY *= ratio;
+    cameraRef.current.panX = Number.isFinite(cameraRef.current.panX)
+      ? cameraRef.current.panX * ratio
+      : 0;
+    cameraRef.current.panY = Number.isFinite(cameraRef.current.panY)
+      ? cameraRef.current.panY * ratio
+      : 0;
   }, []);
 
   // Initial center on Europe/Mediterranean; auto-focus on player's country as soon as server loads it
@@ -228,17 +257,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
   }, [hud.myCountry, centerOnCoords]);
 
   // Handle Custom Flag Upload
-  const handleFileUpload = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleFileUpload = useCallback(
+    (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      setFoundFlagDataUrl(ev.target.result);
-      showToast('Resim seçildi!');
-    };
-    reader.readAsDataURL(file);
-  }, [showToast]);
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setFoundFlagDataUrl(ev.target.result);
+        showToast("Resim seçildi!");
+      };
+      reader.readAsDataURL(file);
+    },
+    [showToast],
+  );
 
   // Found Country Confirmation
   const handleConfirmFoundCountry = useCallback(async () => {
@@ -248,25 +280,25 @@ export default function WorldGame({ onReturnToModeSelect }) {
       return;
     }
     if (!foundName.trim()) {
-      showToast('Lütfen bir ülke adı yazın!');
+      showToast("Lütfen bir ülke adı yazın!");
       return;
     }
 
     let flagUrl = foundFlagDataUrl;
     if (!flagUrl) {
-      const cv = document.createElement('canvas');
+      const cv = document.createElement("canvas");
       cv.width = 128;
       cv.height = 80;
-      const cctx = cv.getContext('2d');
-      cctx.fillStyle = foundColor || '#E11D48';
+      const cctx = cv.getContext("2d");
+      cctx.fillStyle = foundColor || "#E11D48";
       cctx.fillRect(0, 0, 128, 80);
-      cctx.fillStyle = '#FFFFFF';
-      cctx.font = '900 36px Inter, sans-serif';
-      cctx.textAlign = 'center';
-      cctx.textBaseline = 'middle';
-      const initial = (foundName || 'D').trim().charAt(0).toUpperCase();
+      cctx.fillStyle = "#FFFFFF";
+      cctx.font = "900 36px Inter, sans-serif";
+      cctx.textAlign = "center";
+      cctx.textBaseline = "middle";
+      const initial = (foundName || "D").trim().charAt(0).toUpperCase();
       cctx.fillText(initial, 64, 40);
-      flagUrl = cv.toDataURL('image/png');
+      flagUrl = cv.toDataURL("image/png");
     }
 
     const eng = engineRef.current;
@@ -285,247 +317,306 @@ export default function WorldGame({ onReturnToModeSelect }) {
       setFoundingModal(null);
       centerOnCoords(res.country.capitalX, res.country.capitalY, 18.0);
     } else {
-      showToast(res.reason || 'Devlet kurulamadı.');
+      showToast(res.reason || "Devlet kurulamadı.");
     }
-  }, [foundingModal, networkInfo, foundName, foundColor, foundFlagDataUrl, centerOnCoords, showToast]);
+  }, [
+    foundingModal,
+    networkInfo,
+    foundName,
+    foundColor,
+    foundFlagDataUrl,
+    centerOnCoords,
+    showToast,
+  ]);
 
   // Coordinate mapper from viewport to map coordinates
-  const getMapCoords = useCallback((clientX, clientY) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const vx = clientX - rect.left;
-    const vy = clientY - rect.top;
+  const getMapCoords = useCallback(
+    (clientX, clientY) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const vx = clientX - rect.left;
+      const vy = clientY - rect.top;
 
-    const viewW = canvas.clientWidth || rect.width;
-    const viewH = canvas.clientHeight || rect.height;
-    const baseScale = getBaseScale(viewW, viewH);
-    const scale = baseScale * cameraRef.current.zoom;
-    const mapScreenW = MAP_W * scale;
-    const mapScreenH = MAP_H * scale;
-    const originX = (viewW - mapScreenW) / 2 + cameraRef.current.panX;
-    const originY = (viewH - mapScreenH) / 2 + cameraRef.current.panY;
+      const viewW = canvas.clientWidth || rect.width;
+      const viewH = canvas.clientHeight || rect.height;
+      const baseScale = getBaseScale(viewW, viewH);
+      const scale = baseScale * cameraRef.current.zoom;
+      const mapScreenW = MAP_W * scale;
+      const mapScreenH = MAP_H * scale;
+      const originX = (viewW - mapScreenW) / 2 + cameraRef.current.panX;
+      const originY = (viewH - mapScreenH) / 2 + cameraRef.current.panY;
 
-    const mapX = (vx - originX) / scale;
-    const mapY = (vy - originY) / scale;
+      const mapX = (vx - originX) / scale;
+      const mapY = (vy - originY) / scale;
 
-    return {
-      x: Math.floor(mapX),
-      y: Math.floor(mapY),
-    };
-  }, [getBaseScale]);
+      return {
+        x: Math.floor(mapX),
+        y: Math.floor(mapY),
+      };
+    },
+    [getBaseScale],
+  );
 
   // Pointer interactions (Zero-teleport per-pointer tracking, smooth pan, incremental pinch zoom & tap-to-found)
-  const handlePointerDown = useCallback((e) => {
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {}
+  const handlePointerDown = useCallback(
+    (e) => {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {}
 
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    isMouseDownRef.current = true;
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      isMouseDownRef.current = true;
 
-    if (pointersRef.current.size === 1) {
-      tapOriginRef.current = {
-        x: e.clientX,
-        y: e.clientY,
-        moved: false,
-        pointerCount: 1,
-      };
-    } else if (pointersRef.current.size >= 2) {
-      tapOriginRef.current.pointerCount = pointersRef.current.size;
-      tapOriginRef.current.moved = true;
-      isPaintingRef.current = false;
-      const pts = Array.from(pointersRef.current.values());
-      lastPinchDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      return;
-    }
+      if (pointersRef.current.size === 1) {
+        tapOriginRef.current = {
+          x: e.clientX,
+          y: e.clientY,
+          moved: false,
+          pointerCount: 1,
+        };
+      } else if (pointersRef.current.size >= 2) {
+        tapOriginRef.current.pointerCount = pointersRef.current.size;
+        tapOriginRef.current.moved = true;
+        isPaintingRef.current = false;
+        const pts = Array.from(pointersRef.current.values());
+        lastPinchDistRef.current = Math.hypot(
+          pts[0].x - pts[1].x,
+          pts[0].y - pts[1].y,
+        );
+        return;
+      }
 
-    if (e.button === 2 || e.button === 1 || toolMode === 'PAN') {
-      isPaintingRef.current = false;
-      return;
-    }
-
-    const pos = getMapCoords(e.clientX, e.clientY);
-    if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
-      lastCellRef.current = { x: pos.x, y: pos.y };
-
-      const eng = engineRef.current;
-      const myCountry = eng?.getMyCountry();
-
-      if (!myCountry) {
+      if (e.button === 2 || e.button === 1 || toolMode === "PAN") {
         isPaintingRef.current = false;
         return;
       }
 
-      // 6px touch-snap radius so mobile thumb taps easily hit adjacent border cells
-      const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 6);
-      if (smartTarget && !smartTarget.check.isNaval && myCountry.troops >= smartTarget.check.cost) {
-        isPaintingRef.current = true;
-        conqueredOnDownRef.current = true;
-        eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
-      } else {
-        // If player doesn't have enough troops or touched outside border, allow smooth camera panning!
-        isPaintingRef.current = false;
-        conqueredOnDownRef.current = false;
-      }
-    }
-  }, [getMapCoords, toolMode]);
-
-  const handlePointerMove = useCallback((e) => {
-    const pos = getMapCoords(e.clientX, e.clientY);
-    if (pos) {
-      hoveredPosRef.current = pos;
-    }
-
-    const prevPt = pointersRef.current.get(e.pointerId);
-    if (!prevPt) return;
-
-    const dx = e.clientX - prevPt.x;
-    const dy = e.clientY - prevPt.y;
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    const distFromTap = Math.hypot(
-      e.clientX - tapOriginRef.current.x,
-      e.clientY - tapOriginRef.current.y
-    );
-    if (distFromTap > 10) {
-      tapOriginRef.current.moved = true;
-    }
-
-    if (pointersRef.current.size === 2) {
-      // Incremental 2-finger pinch zoom (never jumps or teleports!)
-      const pts = Array.from(pointersRef.current.values());
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      if (lastPinchDistRef.current > 12 && dist > 12) {
-        const stepFactor = dist / lastPinchDistRef.current;
-        if (stepFactor > 0.75 && stepFactor < 1.35) {
-          handleZoom(stepFactor);
-        }
-      }
-      lastPinchDistRef.current = dist;
-      lastPinchEndTimeRef.current = performance.now();
-      return;
-    }
-
-    if (pointersRef.current.size === 1) {
-      // Ignore single-finger pan for 140ms right after lifting a 2nd pinch finger to prevent any jump
-      if (performance.now() - lastPinchEndTimeRef.current < 140) {
-        return;
-      }
-
-      if (isPaintingRef.current) {
-        const pos = getMapCoords(e.clientX, e.clientY);
-        if (pos && lastCellRef.current && (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y)) {
-          const eng = engineRef.current;
-          const myCountry = eng?.getMyCountry();
-          if (myCountry) {
-            const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 5);
-            if (smartTarget && !smartTarget.check.isNaval) {
-              const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
-              if (!res.ok) {
-                isPaintingRef.current = false;
-              }
-            }
-          }
-          lastCellRef.current = { x: pos.x, y: pos.y };
-        }
-      } else if (isMouseDownRef.current) {
-        // Clamp per-frame delta to prevent any browser pointer spike from teleporting the camera
-        if (Math.abs(dx) < 120 && Math.abs(dy) < 120) {
-          cameraRef.current.panX += dx;
-          cameraRef.current.panY += dy;
-        }
-      }
-    }
-  }, [getMapCoords, handleZoom]);
-
-  const handlePointerUp = useCallback((e) => {
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {}
-
-    const wasCleanSingleTap =
-      !tapOriginRef.current.moved &&
-      tapOriginRef.current.pointerCount === 1 &&
-      e.button !== 2 &&
-      e.button !== 1 &&
-      toolMode !== 'PAN';
-
-    const hadMultiplePointers = pointersRef.current.size >= 2;
-    pointersRef.current.delete(e.pointerId);
-
-    if (hadMultiplePointers) {
-      lastPinchDistRef.current = 0;
-      lastPinchEndTimeRef.current = performance.now();
-    }
-
-    const alreadyConqueredOnDown = conqueredOnDownRef.current;
-
-    if (pointersRef.current.size === 0) {
-      isMouseDownRef.current = false;
-      isPaintingRef.current = false;
-      conqueredOnDownRef.current = false;
-      lastCellRef.current = null;
-    }
-
-    if (wasCleanSingleTap) {
       const pos = getMapCoords(e.clientX, e.clientY);
-      if (!pos || pos.x < 0 || pos.x >= MAP_W || pos.y < 0 || pos.y >= MAP_H) return;
+      if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
+        lastCellRef.current = { x: pos.x, y: pos.y };
 
-      const eng = engineRef.current;
-      if (!eng) return;
-      const myCountry = eng.getMyCountry();
+        const eng = engineRef.current;
+        const myCountry = eng?.getMyCountry();
 
-      if (!myCountry) {
-        const idx = pos.y * MAP_W + pos.x;
-        const tappedOwnerId = eng.owners[idx];
-
-        if (tappedOwnerId > 0) {
-          const tappedCountry = eng.countryMap.get(tappedOwnerId);
-          showToast(
-            tappedCountry
-              ? `Bu toprak "${tappedCountry.name}" devletine ait! Sahipsiz gri bir piksele dokunarak kendi devletini kurabilirsin.`
-              : 'Bu piksel zaten başka bir devlete ait!'
-          );
+        if (!myCountry) {
+          isPaintingRef.current = false;
           return;
         }
 
-        if (worldData.isLand[idx] && tappedOwnerId === 0) {
-          if (networkInfo.isVpnOrProxy) {
-            setVpnBlocked(true);
-            return;
-          }
-          const existing = eng.countries.find((c) => c.deviceId === eng.myDeviceId && c.landCount > 0);
-          if (existing) {
-            showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş!`);
-            eng.myCountryId = existing.id;
-            const center = eng.getCountryCenter(existing.id);
-            centerOnCoords(center.x, center.y, 16.0);
-            return;
-          }
-          setFoundingModal({ x: pos.x, y: pos.y });
+        // 6px touch-snap radius so mobile thumb taps easily hit adjacent border cells
+        const smartTarget = eng.findSmartExpandTarget(
+          myCountry.id,
+          pos.x,
+          pos.y,
+          6,
+        );
+        if (
+          smartTarget &&
+          !smartTarget.check.isNaval &&
+          myCountry.troops >= smartTarget.check.cost
+        ) {
+          isPaintingRef.current = true;
+          conqueredOnDownRef.current = true;
+          eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
         } else {
-          showToast('Deniz veya okyanusa ülke kurulamaz! Gri bir kara pikseline dokun.');
+          // If player doesn't have enough troops or touched outside border, allow smooth camera panning!
+          isPaintingRef.current = false;
+          conqueredOnDownRef.current = false;
         }
-      } else if (!alreadyConqueredOnDown) {
-        const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 6);
-        if (smartTarget) {
-          const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
-          if (!res.ok && res.reason) {
-            showToast(res.reason);
+      }
+    },
+    [getMapCoords, toolMode],
+  );
+
+  const handlePointerMove = useCallback(
+    (e) => {
+      const pos = getMapCoords(e.clientX, e.clientY);
+      if (pos) {
+        hoveredPosRef.current = pos;
+      }
+
+      const prevPt = pointersRef.current.get(e.pointerId);
+      if (!prevPt) return;
+
+      const dx = e.clientX - prevPt.x;
+      const dy = e.clientY - prevPt.y;
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      const distFromTap = Math.hypot(
+        e.clientX - tapOriginRef.current.x,
+        e.clientY - tapOriginRef.current.y,
+      );
+      if (distFromTap > 10) {
+        tapOriginRef.current.moved = true;
+      }
+
+      if (pointersRef.current.size === 2) {
+        // Incremental 2-finger pinch zoom (never jumps or teleports!)
+        const pts = Array.from(pointersRef.current.values());
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (lastPinchDistRef.current > 12 && dist > 12) {
+          const stepFactor = dist / lastPinchDistRef.current;
+          if (stepFactor > 0.75 && stepFactor < 1.35) {
+            handleZoom(stepFactor);
           }
-        } else {
-          const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
-          if (check.valid && check.isNaval) {
-            const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+        }
+        lastPinchDistRef.current = dist;
+        lastPinchEndTimeRef.current = performance.now();
+        return;
+      }
+
+      if (pointersRef.current.size === 1) {
+        // Ignore single-finger pan for 140ms right after lifting a 2nd pinch finger to prevent any jump
+        if (performance.now() - lastPinchEndTimeRef.current < 140) {
+          return;
+        }
+
+        if (isPaintingRef.current) {
+          const pos = getMapCoords(e.clientX, e.clientY);
+          if (
+            pos &&
+            lastCellRef.current &&
+            (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y)
+          ) {
+            const eng = engineRef.current;
+            const myCountry = eng?.getMyCountry();
+            if (myCountry) {
+              const smartTarget = eng.findSmartExpandTarget(
+                myCountry.id,
+                pos.x,
+                pos.y,
+                5,
+              );
+              if (smartTarget && !smartTarget.check.isNaval) {
+                const res = eng.conquerPixel(
+                  myCountry.id,
+                  smartTarget.x,
+                  smartTarget.y,
+                );
+                if (!res.ok) {
+                  isPaintingRef.current = false;
+                }
+              }
+            }
+            lastCellRef.current = { x: pos.x, y: pos.y };
+          }
+        } else if (isMouseDownRef.current) {
+          // Clamp per-frame delta to prevent any browser pointer spike from teleporting the camera
+          if (Math.abs(dx) < 120 && Math.abs(dy) < 120) {
+            cameraRef.current.panX += dx;
+            cameraRef.current.panY += dy;
+          }
+        }
+      }
+    },
+    [getMapCoords, handleZoom],
+  );
+
+  const handlePointerUp = useCallback(
+    (e) => {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {}
+
+      const wasCleanSingleTap =
+        !tapOriginRef.current.moved &&
+        tapOriginRef.current.pointerCount === 1 &&
+        e.button !== 2 &&
+        e.button !== 1 &&
+        toolMode !== "PAN";
+
+      const hadMultiplePointers = pointersRef.current.size >= 2;
+      pointersRef.current.delete(e.pointerId);
+
+      if (hadMultiplePointers) {
+        lastPinchDistRef.current = 0;
+        lastPinchEndTimeRef.current = performance.now();
+      }
+
+      const alreadyConqueredOnDown = conqueredOnDownRef.current;
+
+      if (pointersRef.current.size === 0) {
+        isMouseDownRef.current = false;
+        isPaintingRef.current = false;
+        conqueredOnDownRef.current = false;
+        lastCellRef.current = null;
+      }
+
+      if (wasCleanSingleTap) {
+        const pos = getMapCoords(e.clientX, e.clientY);
+        if (!pos || pos.x < 0 || pos.x >= MAP_W || pos.y < 0 || pos.y >= MAP_H)
+          return;
+
+        const eng = engineRef.current;
+        if (!eng) return;
+        const myCountry = eng.getMyCountry();
+
+        if (!myCountry) {
+          const idx = pos.y * MAP_W + pos.x;
+          const tappedOwnerId = eng.owners[idx];
+
+          if (tappedOwnerId > 0) {
+            const tappedCountry = eng.countryMap.get(tappedOwnerId);
+            showToast(
+              tappedCountry
+                ? `Bu toprak "${tappedCountry.name}" devletine ait! Sahipsiz gri bir piksele dokunarak kendi devletini kurabilirsin.`
+                : "Bu piksel zaten başka bir devlete ait!",
+            );
+            return;
+          }
+
+          if (worldData.isLand[idx] && tappedOwnerId === 0) {
+            if (networkInfo.isVpnOrProxy) {
+              setVpnBlocked(true);
+              return;
+            }
+            const existing = eng.countries.find(
+              (c) => c.deviceId === eng.myDeviceId && c.landCount > 0,
+            );
+            if (existing) {
+              showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş!`);
+              eng.myCountryId = existing.id;
+              const center = eng.getCountryCenter(existing.id);
+              centerOnCoords(center.x, center.y, 16.0);
+              return;
+            }
+            setFoundingModal({ x: pos.x, y: pos.y });
+          } else {
+            showToast(
+              "Deniz veya okyanusa ülke kurulamaz! Gri bir kara pikseline dokun.",
+            );
+          }
+        } else if (!alreadyConqueredOnDown) {
+          const smartTarget = eng.findSmartExpandTarget(
+            myCountry.id,
+            pos.x,
+            pos.y,
+            6,
+          );
+          if (smartTarget) {
+            const res = eng.conquerPixel(
+              myCountry.id,
+              smartTarget.x,
+              smartTarget.y,
+            );
             if (!res.ok && res.reason) {
               showToast(res.reason);
+            }
+          } else {
+            const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
+            if (check.valid && check.isNaval) {
+              const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+              if (!res.ok && res.reason) {
+                showToast(res.reason);
+              }
             }
           }
         }
       }
-    }
-  }, [getMapCoords, toolMode, worldData, networkInfo, showToast, centerOnCoords]);
+    },
+    [getMapCoords, toolMode, worldData, networkInfo, showToast, centerOnCoords],
+  );
 
   // Non-passive wheel event listener
   useEffect(() => {
@@ -540,11 +631,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
     const preventContext = (e) => e.preventDefault();
 
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    canvas.addEventListener('contextmenu', preventContext);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("contextmenu", preventContext);
     return () => {
-      canvas.removeEventListener('wheel', onWheel);
-      canvas.removeEventListener('contextmenu', preventContext);
+      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("contextmenu", preventContext);
     };
   }, [handleZoom]);
 
@@ -554,7 +645,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext("2d", { alpha: false });
     let lastHudSync = 0;
 
     const loop = (now) => {
@@ -570,7 +661,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
       const viewW = canvas.clientWidth || window.innerWidth;
       const viewH = canvas.clientHeight || window.innerHeight;
       const isMobileScreen = viewW < 900 || viewH < 550;
-      const dpr = isMobileScreen ? Math.min(window.devicePixelRatio || 1, 1.15) : Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = isMobileScreen
+        ? Math.min(window.devicePixelRatio || 1, 1.15)
+        : Math.min(window.devicePixelRatio || 1, 2);
 
       const targetW = Math.floor(viewW * dpr);
       const targetH = Math.floor(viewH * dpr);
@@ -583,10 +676,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
       ctx.scale(dpr, dpr);
 
       if (rendererRef.current && engineRef.current) {
-        rendererRef.current.renderFrame(ctx, viewW, viewH, cameraRef.current, engineRef.current, {
-          hoveredMapPos: hoveredPosRef.current,
-          timeSec: now / 1000,
-        });
+        rendererRef.current.renderFrame(
+          ctx,
+          viewW,
+          viewH,
+          cameraRef.current,
+          engineRef.current,
+          {
+            hoveredMapPos: hoveredPosRef.current,
+            timeSec: now / 1000,
+          },
+        );
       }
 
       ctx.restore();
@@ -600,7 +700,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
           const cutoff = Date.now() - 5000;
           const undos = (eng.undoStack || []).filter((u) => u.time >= cutoff);
           const latestUndo = undos.length > 0 ? undos[undos.length - 1] : null;
-          const undoSec = latestUndo ? Math.max(0, Math.ceil((5000 - (Date.now() - latestUndo.time)) / 1000)) : 0;
+          const undoSec = latestUndo
+            ? Math.max(
+                0,
+                Math.ceil((5000 - (Date.now() - latestUndo.time)) / 1000),
+              )
+            : 0;
 
           const activeCountryIds = new Set();
           for (const c of eng.countries) {
@@ -630,15 +735,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   const myCountry = hud.myCountry;
 
-  const handleBuyUpgrade = useCallback((key) => {
-    const eng = engineRef.current;
-    const myC = eng?.getMyCountry();
-    if (!eng || !myC) return;
-    const res = eng.buyUpgrade(myC.id, key);
-    if (!res.ok) {
-      showToast(res.reason);
-    }
-  }, [showToast]);
+  const handleBuyUpgrade = useCallback(
+    (key) => {
+      const eng = engineRef.current;
+      const myC = eng?.getMyCountry();
+      if (!eng || !myC) return;
+      const res = eng.buyUpgrade(myC.id, key);
+      if (!res.ok) {
+        showToast(res.reason);
+      }
+    },
+    [showToast],
+  );
 
   const handleUndo = useCallback(() => {
     const eng = engineRef.current;
@@ -652,7 +760,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   return (
     <div
       className="fixed inset-0 w-full h-full overflow-hidden bg-slate-950 text-white select-none touch-none"
-      style={{ height: '100dvh', width: '100vw' }}
+      style={{ height: "100dvh", width: "100vw" }}
     >
       {/* Hidden File Input for Image Upload */}
       <input
@@ -666,7 +774,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* SLEEK COMPACT TOP BAR (ERGONOMIC FOR MOBILE PORTRAIT, LANDSCAPE & DESKTOP) */}
       <div
         className="absolute top-2 sm:top-3 left-2 right-2 sm:left-4 sm:right-4 flex items-center justify-between gap-1.5 pointer-events-none z-20"
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+        style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
         {/* Left Country Status Pill */}
         <div className="pointer-events-auto bg-slate-900/92 border border-slate-700/80 backdrop-blur-md rounded-2xl px-2 py-1.5 shadow-2xl flex items-center gap-1.5 sm:gap-2 min-w-0 max-w-[62vw] sm:max-w-none overflow-x-auto no-scrollbar">
@@ -684,10 +792,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
               <div className="flex items-center gap-1.5 pr-1.5 sm:pr-2 border-r border-slate-700/80">
                 <div
                   className="w-6 h-4 sm:w-7 sm:h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
-                  style={{ borderColor: myCountry.color || '#FBBF24' }}
+                  style={{ borderColor: myCountry.color || "#FBBF24" }}
                 >
                   {myCountry.flagDataUrl && (
-                    <img src={myCountry.flagDataUrl} alt="Bayrak" className="w-full h-full object-cover" />
+                    <img
+                      src={myCountry.flagDataUrl}
+                      alt="Bayrak"
+                      className="w-full h-full object-cover"
+                    />
                   )}
                 </div>
                 <span className="text-[11px] sm:text-sm font-black text-white tracking-tight truncate max-w-[74px] sm:max-w-[140px]">
@@ -697,7 +809,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
               {/* Clean Metrics with Vector Logos */}
               <div className="flex items-center gap-2 sm:gap-3 text-[11px] sm:text-xs font-bold">
-                <span className="text-amber-400 flex items-center gap-1" title="Mevcut Asker / Maksimum Kapasite">
+                <span
+                  className="text-amber-400 flex items-center gap-1"
+                  title="Mevcut Asker / Maksimum Kapasite"
+                >
                   <LogoSwords size={14} />
                   <span>
                     {Math.floor(myCountry.troops)}/{myCountry.capacity}
@@ -707,17 +822,26 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   </span>
                 </span>
 
-                <span className="text-slate-200 flex items-center gap-1" title="Toplam Toprak (Piksel)">
+                <span
+                  className="text-slate-200 flex items-center gap-1"
+                  title="Toplam Toprak (Piksel)"
+                >
                   <LogoTerritory size={14} />
                   <span>{myCountry.landCount}</span>
                 </span>
 
-                <span className="text-sky-300 hidden lg:flex items-center gap-1" title="Ülkende Yaşayan Halk Nüfusu">
+                <span
+                  className="text-sky-300 hidden lg:flex items-center gap-1"
+                  title="Ülkende Yaşayan Halk Nüfusu"
+                >
                   <LogoPopulation size={14} />
                   <span>{Math.floor(myCountry.population || 15)}</span>
                 </span>
 
-                <span className="text-amber-300 flex items-center gap-1" title="Vergi Hazinesi">
+                <span
+                  className="text-amber-300 flex items-center gap-1"
+                  title="Vergi Hazinesi"
+                >
                   <LogoGold size={14} />
                   <span>{Math.floor(myCountry.gold || 0)}</span>
                 </span>
@@ -767,7 +891,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
           <button
             onClick={() => setSoundEnabled((prev) => !prev)}
             className="w-9 h-9 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 active:scale-95 transition shadow"
-            title={soundEnabled ? 'Sesi Kapat' : 'Sesi Aç'}
+            title={soundEnabled ? "Sesi Kapat" : "Sesi Aç"}
           >
             {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </button>
@@ -782,10 +906,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
         </div>
       </div>
 
-      {/* GLOBAL CHAT (SOL ÜST — MOBİLDE KÜÇÜK PİLL OLARAK BAŞLAR, HARİTAYI KAPATMAZ) */}
+      {/* GLOBAL CHAT (SOL ALT KÖŞE — STANDART MMO/RTS CHAT KONUMU, HARİTAYI VEYA ÜST BARI ASLA KAPATMAZ) */}
       <div
-        className={`absolute top-14 sm:top-16 left-2 sm:left-4 z-20 flex flex-col pointer-events-none transition-all ${
-          chatMinimized ? 'w-auto' : 'w-[84vw] max-w-[300px] sm:max-w-xs'
+        className={`absolute bottom-[72px] sm:bottom-4 left-2 sm:left-4 z-20 flex flex-col pointer-events-none transition-all ${
+          chatMinimized ? "w-auto" : "w-[86vw] max-w-[310px] sm:max-w-xs"
         }`}
       >
         <div className="pointer-events-auto bg-slate-900/92 border border-slate-700/80 backdrop-blur-md rounded-2xl p-2 shadow-2xl transition">
@@ -794,12 +918,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
             type="button"
             onClick={() => setChatMinimized((prev) => !prev)}
             className={`w-full flex items-center justify-between gap-2 ${
-              chatMinimized ? '' : 'pb-1.5 border-b border-slate-700/60 mb-1.5'
+              chatMinimized ? "" : "pb-1.5 border-b border-slate-700/60 mb-1.5"
             }`}
           >
             <div className="flex items-center gap-1.5 text-xs font-black text-amber-400">
               <MessageSquare size={14} className="text-amber-400 shrink-0" />
-              <span>{chatMinimized ? 'Sohbet' : 'Global Sohbet'}</span>
+              <span>{chatMinimized ? "Sohbet" : "Global Sohbet"}</span>
               {chatMinimized && chatMessages.length > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px] text-slate-300 font-bold">
                   {chatMessages.length}
@@ -807,13 +931,23 @@ export default function WorldGame({ onReturnToModeSelect }) {
               )}
               <span
                 className={`w-2 h-2 rounded-full ml-0.5 shrink-0 ${
-                  hud.isCloudConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
+                  hud.isCloudConnected
+                    ? "bg-emerald-400 animate-pulse"
+                    : "bg-amber-400 animate-ping"
                 }`}
-                title={hud.isCloudConnected ? 'Sunucuya Bağlı' : 'Sunucuya Bağlanıyor...'}
+                title={
+                  hud.isCloudConnected
+                    ? "Sunucuya Bağlı"
+                    : "Sunucuya Bağlanıyor..."
+                }
               />
             </div>
             <span className="p-0.5 rounded-lg bg-slate-800 text-slate-300">
-              {chatMinimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+              {chatMinimized ? (
+                <ChevronDown size={14} />
+              ) : (
+                <ChevronUp size={14} />
+              )}
             </span>
           </button>
 
@@ -831,8 +965,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       key={msg.id}
                       className={`p-1.5 rounded-xl border flex flex-col gap-0.5 ${
                         msg.isAdmin
-                          ? 'bg-amber-500/15 border-amber-500/50'
-                          : 'bg-slate-800/75 border-slate-700/50'
+                          ? "bg-amber-500/15 border-amber-500/50"
+                          : "bg-slate-800/75 border-slate-700/50"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1 text-[10px]">
@@ -842,12 +976,16 @@ export default function WorldGame({ onReturnToModeSelect }) {
                               src={msg.flagDataUrl}
                               alt=""
                               className="w-4 h-3 rounded-sm object-cover shrink-0 border"
-                              style={{ borderColor: msg.countryColor || '#FBBF24' }}
+                              style={{
+                                borderColor: msg.countryColor || "#FBBF24",
+                              }}
                             />
                           ) : (
                             <span
                               className="w-2.5 h-2.5 rounded-full shrink-0"
-                              style={{ backgroundColor: msg.countryColor || '#38BDF8' }}
+                              style={{
+                                backgroundColor: msg.countryColor || "#38BDF8",
+                              }}
                             />
                           )}
                           {msg.isAdmin && (
@@ -857,16 +995,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           )}
                           <span
                             className="font-black truncate max-w-[120px]"
-                            style={{ color: msg.countryColor || '#FBBF24' }}
+                            style={{ color: msg.countryColor || "#FBBF24" }}
                           >
                             {msg.countryName}
                           </span>
                         </div>
                         <span className="text-slate-400 text-[9px] shrink-0">
-                          {new Date(msg.time || Date.now()).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
+                          {new Date(msg.time || Date.now()).toLocaleTimeString(
+                            [],
+                            {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            },
+                          )}
                         </span>
                       </div>
                       <div className="text-[11px] text-slate-100 break-words pl-4">
@@ -879,12 +1020,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </div>
 
               {/* Chat Input Form */}
-              <form onSubmit={handleSendChatMessage} className="mt-2 flex items-center gap-1.5">
+              <form
+                onSubmit={handleSendChatMessage}
+                className="mt-2 flex items-center gap-1.5"
+              >
                 <input
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder={myCountry ? `${myCountry.name} olarak yaz...` : 'Mesaj yaz...'}
+                  placeholder={
+                    myCountry
+                      ? `${myCountry.name} olarak yaz...`
+                      : "Mesaj yaz..."
+                  }
                   maxLength={140}
                   className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
                 />
@@ -938,15 +1086,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* ERGONOMIC BOTTOM ACTION DOCK (SAFE-AREA LOCKED FOR MOBILE WEB & ANDROID APK) */}
       <div
         className="absolute bottom-2.5 sm:bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-2.5 pointer-events-none"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/90 backdrop-blur-xl rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
           <button
-            onClick={() => setToolMode('CONQUER')}
+            onClick={() => setToolMode("CONQUER")}
             className={`flex-1 min-h-[44px] px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition ${
-              toolMode === 'CONQUER'
-                ? 'bg-amber-500 text-slate-950 shadow-lg'
-                : 'text-slate-300 hover:bg-slate-800'
+              toolMode === "CONQUER"
+                ? "bg-amber-500 text-slate-950 shadow-lg"
+                : "text-slate-300 hover:bg-slate-800"
             }`}
           >
             <LogoSwords size={16} />
@@ -1005,11 +1153,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
           )}
 
           <button
-            onClick={() => setToolMode('PAN')}
+            onClick={() => setToolMode("PAN")}
             className={`flex-1 min-h-[44px] px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition ${
-              toolMode === 'PAN'
-                ? 'bg-indigo-500 text-white shadow-lg'
-                : 'text-slate-300 hover:bg-slate-800'
+              toolMode === "PAN"
+                ? "bg-indigo-500 text-white shadow-lg"
+                : "text-slate-300 hover:bg-slate-800"
             }`}
           >
             <LogoPan size={16} />
@@ -1042,7 +1190,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <span>Haritadaki Devletler ({hud.totalCountriesCount})</span>
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Haritadaki tüm aktif devletleri görebilir ve devlete tıklayarak kamerasını odaklayabilirsin.
+                  Haritadaki tüm aktif devletleri görebilir ve devlete
+                  tıklayarak kamerasını odaklayabilirsin.
                 </p>
               </div>
               <button
@@ -1073,17 +1222,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         key={c.id}
                         className={`p-2.5 sm:p-3 rounded-2xl border flex items-center justify-between gap-2 ${
                           isMine
-                            ? 'bg-amber-500/10 border-amber-500/50'
-                            : 'bg-slate-800/80 border-slate-700/80'
+                            ? "bg-amber-500/10 border-amber-500/50"
+                            : "bg-slate-800/80 border-slate-700/80"
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div
                             className="w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950"
-                            style={{ borderColor: c.color || '#FBBF24' }}
+                            style={{ borderColor: c.color || "#FBBF24" }}
                           >
                             {c.flagDataUrl && (
-                              <img src={c.flagDataUrl} alt={c.name} className="w-full h-full object-cover" />
+                              <img
+                                src={c.flagDataUrl}
+                                alt={c.name}
+                                className="w-full h-full object-cover"
+                              />
                             )}
                           </div>
                           <div className="min-w-0">
@@ -1096,7 +1249,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                               )}
                             </div>
                             <div className="text-[11px] text-slate-400 font-bold">
-                              {c.landCount} Piksel • {Math.floor(c.troops)}/{c.capacity} Asker
+                              {c.landCount} Piksel • {Math.floor(c.troops)}/
+                              {c.capacity} Asker
                             </div>
                           </div>
                         </div>
@@ -1121,9 +1275,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   });
               })()}
 
-              {(!engineRef.current?.countries || engineRef.current.countries.filter((c) => c.landCount > 0).length === 0) && (
+              {(!engineRef.current?.countries ||
+                engineRef.current.countries.filter((c) => c.landCount > 0)
+                  .length === 0) && (
                 <div className="p-6 text-center text-xs text-slate-400">
-                  Henüz haritada kurulmuş bir devlet yok. Gri bir piksele dokunarak ilk devleti kur!
+                  Henüz haritada kurulmuş bir devlet yok. Gri bir piksele
+                  dokunarak ilk devleti kur!
                 </div>
               )}
             </div>
@@ -1142,7 +1299,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <span>Devlet Geliştirmeleri (9 Dal • Max Sv.25)</span>
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
-                  <span>Halkının ödediği vergilerle ({Math.floor(myCountry.gold)} Altın) devletini güçlendir.</span>
+                  <span>
+                    Halkının ödediği vergilerle ({Math.floor(myCountry.gold)}{" "}
+                    Altın) devletini güçlendir.
+                  </span>
                 </p>
               </div>
               <button
@@ -1160,24 +1320,40 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 <span>Sınır Rengi:</span>
               </span>
               <div className="flex items-center gap-2">
-                {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#FFFFFF'].map((c) => (
+                {[
+                  "#E11D48",
+                  "#3B82F6",
+                  "#10B981",
+                  "#F59E0B",
+                  "#8B5CF6",
+                  "#EC4899",
+                  "#06B6D4",
+                  "#FFFFFF",
+                ].map((c) => (
                   <button
                     key={c}
                     type="button"
                     onClick={() => {
                       engineRef.current?.setCountryColor(myCountry.id, c);
-                      showToast('Sınır rengin güncellendi!');
+                      showToast("Sınır rengin güncellendi!");
                     }}
                     style={{ backgroundColor: c }}
                     className={`w-5 h-5 rounded-full transition ${
-                      myCountry.color === c ? 'ring-2 ring-white scale-110' : 'opacity-75 hover:opacity-100'
+                      myCountry.color === c
+                        ? "ring-2 ring-white scale-110"
+                        : "opacity-75 hover:opacity-100"
                     }`}
                   />
                 ))}
                 <input
                   type="color"
-                  value={myCountry.color || '#E11D48'}
-                  onChange={(e) => engineRef.current?.setCountryColor(myCountry.id, e.target.value)}
+                  value={myCountry.color || "#E11D48"}
+                  onChange={(e) =>
+                    engineRef.current?.setCountryColor(
+                      myCountry.id,
+                      e.target.value,
+                    )
+                  }
                   className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
                   title="Özel Sınır Rengi Seç"
                 />
@@ -1188,7 +1364,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
               {UPGRADE_DEFINITIONS.map((def) => {
                 const lvl = myCountry.upgrades?.[def.key] || 0;
                 const isMax = lvl >= def.maxLevel;
-                const cost = Math.round(def.baseCost * Math.pow(def.costScale, lvl));
+                const cost = Math.round(
+                  def.baseCost * Math.pow(def.costScale, lvl),
+                );
                 const canAfford = myCountry.gold >= cost && !isMax;
 
                 return (
@@ -1209,7 +1387,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
                             Sv. {lvl}/{def.maxLevel}
                           </span>
                         </div>
-                        <p className="text-[11px] text-slate-400 mt-0.5">{def.desc}</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {def.desc}
+                        </p>
                       </div>
                     </div>
 
@@ -1218,10 +1398,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       onClick={() => handleBuyUpgrade(def.key)}
                       className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 flex items-center gap-1 transition ${
                         isMax
-                          ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-600/40'
+                          ? "bg-emerald-950/60 text-emerald-400 border border-emerald-600/40"
                           : canAfford
-                          ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow'
-                          : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
+                            ? "bg-amber-500 hover:bg-amber-400 text-slate-950 shadow"
+                            : "bg-slate-700/50 text-slate-500 cursor-not-allowed"
                       }`}
                     >
                       {isMax ? (
@@ -1279,9 +1459,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 <div className="flex items-center gap-3">
                   <div className="w-16 h-12 rounded-xl overflow-hidden border border-slate-600 bg-slate-950 flex items-center justify-center shrink-0">
                     {foundFlagDataUrl ? (
-                      <img src={foundFlagDataUrl} alt="Yüklenen" className="w-full h-full object-cover" />
+                      <img
+                        src={foundFlagDataUrl}
+                        alt="Yüklenen"
+                        className="w-full h-full object-cover"
+                      />
                     ) : (
-                      <span className="text-[10px] text-slate-500 font-bold">Resim Yok</span>
+                      <span className="text-[10px] text-slate-500 font-bold">
+                        Resim Yok
+                      </span>
                     )}
                   </div>
                   <button
@@ -1300,14 +1486,24 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   Sınır Işıltı Rengi
                 </label>
                 <div className="flex items-center gap-2.5">
-                  {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4'].map((c) => (
+                  {[
+                    "#E11D48",
+                    "#3B82F6",
+                    "#10B981",
+                    "#F59E0B",
+                    "#8B5CF6",
+                    "#EC4899",
+                    "#06B6D4",
+                  ].map((c) => (
                     <button
                       key={c}
                       type="button"
                       onClick={() => setFoundColor(c)}
                       style={{ backgroundColor: c }}
                       className={`w-7 h-7 rounded-full transition ${
-                        foundColor === c ? 'ring-4 ring-white/60 scale-110' : 'opacity-80 hover:opacity-100'
+                        foundColor === c
+                          ? "ring-4 ring-white/60 scale-110"
+                          : "opacity-80 hover:opacity-100"
                       }`}
                     />
                   ))}
@@ -1324,7 +1520,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 space-y-1">
                 <div className="flex items-center gap-1.5">
                   <LogoTerritory size={14} />
-                  <span>Konum: ({foundingModal.x}, {foundingModal.y})</span>
+                  <span>
+                    Konum: ({foundingModal.x}, {foundingModal.y})
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <LogoSwords size={14} />
@@ -1332,7 +1530,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <LogoNavy size={14} />
-                  <span>Denize kıyın olduğunda karşı kıyılara gemi gönderebilirsin.</span>
+                  <span>
+                    Denize kıyın olduğunda karşı kıyılara gemi gönderebilirsin.
+                  </span>
                 </div>
               </div>
 
@@ -1355,9 +1555,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <div className="w-16 h-16 rounded-3xl bg-red-500/20 text-red-400 flex items-center justify-center mx-auto mb-3">
               <ShieldAlert size={36} />
             </div>
-            <h3 className="text-xl font-black text-white">VPN / PROXY KULLANIMI YASAK!</h3>
+            <h3 className="text-xl font-black text-white">
+              VPN / PROXY KULLANIMI YASAK!
+            </h3>
             <p className="text-xs text-slate-300 mt-2 leading-relaxed">
-              Dünya haritasında çoklu hesap veya suistimalleri önlemek için VPN ve Proxy kullanımı yasaklanmıştır.
+              Dünya haritasında çoklu hesap veya suistimalleri önlemek için VPN
+              ve Proxy kullanımı yasaklanmıştır.
             </p>
             <button
               onClick={() => {
@@ -1377,8 +1580,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl text-white">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-base font-black text-amber-400">Dünya Haritası Kuralları</h3>
-              <button onClick={() => setShowRules(false)} className="p-1 rounded-lg text-slate-400 hover:text-white">
+              <h3 className="text-base font-black text-amber-400">
+                Dünya Haritası Kuralları
+              </h3>
+              <button
+                onClick={() => setShowRules(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white"
+              >
                 <X size={18} />
               </button>
             </div>
@@ -1388,21 +1596,36 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <LogoSwords size={16} />
                   <span>Değerli Büyüme & Asker Üretimi</span>
                 </div>
-                <div>Her piksel değerlidir. Ülkenin asker kapasitesi toprak sayısına eşittir. Asker üretim hızı logaritmik artar; büyük devletler yüksek kapasiteye sahip olurken küçük devletler de üretim hızıyla onlara yetişebilir.</div>
+                <div>
+                  Her piksel değerlidir. Ülkenin asker kapasitesi toprak
+                  sayısına eşittir. Asker üretim hızı logaritmik artar; büyük
+                  devletler yüksek kapasiteye sahip olurken küçük devletler de
+                  üretim hızıyla onlara yetişebilir.
+                </div>
               </div>
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
                 <div className="font-black text-white mb-0.5 flex items-center gap-1.5">
                   <LogoNavy size={16} />
                   <span>Deniz Aşırı Gemi Seferleri</span>
                 </div>
-                <div>Denize kıyısı olan bir toprağın varsa, menzilin içindeki karşı kıyılara veya adalara tıklayarak <b>Çıkarma Gemisi</b> gönderebilirsin. Gemin denizde ilerleyip karşı kıyıya ulaştığında o toprağı fetheder. <b>Donanma & Tersane</b> geliştirmesiyle gemi menzilini ve hızını artırabilirsin.</div>
+                <div>
+                  Denize kıyısı olan bir toprağın varsa, menzilin içindeki karşı
+                  kıyılara veya adalara tıklayarak <b>Çıkarma Gemisi</b>{" "}
+                  gönderebilirsin. Gemin denizde ilerleyip karşı kıyıya
+                  ulaştığında o toprağı fetheder. <b>Donanma & Tersane</b>{" "}
+                  geliştirmesiyle gemi menzilini ve hızını artırabilirsin.
+                </div>
               </div>
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
                 <div className="font-black text-white mb-0.5 flex items-center gap-1.5">
                   <LogoGold size={16} />
                   <span>Halk, Altın & 25 Seviyeli Geliştirmeler</span>
                 </div>
-                <div>Topraklarında yaşayan halk zamanla çoğalır ve hazinene otomatik <b>Altın</b> vergisi öder. Biriken altınlarla 9 farklı geliştirme dalını 25. seviyeye kadar yükseltebilirsin.</div>
+                <div>
+                  Topraklarında yaşayan halk zamanla çoğalır ve hazinene
+                  otomatik <b>Altın</b> vergisi öder. Biriken altınlarla 9
+                  farklı geliştirme dalını 25. seviyeye kadar yükseltebilirsin.
+                </div>
               </div>
 
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
@@ -1410,7 +1633,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <Sparkles size={16} />
                   <span>Estetik Sınırlar & Otomatik Boşluk Doldurma</span>
                 </div>
-                <div>Devletler tek piksel çizgi çekerek yılan gibi büyüyemez; sınırlarını kalınlaştırarak genişlemelisin. Etrafını çevrelediğin tüm iç boşluklar otomatik olarak fethedilip ülkene katılır. Yanlış fethettiğin bir pikseli alt bardaki <b>Geri Al (5s)</b> butonuna basarak anında geri alabilirsin.</div>
+                <div>
+                  Devletler tek piksel çizgi çekerek yılan gibi büyüyemez;
+                  sınırlarını kalınlaştırarak genişlemelisin. Etrafını
+                  çevrelediğin tüm iç boşluklar otomatik olarak fethedilip
+                  ülkene katılır. Yanlış fethettiğin bir pikseli alt bardaki{" "}
+                  <b>Geri Al (5s)</b> butonuna basarak anında geri alabilirsin.
+                </div>
               </div>
             </div>
 
@@ -1426,12 +1655,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 onClick={() => {
                   if (
                     window.confirm(
-                      `"${myCountry.name}" devletinin yönetimini bu cihazdan bırakmak ve haritada sıfırdan yeni bir devlet kurmak istiyor musun?`
+                      `"${myCountry.name}" devletinin yönetimini bu cihazdan bırakmak ve haritada sıfırdan yeni bir devlet kurmak istiyor musun?`,
                     )
                   ) {
                     engineRef.current?.abandonMyCountry();
                     setShowRules(false);
-                    showToast('Devlet yönetimi bırakıldı. Sahipsiz gri bir piksele dokunarak yeni devletini kurabilirsin!');
+                    showToast(
+                      "Devlet yönetimi bırakıldı. Sahipsiz gri bir piksele dokunarak yeni devletini kurabilirsin!",
+                    );
                   }
                 }}
                 className="w-full mt-2 py-2 rounded-xl bg-rose-500/20 border border-rose-500/50 hover:bg-rose-500/30 text-rose-300 font-bold text-[11px] transition"
@@ -1475,13 +1706,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <button
-                      onClick={() => engineRef.current?.adminGiveResources(myCountry.id, 100, 5000)}
+                      onClick={() =>
+                        engineRef.current?.adminGiveResources(
+                          myCountry.id,
+                          100,
+                          5000,
+                        )
+                      }
                       className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
                     >
                       +100 Asker & +5000 Altın
                     </button>
                     <button
-                      onClick={() => engineRef.current?.adminMaxUpgrades(myCountry.id)}
+                      onClick={() =>
+                        engineRef.current?.adminMaxUpgrades(myCountry.id)
+                      }
                       className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
                     >
                       Tüm Geliştirmeler Sv.25
@@ -1505,14 +1744,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         className="p-2 rounded-xl bg-slate-900/90 border border-slate-700/70 flex items-center justify-between gap-2"
                       >
                         <div className="min-w-0">
-                          <div className="text-xs font-black text-white truncate">{c.name}</div>
+                          <div className="text-xs font-black text-white truncate">
+                            {c.name}
+                          </div>
                           <div className="text-[10px] text-slate-400">
                             {c.landCount}px • {Math.floor(c.troops)} Asker
                           </div>
                         </div>
                         <button
                           onClick={() => {
-                            if (window.confirm(`"${c.name}" devletini haritadan tamamen silmek istiyor musun?`)) {
+                            if (
+                              window.confirm(
+                                `"${c.name}" devletini haritadan tamamen silmek istiyor musun?`,
+                              )
+                            ) {
                               engineRef.current?.adminDeleteCountry(c.id, true);
                             }
                           }}
@@ -1523,19 +1768,29 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </button>
                       </div>
                     ))}
-                  {(!engineRef.current?.countries || engineRef.current.countries.filter((c) => c.landCount > 0).length === 0) && (
-                    <div className="text-[11px] text-slate-500 text-center py-2">Aktif devlet yok.</div>
+                  {(!engineRef.current?.countries ||
+                    engineRef.current.countries.filter((c) => c.landCount > 0)
+                      .length === 0) && (
+                    <div className="text-[11px] text-slate-500 text-center py-2">
+                      Aktif devlet yok.
+                    </div>
                   )}
                 </div>
               </div>
 
               {/* Server Maintenance Controls */}
               <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/40 space-y-2">
-                <div className="text-xs font-black text-rose-300">Sunucu & Sohbet Kontrolleri</div>
+                <div className="text-xs font-black text-rose-300">
+                  Sunucu & Sohbet Kontrolleri
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => {
-                      if (window.confirm('Global sohbetteki tüm mesajları herkesten silmek istiyor musun?')) {
+                      if (
+                        window.confirm(
+                          "Global sohbetteki tüm mesajları herkesten silmek istiyor musun?",
+                        )
+                      ) {
                         engineRef.current?.adminClearChat(true);
                       }
                     }}
@@ -1545,7 +1800,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   </button>
                   <button
                     onClick={() => {
-                      if (window.confirm('DİKKAT! Tüm devletler, topraklar ve sohbet herkesten sıfırlanacak. Onaylıyor musun?')) {
+                      if (
+                        window.confirm(
+                          "DİKKAT! Tüm devletler, topraklar ve sohbet herkesten sıfırlanacak. Onaylıyor musun?",
+                        )
+                      ) {
                         engineRef.current?.adminResetWorld(true);
                         setShowAdminModal(false);
                       }
