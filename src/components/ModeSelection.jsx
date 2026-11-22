@@ -27,7 +27,7 @@ export default function ModeSelection({
       {/* Mode Selection Cards */}
       <div className="max-w-5xl mx-auto w-full grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-8 my-6">
         
-        {/* Card 1: Dev Dünya Haritası (Herkesle Oyna / Gerçek Zamanlı) */}
+        {/* Card 1: Dev Dünya Haritası (Askerli Fetih Seferi) */}
         <div
           onClick={() => onSelectMode('WORLD')}
           className="group relative bg-gradient-to-b from-stone-800/90 to-stone-900/95 border-2 border-amber-500/40 hover:border-amber-400 rounded-3xl p-5 sm:p-7 shadow-2xl hover:shadow-amber-500/20 transition-all duration-300 cursor-pointer flex flex-col justify-between hover:-translate-y-1 overflow-hidden"
@@ -39,11 +39,11 @@ export default function ModeSelection({
             <div className="flex items-center justify-between mb-4">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500 text-stone-950 font-black text-[11px] tracking-wide uppercase shadow-md">
                 <Globe size={13} />
-                YENİ • GERÇEK ZAMANLI MMO
+                YENİ • ASKERLİ DÜNYA SEFERİ
               </span>
               {savedWorldGame && (
                 <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] font-bold">
-                  💾 Kayıtlı İmparatorluk
+                  💾 Kayıtlı Sefer Var
                 </span>
               )}
             </div>
@@ -57,69 +57,83 @@ export default function ModeSelection({
                   Dev Dünya Haritası
                 </h2>
                 <div className="text-xs text-amber-300/80 font-bold">
-                  Herkesle Oyna • Kendi Bayrağın • Deniz Savaşları
+                  Devasa Ölçek • Kendi Bayrağın • Askerli Fetih
                 </div>
               </div>
             </div>
 
             <p className="text-xs sm:text-sm text-stone-300 leading-relaxed mb-5 font-normal">
-              Gerçek dünya haritasında kendi resmini/bayrağını yükle, okyanusları gemilerle aş ve kıtaları fethet! Çark yok; anlık taktik, asker kapasitesi ve strateji konuşur.
+              Aşırı büyük gerçek dünya haritasında kendi resmini/bayrağını yükle! Bir şehri fethetmek bile gerçek bir başarı. Askerlerinle sınırlarını genişlet, surlar ör, donanmayla okyanusları aş ve dünya metropollerini fethet!
             </p>
 
             {/* Feature Bullets */}
             <div className="space-y-2.5 mb-6 text-xs text-stone-300">
               <div className="flex items-start gap-2">
                 <div className="w-5 h-5 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 font-bold">
+                  🗺️
+                </div>
+                <span><strong>Devasa Ölçek:</strong> 500.000 hücrelik gerçek dünya haritasında bir şehir kurmak bile taktik ve emek ister.</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <div className="w-5 h-5 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 font-bold">
                   🖼️
                 </div>
-                <span><strong>Özel Bayrak:</strong> Kendi resmini yükle, fethettiğin her toprak resminle kaplansın.</span>
+                <span><strong>Özel Bayrak / Resim:</strong> Kendi istediğin fotoğrafı yükle, fethettiğin her karış toprak resminle kaplansın.</span>
               </div>
               <div className="flex items-start gap-2">
                 <div className="w-5 h-5 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 font-bold">
-                  ⚖️
+                  ⚔️
                 </div>
-                <span><strong>Adil Denge:</strong> Küçükler şimşek hızında toparlanır; Büyükler ezici devasa ordu biriktirebilir.</span>
+                <span><strong>Asker & Taktik:</strong> Çark şansı yok; asker üretimi, arazi savunma maliyetleri ve strateji konuşur.</span>
               </div>
               <div className="flex items-start gap-2">
                 <div className="w-5 h-5 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 font-bold">
-                  🚢
+                  👥
                 </div>
-                <span><strong>Deniz Seferleri:</strong> Donanma gemilerini okyanusa indir, diğer kıtalara amfibi çıkarma yap!</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <div className="w-5 h-5 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 font-bold">
-                  🛡️
-                </div>
-                <span><strong>Vekil Muhafız Botu:</strong> Oyundan çıksan bile botun topraklarını kurnazca savunur, düşmana ağır kayıp verdirir.</span>
+                <span><strong>Solo veya Arkadaşlar:</strong> İster tek başına dünya fethine çık, ister tek telefondan arkadaşlarınla kapış!</span>
               </div>
             </div>
           </div>
 
           <div className="flex flex-col gap-2 pt-2 border-t border-stone-700/60">
-            {savedWorldGame && onResumeWorldGame && (
+            {savedWorldGame && onResumeWorldGame ? (
+              <>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onResumeWorldGame();
+                  }}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
+                >
+                  <RotateCcw size={15} />
+                  <span>Kaldığın Yerden Devam Et ({savedWorldGame.players?.[0]?.name || savedWorldGame.empireName || 'Devletin'})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectMode('WORLD');
+                  }}
+                  className="w-full py-2.5 bg-stone-800 hover:bg-stone-700 text-amber-400 font-bold text-xs rounded-xl border border-amber-500/30 transition flex items-center justify-center gap-1.5"
+                >
+                  <span>Yeni Dünya Seferi Başlat</span>
+                  <ArrowRight size={14} />
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onResumeWorldGame();
+                  onSelectMode('WORLD');
                 }}
-                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
+                className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-orange-600 group-hover:from-amber-400 group-hover:to-orange-500 text-stone-950 font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer active:scale-95"
               >
-                <RotateCcw size={15} />
-                <span>Kaldığın Yerden Devam Et ({savedWorldGame.empireName || 'Devletin'})</span>
+                <span>Dünya Seferine Başla</span>
+                <ArrowRight size={18} className="group-hover:translate-x-1 transition" />
               </button>
             )}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelectMode('WORLD');
-              }}
-              className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-orange-600 group-hover:from-amber-400 group-hover:to-orange-500 text-stone-950 font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-            >
-              <span>Dünya Savaşına Katıl</span>
-              <ArrowRight size={18} className="group-hover:translate-x-1 transition" />
-            </button>
           </div>
         </div>
 

@@ -1,11 +1,12 @@
-// Ultra-Crisp 600x300 Real Earth World Map Rasterizer & Ocean A* Pathfinding
+// Ultra-Crisp 1000x500 Real Earth World Map Rasterizer & Ocean A* Pathfinding
 // Uses real Natural Earth TopoJSON geometry from world-atlas (100% offline)
 
 import { feature } from 'topojson-client';
 import countriesAtlas from 'world-atlas/countries-110m.json';
+import { WORLD_CITIES } from './worldCities';
 
-export const MAP_W = 600;
-export const MAP_H = 300;
+export const MAP_W = 1000;
+export const MAP_H = 500;
 
 export const TERRAIN_WATER = 0;
 export const TERRAIN_PLAINS = 1;
@@ -208,14 +209,17 @@ export function getWorldRasterData() {
     const [cx, cy] = lonLatToMapXY(clon, clat);
     const ix = Math.round(cx);
     const iy = Math.round(cy);
-    for (let dy = -2; dy <= 2; dy++) {
-      const ny = iy + dy;
-      if (ny >= 0 && ny < MAP_H && ix >= 0 && ix < MAP_W) {
-        const idx = ny * MAP_W + ix;
-        if (isLand[idx]) {
-          isLand[idx] = 0;
-          countryMask[idx] = 0;
-          totalLandPixels--;
+    for (let dy = -3; dy <= 3; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = ix + dx;
+        const ny = iy + dy;
+        if (ny >= 0 && ny < MAP_H && nx >= 0 && nx < MAP_W) {
+          const idx = ny * MAP_W + nx;
+          if (isLand[idx]) {
+            isLand[idx] = 0;
+            countryMask[idx] = 0;
+            totalLandPixels--;
+          }
         }
       }
     }
@@ -373,6 +377,38 @@ export function getWorldRasterData() {
     }
   }
 
+  // Precompute world cities mapped onto land cells
+  const resolvedCities = WORLD_CITIES.map((c) => {
+    const [rawX, rawY] = lonLatToMapXY(c.lon, c.lat);
+    const ix = Math.max(0, Math.min(MAP_W - 1, Math.round(rawX)));
+    const iy = Math.max(0, Math.min(MAP_H - 1, Math.round(rawY)));
+    const landSpot = findNearestLand(ix, iy, isLand, 16) || { x: ix, y: iy };
+
+    const cellIndices = [];
+    const rad = c.radius || 3;
+    for (let dy = -rad; dy <= rad; dy++) {
+      for (let dx = -rad; dx <= rad; dx++) {
+        if (dx * dx + dy * dy <= rad * rad) {
+          const cx = landSpot.x + dx;
+          const cy = landSpot.y + dy;
+          if (cx >= 0 && cx < MAP_W && cy >= 0 && cy < MAP_H) {
+            const idx = cy * MAP_W + cx;
+            if (isLand[idx]) {
+              cellIndices.push(idx);
+            }
+          }
+        }
+      }
+    }
+    return {
+      ...c,
+      x: landSpot.x,
+      y: landSpot.y,
+      cellIndices,
+      totalCells: cellIndices.length,
+    };
+  });
+
   cachedWorldData = {
     width: MAP_W,
     height: MAP_H,
@@ -386,6 +422,7 @@ export function getWorldRasterData() {
     navW,
     navH,
     navWater,
+    cities: resolvedCities,
   };
   return cachedWorldData;
 }

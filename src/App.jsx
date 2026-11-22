@@ -34,6 +34,7 @@ const DEBUG_ENABLED = false;
 
 export default function App() {
   const [mainView, setMainView] = useState('MODE_SELECT'); // 'MODE_SELECT' | 'WORLD_GAME' | 'FLAT_GAME'
+  const [worldStartInSetup, setWorldStartInSetup] = useState(false);
   const [gameState, setGameState] = useState('SETUP'); // 'SETUP' | 'PLAYING' | 'GAMEOVER'
   const [gameMode, setGameMode] = useState('KLASIK'); // 'KLASIK' | 'MODERN'
   const [players, setPlayers] = useState([]);
@@ -105,9 +106,9 @@ export default function App() {
 
   const [savedWorldGame, setSavedWorldGame] = useState(() => {
     try {
-      const raw = localStorage.getItem('sf_world_v2_empire');
+      const raw = localStorage.getItem('sf_world_classic_v3');
       const parsed = raw ? JSON.parse(raw) : null;
-      return parsed && parsed.v === 3 ? parsed : null;
+      return parsed && parsed.v === 4 ? parsed : null;
     } catch {
       return null;
     }
@@ -1625,6 +1626,7 @@ export default function App() {
         onSelectMode={(mode) => {
           soundManager.playClick();
           if (mode === 'WORLD') {
+            setWorldStartInSetup(true);
             setMainView('WORLD_GAME');
           } else {
             setMainView('FLAT_GAME');
@@ -1640,6 +1642,7 @@ export default function App() {
         }}
         onResumeWorldGame={() => {
           soundManager.playClick();
+          setWorldStartInSetup(false);
           setMainView('WORLD_GAME');
         }}
       />
@@ -1649,12 +1652,13 @@ export default function App() {
   if (mainView === 'WORLD_GAME') {
     return (
       <WorldGame
+        startInSetup={worldStartInSetup}
         onReturnToModeSelect={() => {
           soundManager.playClick();
           try {
-            const raw = localStorage.getItem('sf_world_v2_empire');
+            const raw = localStorage.getItem('sf_world_classic_v3');
             const parsed = raw ? JSON.parse(raw) : null;
-            setSavedWorldGame(parsed && parsed.v === 3 ? parsed : null);
+            setSavedWorldGame(parsed && parsed.v === 4 ? parsed : null);
           } catch {}
           setMainView('MODE_SELECT');
         }}

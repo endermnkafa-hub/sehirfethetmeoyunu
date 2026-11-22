@@ -2,8 +2,12 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   MAP_W,
   MAP_H,
-  lonLatToMapXY,
   getWorldRasterData,
+  TERRAIN_PLAINS,
+  TERRAIN_FOREST,
+  TERRAIN_DESERT,
+  TERRAIN_MOUNTAIN,
+  TERRAIN_TUNDRA,
 } from '../../world/worldRasterizer';
 import {
   PRESET_PLAYER_FLAGS,
@@ -12,1359 +16,1092 @@ import {
 } from '../../world/flagLibrary';
 import {
   WorldSimulationEngine,
-  computeNationEconomy,
+  computePlayerTurnIncome,
   formatTroops,
+  TERRAIN_TROOP_COST,
   SAVE_KEY,
 } from '../../world/worldEngine';
 import { WorldMapRenderer } from '../../world/worldRenderer';
 import { soundManager } from '../../utils/audio';
+import confetti from 'canvas-confetti';
 import {
   Globe,
   Upload,
   Shield,
   Swords,
-  Castle,
-  Handshake,
-  Crown,
-  Home,
+  Anchor,
+  RotateCcw,
   ZoomIn,
   ZoomOut,
-  Crosshair,
-  Maximize2,
-  RotateCcw,
+  Compass,
+  ArrowLeft,
+  Users,
+  User,
+  Check,
+  AlertCircle,
   Sparkles,
-  ChevronRight,
-  ChevronDown,
-  ChevronUp,
-  Shuffle,
+  Volume2,
+  VolumeX,
+  HelpCircle,
   X,
   CheckCircle2,
-  AlertTriangle,
-  Trophy,
-  Anchor,
 } from 'lucide-react';
 
-export default function WorldGame({ onReturnToModeSelect }) {
-  // Singleton world raster data (cached, real Natural Earth geography)
+export default function WorldGame({ onReturnToModeSelect, startInSetup = false }) {
+  // Raster world data (real Natural Earth geometry)
   const worldData = useMemo(() => getWorldRasterData(), []);
 
-  // Check if a v2 saved empire exists
+  // Check if save exists
   const initialHasSave = useMemo(() => {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return false;
       const parsed = JSON.parse(raw);
-      return parsed && parsed.v === 3 && parsed.w === MAP_W && parsed.h === MAP_H && Array.isArray(parsed.rle);
+      return parsed && parsed.v === 4 && parsed.w === MAP_W && parsed.h === MAP_H;
     } catch {
       return false;
     }
   }, []);
 
-  // Phases: 'SETUP' | 'SPAWN' | 'PLAYING'
-  const [phase, setPhase] = useState(initialHasSave ? 'PLAYING' : 'SETUP');
+  // UI Phase: 'SETUP' | 'SPAWN_PICK' | 'PLAYING'
+  const [phase, setPhase] = useState(startInSetup || !initialHasSave ? 'SETUP' : 'PLAYING');
 
-  // Setup state
+  // Setup Form State
+  const [gameModeType, setGameModeType] = useState('SOLO'); // 'SOLO' | 'PASS_PLAY'
+  const [playerCount, setPlayerCount] = useState(2); // For PASS_PLAY
+
+  // Player 1 Setup
   const defaultFlag = useMemo(() => getPresetFlag('tr'), []);
-  const [empireName, setEmpireName] = useState('Büyük Türk Devleti');
-  const [empireColor, setEmpireColor] = useState('#E30A17');
-  const [selectedPresetCode, setSelectedPresetCode] = useState('tr');
-  const [flagDataUrl, setFlagDataUrl] = useState(defaultFlag.dataUrl);
-  const flagRgbaRef = useRef(defaultFlag.rgba);
+  const [p1Name, setP1Name] = useState('Büyük Türk Devleti');
+  const [p1Color, setP1Color] = useState('#E30A17');
+  const [p1FlagPreset, setP1FlagPreset] = useState('tr');
+  const [p1FlagDataUrl, setP1FlagDataUrl] = useState(defaultFlag.dataUrl);
+  const p1FlagRgbaRef = useRef(defaultFlag.rgba);
 
-  // Controls & HUD state (synced at ~6 Hz from 20 Hz engine so React never lags!)
-  const [actionMode, setActionMode] = useState('AUTO'); // 'AUTO' | 'NAVAL' | 'FORTIFY' | 'DIPLOMACY'
-  const [sendRatio, setSendRatio] = useState(40);
-  const [guardianActive, setGuardianActive] = useState(true);
-  const [showLeaderboard, setShowLeaderboard] = useState(true);
-  const [selectedNationId, setSelectedNationId] = useState(0);
-  const [hoveredInfo, setHoveredInfo] = useState(null);
-  const [events, setEvents] = useState([]);
-  const [toast, setToast] = useState(null);
-  const [offlineReport, setOfflineReport] = useState(null);
+  // Capital choice
+  const [capitalChoice, setCapitalChoice] = useState('istanbul'); // city ID or 'CUSTOM'
 
-  // HUD snapshot from engine
-  const [hud, setHud] = useState({
-    troops: 1400,
-    maxTroops: 2800,
-    incomePerSec: 120,
-    landCount: 44,
-    landPct: '0.2',
-    tierName: 'Yeni Devlet',
-    shipLabel: 'Çıkarma Botu',
-    fortCount: 0,
-    maxForts: 1,
-    catchUpPct: 0,
-    alive: true,
-    leaderboard: [],
-    winner: null,
-  });
+  // Multiplayer Player 2-4 setups
+  const [extraPlayers, setExtraPlayers] = useState([
+    { name: 'Roma İmparatorluğu', color: '#3B82F6', flagPreset: 'it', capital: 'rome' },
+    { name: 'Britanya Krallığı', color: '#10B981', flagPreset: 'gb', capital: 'london' },
+    { name: 'Japon Hanedanı', color: '#F59E0B', flagPreset: 'jp', capital: 'tokyo' },
+  ]);
 
-  // Engine, Renderer, Canvas & Camera Refs
+  // In-Game Interaction State
+  const [placingMode, setPlacingMode] = useState('EXPAND'); // 'EXPAND' | 'WALL' | 'NAVAL'
+  const [navalStartCell, setNavalStartCell] = useState(null);
+  const [navalTroops, setNavalTroops] = useState(25);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [showRules, setShowRules] = useState(false);
+  const [celebrationModal, setCelebrationModal] = useState(null); // { city, bonus }
+  const [toastMessage, setToastMessage] = useState(null);
+
+  // Synchronized Engine & Renderer Refs
   const canvasRef = useRef(null);
   const engineRef = useRef(null);
   const rendererRef = useRef(null);
-  const cameraRef = useRef({ zoom: 1.05, panX: 0, panY: 0 });
-  const transformRef = useRef({ scale: 1, originX: 0, originY: 0 });
+  const fileInputRef = useRef(null);
 
-  // Pointer & Pinch Zoom tracking
-  const pointersRef = useRef(new Map());
-  const dragStateRef = useRef({
-    active: false,
-    moved: false,
-    startX: 0,
-    startY: 0,
-    startPanX: 0,
-    startPanY: 0,
-    pinchStartDist: 0,
-    pinchStartZoom: 1,
+  // Camera Ref: panX, panY, zoom
+  const cameraRef = useRef({ zoom: 1.0, panX: 0, panY: 0 });
+
+  // HUD State (synced from engine on events / turns)
+  const [hud, setHud] = useState({
+    roundNumber: 1,
+    activePlayer: null,
+    turnMovesCount: 0,
+    players: [],
+    conqueredCitiesCount: 0,
+    hoveredCellInfo: null,
   });
-  const hoveredMapPosRef = useRef(null);
-  const hoveredNationIdRef = useRef(0);
-  const phaseRef = useRef(phase);
-  const actionModeRef = useRef(actionMode);
-  const sendRatioRef = useRef(sendRatio);
-  const selectedNationIdRef = useRef(selectedNationId);
-  const toastTimerRef = useRef(null);
 
-  useEffect(() => { phaseRef.current = phase; }, [phase]);
-  useEffect(() => { actionModeRef.current = actionMode; }, [actionMode]);
-  useEffect(() => { sendRatioRef.current = sendRatio; }, [sendRatio]);
-  useEffect(() => { selectedNationIdRef.current = selectedNationId; }, [selectedNationId]);
+  // Track dragging & painting
+  const isMouseDownRef = useRef(false);
+  const isPaintingRef = useRef(false);
+  const lastCellRef = useRef(null);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const pointersRef = useRef(new Map());
+  const pinchStartDistRef = useRef(0);
+  const pinchStartZoomRef = useRef(1);
+  const hoveredPosRef = useRef(null);
 
-  const showToast = useCallback((msg, type = 'info') => {
-    setToast({ msg, type });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 3400);
+  // Helper to show transient toast
+  const showToast = useCallback((msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3200);
   }, []);
 
-  const pushEvent = useCallback((text) => {
-    setEvents((prev) => [{ id: Date.now() + Math.random(), text }, ...prev.slice(0, 4)]);
-  }, []);
-
-  // Create Engine & Renderer once
+  // Initialize Engine & Renderer singleton
   if (!rendererRef.current) {
     rendererRef.current = new WorldMapRenderer(worldData);
   }
   if (!engineRef.current) {
     engineRef.current = new WorldSimulationEngine(worldData, {
-      onEvent: (msg) => pushEvent(msg),
-      onSound: (kind) => {
-        if (kind === 'win') soundManager.playWin();
-        else if (kind === 'lose') soundManager.playLose();
-        else if (kind === 'hit') soundManager.playHit();
-        else if (kind === 'spin') soundManager.playSpin();
-        else if (kind === 'pencil') soundManager.playPencil();
-        else soundManager.playTick();
+      onEvent: (msg) => showToast(msg),
+      onSound: (sound) => {
+        if (!soundEnabled) return;
+        if (sound === 'pencil') soundManager.playPencil();
+        else if (sound === 'celebration') {
+          soundManager.playCelebration();
+          try {
+            confetti({ particleCount: 70, spread: 80, origin: { y: 0.6 } });
+          } catch {}
+        } else if (sound === 'turn') soundManager.playClick();
+        else if (sound === 'tick') soundManager.playHit();
       },
     });
+
+    if (initialHasSave) {
+      engineRef.current.loadFromLocalStorage();
+    }
   }
 
-  // Helper: smoothly center camera on a map coordinate
-  const focusCameraOn = useCallback((mapX, mapY, targetZoom = 2.4) => {
-    const canvas = canvasRef.current;
-    const viewW = canvas ? canvas.clientWidth : window.innerWidth;
-    const viewH = canvas ? canvas.clientHeight : window.innerHeight;
-    const baseScale = Math.min(viewW / MAP_W, viewH / MAP_H);
-    const z = Math.max(0.9, Math.min(5.5, targetZoom));
-    const scale = baseScale * z;
-    const panX = (MAP_W / 2 - mapX) * scale;
-    const panY = (MAP_H / 2 - mapY) * scale;
-    cameraRef.current = { zoom: z, panX, panY };
+  // Update HUD from engine
+  const refreshHud = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const active = eng.getActivePlayer();
+    setHud({
+      roundNumber: eng.roundNumber,
+      activePlayer: active ? { ...active } : null,
+      turnMovesCount: eng.turnMoves.length,
+      players: eng.players.map((p) => ({ ...p })),
+      conqueredCitiesCount: active?.conqueredCities?.length || 0,
+      hoveredCellInfo: null,
+    });
   }, []);
 
-  const resetCamera = useCallback(() => {
-    cameraRef.current = { zoom: 1.04, panX: 0, panY: 0 };
-  }, []);
-
-  // Restore saved empire if initialHasSave
+  // On mount or save load, refresh HUD & center camera
   useEffect(() => {
-    if (!initialHasSave) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const raw = localStorage.getItem(SAVE_KEY);
-        if (!raw) {
-          setPhase('SETUP');
-          return;
-        }
-        const saved = JSON.parse(raw);
-        const report = await engineRef.current.restoreState(saved);
-        if (cancelled) return;
-        const player = engineRef.current.getPlayer();
-        if (player) {
-          setEmpireName(player.name);
-          setEmpireColor(player.color);
-          if (player.flagDataUrl) setFlagDataUrl(player.flagDataUrl);
-          setGuardianActive(engineRef.current.guardianActive);
-          focusCameraOn(player.capitalX, player.capitalY, 2.2);
-        }
-        if (report) {
-          setOfflineReport(report);
-        }
-      } catch (e) {
-        console.error('Failed to restore world save:', e);
-        setPhase('SETUP');
+    if (initialHasSave && engineRef.current) {
+      refreshHud();
+      const p = engineRef.current.getActivePlayer();
+      if (p) {
+        centerOnCoords(p.capitalX, p.capitalY, 3.5);
       }
-    })();
-    return () => { cancelled = true; };
-  }, [initialHasSave, focusCameraOn]);
-
-  // Save helper
-  const saveNow = useCallback(() => {
-    const engine = engineRef.current;
-    if (!engine || phaseRef.current !== 'PLAYING') return;
-    const player = engine.getPlayer();
-    if (!player || !player.alive) return;
-    try {
-      const payload = engine.serializeState();
-      localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
-    } catch {
-      // Ignore quota errors
     }
-  }, []);
+  }, [initialHasSave, refreshHud]);
 
-  // Save on tab hide / unload
-  useEffect(() => {
-    const onHide = () => saveNow();
-    window.addEventListener('beforeunload', onHide);
-    document.addEventListener('visibilitychange', onHide);
-    return () => {
-      window.removeEventListener('beforeunload', onHide);
-      document.removeEventListener('visibilitychange', onHide);
-    };
-  }, [saveNow]);
-
-  // 20 Hz Simulation Loop + 6 Hz HUD Sync + Auto-save every 6s
-  useEffect(() => {
-    if (phase !== 'PLAYING') return;
-
-    const simTimer = setInterval(() => {
-      const engine = engineRef.current;
-      if (!engine) return;
-      engine.tick();
-
-      // Sync React HUD every 3 ticks (~6.6 Hz)
-      if (engine.tickCount % 3 === 0) {
-        const player = engine.getPlayer();
-        const leaderLand = engine.getLeaderLand();
-        if (player) {
-          const eco = computeNationEconomy(player.landCount, leaderLand);
-          const myForts = engine.forts.filter((f) => f.ownerId === player.id).length;
-          setHud({
-            troops: Math.floor(player.troops),
-            maxTroops: eco.maxTroops,
-            incomePerSec: player.incomePerSec || 0,
-            landCount: player.landCount,
-            landPct: ((player.landCount / Math.max(1, worldData.totalLandPixels)) * 100).toFixed(1),
-            tierName: eco.tierName,
-            shipLabel: eco.shipLabel,
-            fortCount: myForts,
-            maxForts: eco.maxForts,
-            catchUpPct: Math.round((eco.catchUpMult - 1) * 100),
-            alive: player.alive,
-            leaderboard: engine.getLeaderboard().slice(0, 6),
-            winner: engine.gameOverWinner,
-          });
-        }
-      }
-
-      // Auto-save every 120 ticks (~6 seconds)
-      if (engine.tickCount % 120 === 0) {
-        saveNow();
-      }
-    }, 50);
-
-    return () => clearInterval(simTimer);
-  }, [phase, worldData.totalLandPixels, saveNow]);
-
-  // 60 FPS High-DPI Render Loop (active in SPAWN & PLAYING, plus background preview in SETUP!)
-  useEffect(() => {
-    let rafId;
-    const startTime = performance.now();
-
-    const loop = (now) => {
-      const canvas = canvasRef.current;
-      if (canvas && rendererRef.current && engineRef.current) {
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const viewW = canvas.clientWidth || window.innerWidth;
-        const viewH = canvas.clientHeight || window.innerHeight;
-        const targetW = Math.floor(viewW * dpr);
-        const targetH = Math.floor(viewH * dpr);
-
-        if (canvas.width !== targetW || canvas.height !== targetH) {
-          canvas.width = targetW;
-          canvas.height = targetH;
-        }
-
-        const ctx = canvas.getContext('2d');
-        ctx.save();
-        ctx.scale(dpr, dpr);
-
-        const tf = rendererRef.current.renderFrame(
-          ctx,
-          viewW,
-          viewH,
-          cameraRef.current,
-          engineRef.current,
-          {
-            phase: phaseRef.current,
-            hoveredMapPos: hoveredMapPosRef.current,
-            hoveredNationId: hoveredNationIdRef.current,
-            selectedNationId: selectedNationIdRef.current,
-            actionMode: actionModeRef.current,
-            timeSec: (now - startTime) / 1000,
-          }
-        );
-        transformRef.current = tf;
-        ctx.restore();
-      }
-      rafId = requestAnimationFrame(loop);
-    };
-
-    rafId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafId);
-  }, []);
-
-  // Convert client screen coordinates to Map (0..MAP_W, 0..MAP_H)
-  const screenToMap = useCallback((clientX, clientY) => {
+  // Center camera on specific map cell without coordinate drift
+  const centerOnCoords = useCallback((cx, cy, targetZoom = 3.5) => {
     const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const sx = clientX - rect.left;
-    const sy = clientY - rect.top;
-    const { scale, originX, originY } = transformRef.current;
-    if (!scale) return null;
-    const mx = (sx - originX) / scale;
-    const my = (sy - originY) / scale;
-    return { x: mx, y: my };
+    if (!canvas) return;
+    const viewW = canvas.clientWidth || window.innerWidth;
+    const viewH = canvas.clientHeight || window.innerHeight;
+    const baseScale = Math.min(viewW / MAP_W, viewH / MAP_H);
+    const scale = baseScale * targetZoom;
+
+    cameraRef.current = {
+      zoom: targetZoom,
+      panX: (MAP_W / 2 - cx) * scale,
+      panY: (MAP_H / 2 - cy) * scale,
+    };
   }, []);
 
-  // Custom Flag Image Upload Handler
-  const handleImageUpload = (e) => {
+  // Zoom relative to current viewport center without drift
+  const handleZoom = useCallback((factor) => {
+    const oldZoom = cameraRef.current.zoom;
+    const newZoom = Math.max(0.6, Math.min(32.0, oldZoom * factor));
+    const ratio = newZoom / oldZoom;
+    cameraRef.current.zoom = newZoom;
+    cameraRef.current.panX *= ratio;
+    cameraRef.current.panY *= ratio;
+  }, []);
+
+  // Handle Custom Flag Upload
+  const handleFlagUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      showToast('Lütfen geçerli bir resim dosyası seçin (PNG, JPG, WebP)!', 'error');
-      return;
-    }
+
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const { rgba, dataUrl } = await loadDataUrlToFlagBuffer(ev.target.result);
-        flagRgbaRef.current = rgba;
-        setFlagDataUrl(dataUrl);
-        setSelectedPresetCode(null);
-        soundManager.playClick();
-        showToast('🖼️ Kendi bayrağın başarıyla yüklendi!', 'success');
-      } catch {
-        showToast('Resim işlenemedi, başka bir görsel dene.', 'error');
+        const dataUrl = ev.target.result;
+        const result = await loadDataUrlToFlagBuffer(dataUrl);
+        setP1FlagDataUrl(result.dataUrl);
+        p1FlagRgbaRef.current = result.rgba;
+        setP1FlagPreset(null);
+        showToast('✅ Özel bayrak/resim başarıyla yüklendi!');
+      } catch (err) {
+        showToast('⚠️ Resim yüklenirken hata oluştu.');
       }
     };
     reader.readAsDataURL(file);
-  };
+  }, [showToast]);
 
-  // Start spawn phase from Setup
-  const handleProceedToSpawn = () => {
-    soundManager.playClick();
-    // Reset engine canvas to clean topographic neutral Earth for Spawn selection
-    const engine = engineRef.current;
-    const total = MAP_W * MAP_H;
-    for (let i = 0; i < total; i++) {
-      engine.owners[i] = worldData.isLand[i] ? 0 : -1;
-      engine.freshness[i] = 0;
+  // Start new game from setup
+  const handleStartGame = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
+
+    // Resolve Capital Coordinates
+    let p1Spawn = { x: Math.round(MAP_W * 0.58), y: Math.round(MAP_H * 0.36) }; // Default Istanbul approx
+    if (capitalChoice !== 'CUSTOM') {
+      const city = worldData.cities?.find((c) => c.id === capitalChoice);
+      if (city) {
+        p1Spawn = { x: city.x, y: city.y };
+      }
     }
-    engine.nations = [];
-    engine.nationMap.clear();
-    engine.attacks = [];
-    engine.fleets = [];
-    engine.forts = [];
-    engine.regions = [];
-    engine.dirtyPixels = true;
-    resetCamera();
-    setPhase('SPAWN');
-  };
 
-  // Actually start the world at chosen (mx, my)
-  const spawnEmpireAt = useCallback((mx, my) => {
-    const engine = engineRef.current;
-    engine.guardianActive = guardianActive;
-    engine.startNewWorld({
-      playerName: empireName.trim() || 'İmparatorluğum',
-      playerColor: empireColor,
-      flagRgba: flagRgbaRef.current,
-      flagDataUrl,
-      spawnX: mx,
-      spawnY: my,
-    });
-    engine.recomputeRegions();
-    engine.dirtyRegions = false;
-    engine.dirtyPixels = true;
-
-    const player = engine.getPlayer();
-    setPhase('PLAYING');
-    setSelectedNationId(0);
-    setEvents([]);
-    if (player) {
-      focusCameraOn(player.capitalX, player.capitalY, 2.3);
-    }
-    soundManager.playWin();
-    showToast(`⚔️ ${empireName.trim() || 'İmparatorluğun'} kuruldu! Sınırlarına tıklayarak yayılmaya başla!`, 'success');
-    setTimeout(() => saveNow(), 250);
-  }, [empireName, empireColor, flagDataUrl, guardianActive, focusCameraOn, showToast, saveNow]);
-
-  // Random fertile spawn spot (real geographic coordinates!)
-  const handleRandomSpawn = () => {
-    const candidates = [
-      [34.0, 39.2],   // Anatolia / Turkey
-      [12.5, 48.0],   // Central Europe
-      [-51.0, -14.0], // Brazil
-      [-95.0, 39.0],  // USA
-      [78.5, 22.0],   // India
-      [138.0, 36.2],  // Japan
-      [134.0, -25.0], // Australia
-      [30.5, 26.8],   // Egypt / Nile
+    const playerSpecs = [
+      {
+        name: p1Name || 'İmparatorluk',
+        color: p1Color,
+        flagCode: p1FlagPreset,
+        flagRgba: p1FlagRgbaRef.current,
+        flagDataUrl: p1FlagDataUrl,
+        spawnX: p1Spawn.x,
+        spawnY: p1Spawn.y,
+      },
     ];
-    const [lon, lat] = candidates[Math.floor(Math.random() * candidates.length)];
-    const [mx, my] = lonLatToMapXY(lon, lat);
-    spawnEmpireAt(Math.round(mx), Math.round(my));
-  };
 
-  // Handle verified map tap/click (distinct from camera pan drag!)
-  const handleMapTap = useCallback((clientX, clientY, isRightClick = false) => {
-    const pos = screenToMap(clientX, clientY);
-    if (!pos) return;
-    if (pos.x < 0 || pos.x >= MAP_W || pos.y < 0 || pos.y >= MAP_H) return;
-
-    const ix = Math.floor(pos.x);
-    const iy = Math.floor(pos.y);
-
-    // SPAWN PHASE: Click any land on Earth to drop your capital!
-    if (phaseRef.current === 'SPAWN') {
-      if (!worldData.isLand[iy * MAP_W + ix]) {
-        showToast('Başkent kurmak için bir kara parçasına (kıtaya veya adaya) tıkla!', 'error');
-        return;
+    if (gameModeType === 'PASS_PLAY') {
+      for (let i = 0; i < playerCount - 1; i++) {
+        const extra = extraPlayers[i];
+        const flag = getPresetFlag(extra.flagPreset);
+        const city = worldData.cities?.find((c) => c.id === extra.capital);
+        playerSpecs.push({
+          name: extra.name,
+          color: extra.color,
+          flagCode: extra.flagPreset,
+          flagRgba: flag.rgba,
+          flagDataUrl: flag.dataUrl,
+          spawnX: city ? city.x : 200 + i * 150,
+          spawnY: city ? city.y : 150 + i * 50,
+        });
       }
-      spawnEmpireAt(ix, iy);
-      return;
     }
 
-    if (phaseRef.current !== 'PLAYING') return;
+    eng.startNewGame({ playerSpecs });
+    refreshHud();
+    setPhase('PLAYING');
 
-    const engine = engineRef.current;
-    const clickedOwner = engine.owners[iy * MAP_W + ix];
-
-    // Right-click OR Diplomacy mode -> inspect nation & open Diplomacy Card
-    if (isRightClick || actionModeRef.current === 'DIPLOMACY') {
-      if (clickedOwner > 1) {
-        setSelectedNationId(clickedOwner);
-        soundManager.playClick();
-      } else {
-        setSelectedNationId(0);
-      }
-      return;
+    const p = eng.getActivePlayer();
+    if (p) {
+      centerOnCoords(p.capitalX, p.capitalY, 3.8);
     }
+  }, [gameModeType, playerCount, p1Name, p1Color, p1FlagPreset, p1FlagDataUrl, capitalChoice, extraPlayers, worldData, refreshHud, centerOnCoords]);
 
-    // Close diplomacy drawer if open when issuing direct attack
-    if (selectedNationIdRef.current) setSelectedNationId(0);
+  // End active player's turn
+  const handleEndTurn = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
 
-    // Execute Land Wave / Auto Naval / Fortify command
-    const res = engine.handlePlayerMapClick(ix, iy, actionModeRef.current, sendRatioRef.current);
+    const res = eng.endTurn();
+    refreshHud();
+
+    // Center camera on newly active player's capital/territory
+    if (res.activePlayer) {
+      centerOnCoords(res.activePlayer.capitalX, res.activePlayer.capitalY, cameraRef.current.zoom);
+    }
+  }, [refreshHud, centerOnCoords]);
+
+  // Undo move
+  const handleUndo = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const res = eng.undoLastMove();
     if (!res.ok) {
-      if (res.reason) showToast(res.reason, 'error');
-      soundManager.playHit();
-    } else if (actionModeRef.current === 'FORTIFY' || actionModeRef.current === 'NAVAL') {
-      // Return smoothly to AUTO mode after placing fort or launching explicit naval strike
-      setActionMode('AUTO');
+      showToast(res.reason || 'Geri alınamadı.');
+    } else {
+      refreshHud();
     }
-  }, [screenToMap, worldData.isLand, spawnEmpireAt, showToast]);
+  }, [refreshHud, showToast]);
 
-  // Smooth Wheel Zoom anchored to mouse cursor
-  const handleWheel = useCallback((e) => {
-    if (phaseRef.current === 'SETUP') return;
-    e.preventDefault();
+  // Bresenham line painting for smooth zero-latency dragging
+  const paintLine = useCallback((x0, y0, x1, y1) => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const active = eng.getActivePlayer();
+    if (!active || active.troops <= 0) return;
+
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+
+    let cx = x0;
+    let cy = y0;
+
+    while (true) {
+      if (placingMode === 'EXPAND') {
+        const res = eng.conquerCell(active.id, cx, cy);
+        if (res.ok && res.newlyCapturedCity) {
+          setCelebrationModal(res.newlyCapturedCity);
+        }
+      } else if (placingMode === 'WALL') {
+        eng.buildWall(active.id, cx, cy);
+      }
+
+      if (cx === x1 && cy === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; cx += sx; }
+      if (e2 < dx) { err += dx; cy += sy; }
+    }
+
+    refreshHud();
+  }, [placingMode, refreshHud]);
+
+  // Mouse & Touch Interaction Handlers
+  const getMapCoords = useCallback((clientX, clientY) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    const vx = clientX - rect.left;
+    const vy = clientY - rect.top;
 
-    const cam = cameraRef.current;
-    const oldZoom = cam.zoom;
-    const factor = e.deltaY < 0 ? 1.16 : 0.86;
-    const newZoom = Math.max(0.85, Math.min(6.0, oldZoom * factor));
-    const ratio = newZoom / oldZoom;
+    const viewW = canvas.clientWidth || rect.width;
+    const viewH = canvas.clientHeight || rect.height;
+    const baseScale = Math.min(viewW / MAP_W, viewH / MAP_H);
+    const scale = baseScale * cameraRef.current.zoom;
+    const mapScreenW = MAP_W * scale;
+    const mapScreenH = MAP_H * scale;
+    const originX = (viewW - mapScreenW) / 2 + cameraRef.current.panX;
+    const originY = (viewH - mapScreenH) / 2 + cameraRef.current.panY;
 
-    const viewW = rect.width;
-    const viewH = rect.height;
-    const cx = mx - viewW / 2;
-    const cy = my - viewH / 2;
+    const mapX = (vx - originX) / scale;
+    const mapY = (vy - originY) / scale;
 
-    cam.panX = cx - (cx - cam.panX) * ratio;
-    cam.panY = cy - (cy - cam.panY) * ratio;
-    cam.zoom = newZoom;
+    return {
+      x: Math.floor(mapX),
+      y: Math.floor(mapY),
+      rawX: mapX,
+      rawY: mapY,
+    };
   }, []);
 
-  // Pointer Events (Pan + 2-Finger Pinch Zoom + Click separation)
-  const handlePointerDown = (e) => {
-    if (phaseRef.current === 'SETUP') return;
-    if (e.button === 2) {
-      handleMapTap(e.clientX, e.clientY, true);
+  const handlePointerDown = useCallback((e) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    isMouseDownRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+
+    // Right-click or middle-click or PAN mode always triggers smooth camera pan
+    if (e.button === 2 || e.button === 1 || placingMode === 'PAN') {
+      isPaintingRef.current = false;
       return;
     }
 
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
     if (pointersRef.current.size === 1) {
-      dragStateRef.current = {
-        active: true,
-        moved: false,
-        startX: e.clientX,
-        startY: e.clientY,
-        startPanX: cameraRef.current.panX,
-        startPanY: cameraRef.current.panY,
-        pinchStartDist: 0,
-        pinchStartZoom: cameraRef.current.zoom,
-      };
-    } else if (pointersRef.current.size === 2) {
-      const pts = Array.from(pointersRef.current.values());
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      dragStateRef.current.moved = true;
-      dragStateRef.current.pinchStartDist = Math.max(10, dist);
-      dragStateRef.current.pinchStartZoom = cameraRef.current.zoom;
-    }
-  };
+      const pos = getMapCoords(e.clientX, e.clientY);
+      if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
+        lastCellRef.current = { x: pos.x, y: pos.y };
 
-  const handlePointerMove = (e) => {
-    if (phaseRef.current === 'SETUP') return;
-
-    // Update hover tracking
-    const pos = screenToMap(e.clientX, e.clientY);
-    if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
-      hoveredMapPosRef.current = pos;
-      const idx = Math.floor(pos.y) * MAP_W + Math.floor(pos.x);
-      const engine = engineRef.current;
-      const o = engine.owners[idx];
-      hoveredNationIdRef.current = o > 0 ? o : 0;
-
-      if (phaseRef.current === 'PLAYING') {
-        if (o > 0) {
-          const n = engine.nationMap.get(o);
-          setHoveredInfo(n ? { name: n.name, troops: Math.floor(n.troops), isPlayer: n.isPlayer, ally: n.alliedWithPlayer, vassal: n.vassalOfPlayer } : null);
-        } else if (o === 0) {
-          const cid = worldData.countryMask[idx];
-          const cname = worldData.countryList[cid]?.name || 'Tarafsız Toprak';
-          setHoveredInfo({ name: `${cname} (Tarafsız)`, troops: null, neutral: true });
-        } else {
-          setHoveredInfo(null);
+        if (phase === 'SPAWN_PICK') {
+          // Select capital here
+          if (worldData.isLand[pos.y * MAP_W + pos.x]) {
+            setCapitalChoice('CUSTOM');
+            setP1Name((prev) => (prev ? prev : 'Özgür Devlet'));
+            setPhase('SETUP');
+            showToast(`★ Başkent seçildi: Koordinat (${pos.x}, ${pos.y})`);
+          } else {
+            showToast('⚠️ Deniz veya okyanusa başkent kurulamaz!');
+          }
+          return;
         }
-      }
-    } else {
-      hoveredMapPosRef.current = null;
-      hoveredNationIdRef.current = 0;
-      setHoveredInfo(null);
-    }
 
+        if (placingMode === 'NAVAL') {
+          const eng = engineRef.current;
+          const active = eng?.getActivePlayer();
+          if (!active) return;
+
+          if (!navalStartCell) {
+            // Pick start port
+            const idx = pos.y * MAP_W + pos.x;
+            if (eng.owners[idx] === active.id) {
+              setNavalStartCell({ x: pos.x, y: pos.y });
+              showToast('⚓ Liman seçildi! Şimdi çıkarma yapılacak karşı kıyıya tıkla.');
+            } else {
+              showToast('⚠️ Önce kendi kıyındaki bir liman toprağını seç.');
+            }
+          } else {
+            // Pick destination
+            const res = eng.launchNavalFleet(active.id, navalStartCell.x, navalStartCell.y, pos.x, pos.y, navalTroops);
+            if (res.ok) {
+              setNavalStartCell(null);
+              setPlacingMode('EXPAND');
+              refreshHud();
+            } else {
+              showToast(res.reason || 'Deniz seferi başlatılamadı.');
+            }
+          }
+          return;
+        }
+
+        // For EXPAND or WALL: check if cell is near player territory
+        const eng = engineRef.current;
+        const active = eng?.getActivePlayer();
+        const idx = pos.y * MAP_W + pos.x;
+        const isNearOwned =
+          eng && active &&
+          (eng.owners[idx] === active.id ||
+            (pos.x > 0 && eng.owners[idx - 1] === active.id) ||
+            (pos.x < MAP_W - 1 && eng.owners[idx + 1] === active.id) ||
+            (pos.y > 0 && eng.owners[idx - MAP_W] === active.id) ||
+            (pos.y < MAP_H - 1 && eng.owners[idx + MAP_W] === active.id));
+
+        if (isNearOwned && (placingMode === 'EXPAND' || placingMode === 'WALL')) {
+          isPaintingRef.current = true;
+          paintLine(pos.x, pos.y, pos.x, pos.y);
+        } else {
+          // Dragging elsewhere on map pans the camera smoothly!
+          isPaintingRef.current = false;
+        }
+      } else {
+        isPaintingRef.current = false;
+      }
+    } else if (pointersRef.current.size === 2) {
+      isPaintingRef.current = false;
+      const pts = Array.from(pointersRef.current.values());
+      pinchStartDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      pinchStartZoomRef.current = cameraRef.current.zoom;
+    }
+  }, [getMapCoords, phase, placingMode, worldData, navalStartCell, navalTroops, paintLine, refreshHud, showToast]);
+
+  const handlePointerMove = useCallback((e) => {
     if (!pointersRef.current.has(e.pointerId)) return;
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // 2-Finger Pinch Zoom
-    if (pointersRef.current.size === 2) {
+    const pos = getMapCoords(e.clientX, e.clientY);
+    hoveredPosRef.current = pos;
+
+    if (pointersRef.current.size === 1) {
+      if (isPaintingRef.current && pos && lastCellRef.current) {
+        if (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y) {
+          paintLine(lastCellRef.current.x, lastCellRef.current.y, pos.x, pos.y);
+          lastCellRef.current = { x: pos.x, y: pos.y };
+        }
+      } else if (isMouseDownRef.current && !isPaintingRef.current) {
+        // Pan camera
+        const dx = e.clientX - dragStartRef.current.x;
+        const dy = e.clientY - dragStartRef.current.y;
+        cameraRef.current.panX += dx;
+        cameraRef.current.panY += dy;
+        dragStartRef.current = { x: e.clientX, y: e.clientY };
+      }
+    } else if (pointersRef.current.size === 2) {
+      // Pinch to zoom
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      const scaleFactor = dist / dragStateRef.current.pinchStartDist;
-      cameraRef.current.zoom = Math.max(0.85, Math.min(6.0, dragStateRef.current.pinchStartZoom * scaleFactor));
-      return;
-    }
-
-    // 1-Finger / Mouse Pan (with 7px deadzone so taps never turn into drags!)
-    if (dragStateRef.current.active) {
-      const dx = e.clientX - dragStateRef.current.startX;
-      const dy = e.clientY - dragStateRef.current.startY;
-      if (!dragStateRef.current.moved && Math.hypot(dx, dy) > 7) {
-        dragStateRef.current.moved = true;
-      }
-      if (dragStateRef.current.moved) {
-        cameraRef.current.panX = dragStateRef.current.startPanX + dx;
-        cameraRef.current.panY = dragStateRef.current.startPanY + dy;
+      if (pinchStartDistRef.current > 0) {
+        const ratio = dist / pinchStartDistRef.current;
+        const newZoom = Math.max(0.6, Math.min(28.0, pinchStartZoomRef.current * ratio));
+        cameraRef.current.zoom = newZoom;
       }
     }
-  };
+  }, [getMapCoords, paintLine]);
 
-  const handlePointerUp = (e) => {
-    const wasMoved = dragStateRef.current.moved;
-    const wasActive = dragStateRef.current.active && pointersRef.current.size === 1;
+  const handlePointerUp = useCallback((e) => {
     pointersRef.current.delete(e.pointerId);
-
     if (pointersRef.current.size === 0) {
-      dragStateRef.current.active = false;
-      dragStateRef.current.moved = false;
-      if (wasActive && !wasMoved) {
-        handleMapTap(e.clientX, e.clientY, false);
-      }
+      isMouseDownRef.current = false;
+      isPaintingRef.current = false;
+      lastCellRef.current = null;
     }
-  };
+  }, []);
 
-  // Attach non-passive wheel listener for clean preventDefault
+  // Canvas Non-Passive Wheel & Contextmenu setup
   useEffect(() => {
-    const el = canvasRef.current;
-    if (!el) return;
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
-  }, [handleWheel]);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  // Selected Nation data for Diplomacy Inspector
-  const inspectedNation = useMemo(() => {
-    if (!selectedNationId || !engineRef.current) return null;
-    const n = engineRef.current.nationMap.get(selectedNationId);
-    if (!n || !n.alive) return null;
-    return {
-      ...n,
-      troops: Math.floor(n.troops),
-      pct: ((n.landCount / Math.max(1, worldData.totalLandPixels)) * 100).toFixed(1),
+    const onWheel = (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.2 : 0.83;
+      handleZoom(zoomFactor);
     };
-  }, [selectedNationId, hud.leaderboard, worldData.totalLandPixels]);
 
-  const troopsToDeploy = Math.floor((hud.troops * sendRatio) / 100);
+    const preventContext = (e) => e.preventDefault();
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('contextmenu', preventContext);
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', preventContext);
+    };
+  }, [handleZoom]);
+
+  // Canvas 60 FPS Render Loop
+  useEffect(() => {
+    let animId;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    const render = () => {
+      const viewW = canvas.clientWidth || window.innerWidth;
+      const viewH = canvas.clientHeight || window.innerHeight;
+
+      // Handle high-DPI
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      if (canvas.width !== viewW * dpr || canvas.height !== viewH * dpr) {
+        canvas.width = viewW * dpr;
+        canvas.height = viewH * dpr;
+      }
+
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      if (rendererRef.current && engineRef.current) {
+        rendererRef.current.renderFrame(ctx, viewW, viewH, cameraRef.current, engineRef.current, {
+          phase,
+          hoveredMapPos: hoveredPosRef.current,
+          placingMode,
+          timeSec: performance.now() / 1000,
+        });
+      }
+
+      ctx.restore();
+      animId = requestAnimationFrame(render);
+    };
+
+    animId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(animId);
+  }, [phase, placingMode]);
 
   return (
-    <div
-      className="relative h-screen w-screen overflow-hidden bg-[#061529] text-white select-none"
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {/* Full-Bleed Live Real-Earth World Map Canvas */}
+    <div className="relative w-full h-screen overflow-hidden bg-slate-950 text-white select-none">
+      {/* Hidden File Input for Custom Flag/Image */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFlagUpload}
+        className="hidden"
+      />
+
+      {/* SETUP PHASE SCREEN */}
+      {phase === 'SETUP' && (
+        <div className="absolute inset-0 z-30 bg-gradient-to-br from-slate-950 via-stone-900 to-zinc-950 flex flex-col items-center justify-between p-4 sm:p-6 overflow-y-auto">
+          {/* Top Bar */}
+          <div className="w-full max-w-4xl flex items-center justify-between">
+            <button
+              onClick={onReturnToModeSelect}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-stone-800/80 hover:bg-stone-700 text-stone-300 font-bold text-xs sm:text-sm border border-stone-700 transition"
+            >
+              <ArrowLeft size={16} />
+              <span>Harita Seçimine Dön</span>
+            </button>
+            <div className="flex items-center gap-1.5 text-xs text-amber-400 font-bold bg-amber-500/10 px-3 py-1.5 rounded-xl border border-amber-500/30">
+              <Sparkles size={14} />
+              <span>Dev Dünya Haritası Seferi</span>
+            </div>
+          </div>
+
+          {/* Setup Card */}
+          <div className="w-full max-w-2xl bg-stone-900/95 border-2 border-amber-500/30 rounded-3xl p-5 sm:p-7 shadow-2xl my-auto">
+            <div className="text-center mb-6">
+              <h2 className="text-2xl sm:text-3xl font-black text-white">
+                DÜNYA FETHİ <span className="text-amber-400">KURULUMU</span>
+              </h2>
+              <p className="text-xs sm:text-sm text-stone-400 mt-1">
+                Kendi bayrağını veya istediğin resmi yükle, başkentini seç ve dünya sahnesine çık!
+              </p>
+            </div>
+
+            {/* Game Mode Choice: Solo vs Pass & Play */}
+            <div className="grid grid-cols-2 gap-3 mb-6">
+              <button
+                type="button"
+                onClick={() => setGameModeType('SOLO')}
+                className={`p-3.5 rounded-2xl border-2 flex items-center gap-3 transition ${
+                  gameModeType === 'SOLO'
+                    ? 'border-amber-400 bg-amber-500/15 text-white shadow-lg'
+                    : 'border-stone-700 bg-stone-800/60 text-stone-400 hover:border-stone-600'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-black">
+                  <User size={20} />
+                </div>
+                <div className="text-left">
+                  <div className="text-sm font-black">Tek Kişilik Sefer</div>
+                  <div className="text-[11px] text-stone-400">Tüm dünyayı adım adım fethet</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setGameModeType('PASS_PLAY')}
+                className={`p-3.5 rounded-2xl border-2 flex items-center gap-3 transition ${
+                  gameModeType === 'PASS_PLAY'
+                    ? 'border-amber-400 bg-amber-500/15 text-white shadow-lg'
+                    : 'border-stone-700 bg-stone-800/60 text-stone-400 hover:border-stone-600'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center font-black">
+                  <Users size={20} />
+                </div>
+                <div className="text-left">
+                  <div className="text-sm font-black">Yerel Çok Oyunculu</div>
+                  <div className="text-[11px] text-stone-400">Arkadaşlarınla tek ekrandan kapış</div>
+                </div>
+              </button>
+            </div>
+
+            {/* Player 1 Settings */}
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-xs font-bold text-stone-300 mb-1.5 uppercase">
+                  İmparatorluk / Devlet Adı
+                </label>
+                <input
+                  type="text"
+                  value={p1Name}
+                  onChange={(e) => setP1Name(e.target.value)}
+                  placeholder="Devlet Adı Girin"
+                  className="w-full px-4 py-2.5 rounded-xl bg-stone-800 border border-stone-700 text-white font-bold text-sm focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              {/* Flag / Custom Image Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-stone-300 uppercase">
+                    Bayrak / Özel Toprak Resmi
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs transition shadow-md"
+                  >
+                    <Upload size={13} />
+                    <span>Fotoğraf Yükle</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-3 p-3 rounded-2xl bg-stone-800/70 border border-stone-700">
+                  <div className="w-16 h-10 rounded-lg overflow-hidden border border-amber-400/50 shadow shrink-0 bg-stone-900">
+                    <img src={p1FlagDataUrl} alt="Bayrak" className="w-full h-full object-cover" />
+                  </div>
+                  <div className="flex-1 overflow-x-auto flex gap-2 py-1 scrollbar-none">
+                    {PRESET_PLAYER_FLAGS.map((f) => (
+                      <button
+                        key={f.code}
+                        type="button"
+                        onClick={() => {
+                          const flag = getPresetFlag(f.code);
+                          setP1FlagPreset(f.code);
+                          setP1FlagDataUrl(flag.dataUrl);
+                          p1FlagRgbaRef.current = flag.rgba;
+                          setP1Color(f.color);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border transition ${
+                          p1FlagPreset === f.code
+                            ? 'border-amber-400 bg-amber-500/20 text-white'
+                            : 'border-stone-700 bg-stone-800 text-stone-400 hover:border-stone-600'
+                        }`}
+                      >
+                        {f.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Capital City Selection */}
+              <div>
+                <label className="block text-xs font-bold text-stone-300 mb-1.5 uppercase">
+                  Başlangıç Başkenti
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: 'istanbul', name: 'İstanbul 🇹🇷', desc: 'Boğazlar & Köprü' },
+                    { id: 'ankara', name: 'Ankara 🇹🇷', desc: 'Anadolu Kalesi' },
+                    { id: 'rome', name: 'Roma 🇮🇹', desc: 'Akdeniz İmparatorluğu' },
+                    { id: 'paris', name: 'Paris 🇫🇷', desc: 'Avrupa Kalbi' },
+                    { id: 'london', name: 'Londra 🇬🇧', desc: 'Ada & Donanma' },
+                    { id: 'tokyo', name: 'Tokyo 🇯🇵', desc: 'Doğu Metropolü' },
+                    { id: 'cairo', name: 'Kahire 🇪🇬', desc: 'Nil & Piramitler' },
+                    { id: 'new_york', name: 'New York 🇺🇸', desc: 'Atlantik Kıyısı' },
+                  ].map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setCapitalChoice(c.id)}
+                      className={`p-2.5 rounded-xl border text-left transition ${
+                        capitalChoice === c.id
+                          ? 'border-amber-400 bg-amber-500/20 text-white font-bold'
+                          : 'border-stone-700 bg-stone-800/60 text-stone-400 hover:border-stone-600'
+                      }`}
+                    >
+                      <div className="text-xs font-black">{c.name}</div>
+                      <div className="text-[10px] text-stone-500">{c.desc}</div>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setPhase('SPAWN_PICK')}
+                    className="text-xs text-amber-400 hover:underline font-bold inline-flex items-center gap-1"
+                  >
+                    <span>🗺️ Veya dev dünya haritasında istediğin noktaya tıkla!</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Launch Game Button */}
+            <div className="flex gap-3">
+              {initialHasSave && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    engineRef.current?.loadFromLocalStorage();
+                    refreshHud();
+                    setPhase('PLAYING');
+                  }}
+                  className="flex-1 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2"
+                >
+                  <RotateCcw size={16} />
+                  <span>Kaldığın Yerden Devam Et</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleStartGame}
+                className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-stone-950 font-black text-sm tracking-wide transition shadow-xl flex items-center justify-center gap-2"
+              >
+                <Globe size={18} />
+                <span>Dünya Seferine Başla ➔</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="text-xs text-stone-500 text-center pb-2">
+            Şehir & Toprak Fethi v2.0 • Gerçek Dünya Atlası
+          </div>
+        </div>
+      )}
+
+      {/* SPAWN PICK PHASE BANNER */}
+      {phase === 'SPAWN_PICK' && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-stone-900/90 border border-amber-400/50 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3">
+          <Globe className="text-amber-400 animate-spin" size={20} />
+          <div>
+            <div className="text-xs font-black text-white">Haritadan Başkentini Seç</div>
+            <div className="text-[11px] text-stone-400">Dünya üzerinde istediğin bir kara noktasına tıkla.</div>
+          </div>
+          <button
+            onClick={() => setPhase('SETUP')}
+            className="px-2.5 py-1 rounded-lg bg-stone-800 text-xs font-bold text-stone-300 hover:bg-stone-700"
+          >
+            İptal
+          </button>
+        </div>
+      )}
+
+      {/* FULLSCREEN VIEWPORT CANVAS */}
       <canvas
         ref={canvasRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        className={`block w-full h-full touch-none ${
-          phase === 'SPAWN'
-            ? 'cursor-crosshair'
-            : actionMode === 'FORTIFY' || actionMode === 'NAVAL'
-            ? 'cursor-crosshair'
-            : actionMode === 'DIPLOMACY'
-            ? 'cursor-pointer'
-            : 'cursor-grab active:cursor-grabbing'
-        }`}
+        className="w-full h-full cursor-crosshair touch-none"
       />
 
-      {/* ==================== PHASE 1: SETUP MODAL OVER LIVE EARTH ==================== */}
-      {phase === 'SETUP' && (
-        <div className="absolute inset-0 z-30 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-          <div className="max-w-xl w-full bg-slate-900/95 border border-amber-500/35 rounded-3xl p-5 sm:p-7 shadow-2xl space-y-5 my-auto animate-in fade-in zoom-in-95">
-            {/* Header */}
-            <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-600 flex items-center justify-center text-slate-950 shadow-lg">
-                  <Globe size={26} />
-                </div>
-                <div>
-                  <h1 className="text-xl sm:text-2xl font-black tracking-tight">Dev Dünya Haritası</h1>
-                  <p className="text-xs text-amber-300/90 font-semibold">
-                    Gerçek Dünya • Kendi Bayrağın • Deniz & Kara Fethi
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  soundManager.playClick();
-                  onReturnToModeSelect();
-                }}
-                className="p-2 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white transition cursor-pointer"
-                title="Mod Seçimine Dön"
-              >
-                <Home size={18} />
-              </button>
-            </div>
-
-            {/* Empire Name */}
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-black uppercase tracking-wider text-slate-300">
-                İmparatorluk İsmi
-              </label>
-              <input
-                type="text"
-                value={empireName}
-                onChange={(e) => setEmpireName(e.target.value)}
-                maxLength={22}
-                placeholder="Örn: Büyük Türk Devleti"
-                className="w-full px-4 py-3 bg-slate-800/90 border border-white/15 focus:border-amber-400 rounded-xl text-white font-bold text-sm focus:outline-none transition"
-              />
-            </div>
-
-            {/* Custom Flag Upload + Live Preview */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <label className="text-[11px] font-black uppercase tracking-wider text-slate-300">
-                  Bayrağın / Özel Görselin
-                </label>
-                <span className="text-[10px] text-amber-400 font-bold">
-                  Fethettiğin tüm topraklar bu görselle kaplanır!
-                </span>
-              </div>
-
-              <div className="flex items-center gap-4 p-3.5 bg-slate-800/75 border border-white/10 rounded-2xl">
-                <div className="relative w-24 h-16 shrink-0 rounded-xl overflow-hidden border-2 border-amber-400 shadow-lg bg-slate-950">
-                  <img
-                    src={flagDataUrl}
-                    alt="Bayrak Önizleme"
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute bottom-0.5 right-1 px-1 rounded bg-black/70 text-[9px] font-black text-amber-300">
-                    ÖNİZLEME
-                  </div>
-                </div>
-
-                <div className="flex-1 space-y-1.5">
-                  <label className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-slate-950 font-black text-xs rounded-xl cursor-pointer shadow-lg transition active:scale-95">
-                    <Upload size={15} />
-                    <span>Kendi Görselini Yükle</span>
-                    <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                  </label>
-                  <p className="text-[11px] text-slate-400 leading-snug">
-                    Galerinden istediğin bayrağı, logoyu veya resmi yükle. Sınırların büyüdükçe görselin kıtalara yayılır!
-                  </p>
-                </div>
-              </div>
-
-              {/* Preset Crisp Offline Flags */}
-              <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5 pt-0.5">
-                {PRESET_PLAYER_FLAGS.map((pf) => {
-                  const flagObj = getPresetFlag(pf.code);
-                  const active = selectedPresetCode === pf.code;
-                  return (
-                    <button
-                      key={pf.code}
-                      type="button"
-                      onClick={() => {
-                        soundManager.playClick();
-                        setSelectedPresetCode(pf.code);
-                        setFlagDataUrl(flagObj.dataUrl);
-                        flagRgbaRef.current = flagObj.rgba;
-                        setEmpireColor(pf.color);
-                      }}
-                      className={`p-1.5 rounded-xl border transition flex flex-col items-center gap-1 cursor-pointer ${
-                        active
-                          ? 'bg-amber-500/25 border-amber-400 ring-1 ring-amber-400/50'
-                          : 'bg-slate-800/60 border-white/10 hover:border-white/30'
-                      }`}
-                    >
-                      <img
-                        src={flagObj.dataUrl}
-                        alt={pf.name}
-                        className="w-9 h-6 object-cover rounded shadow-sm"
-                      />
-                      <span className="text-[10px] font-bold text-slate-200 truncate max-w-full">
-                        {pf.name}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Balance & Rules Summary Strip */}
-            <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-300">
-              <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
-                <div className="font-black text-amber-400 mb-0.5">⚖️ Akıllı Denge</div>
-                Küçükler hızla toparlanır; büyükler dev ordu & zırhlı armada kurar.
-              </div>
-              <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
-                <div className="font-black text-sky-400 mb-0.5">🚢 Gerçek Deniz</div>
-                Gemiler kıtaların etrafından, boğazlardan geçip çıkarma yapar.
-              </div>
-              <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
-                <div className="font-black text-emerald-400 mb-0.5">🛡️ Vekil Bot</div>
-                Çıksan bile devletin kaydedilir ve muhafız botun savunur.
-              </div>
-            </div>
-
-            {/* Proceed Button */}
-            <button
-              type="button"
-              onClick={handleProceedToSpawn}
-              className="w-full py-3.5 bg-gradient-to-r from-amber-400 via-orange-500 to-red-500 hover:from-amber-300 hover:to-orange-400 text-slate-950 font-black text-sm sm:text-base rounded-2xl shadow-xl transition active:scale-[0.98] flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <span>Haritada Başlangıç Noktanı Seç</span>
-              <ChevronRight size={20} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ==================== PHASE 2: INTERACTIVE SPAWN OVERLAY ==================== */}
-      {phase === 'SPAWN' && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-xl w-[94%] bg-slate-900/90 backdrop-blur-md border border-amber-400/50 rounded-2xl px-4 py-3 shadow-2xl flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <img src={flagDataUrl} alt="" className="w-10 h-7 rounded-lg object-cover border border-amber-400" />
-            <div>
-              <div className="text-sm font-black text-amber-300 flex items-center gap-1.5">
-                <Sparkles size={15} />
-                <span>Başkentini Kurmak İstediğin Yere Tıkla!</span>
-              </div>
-              <div className="text-[11px] text-slate-300">
-                Anadolu, Avrupa, Amerika, Japonya... Dünya üzerinde herhangi bir karayı seç.
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleRandomSpawn}
-              className="px-3 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl shadow flex items-center gap-1.5 transition cursor-pointer"
-            >
-              <Shuffle size={14} />
-              <span>Rastgele</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setPhase('SETUP')}
-              className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition cursor-pointer"
-            >
-              Geri
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ==================== PHASE 3: LIVE PLAYING FLOATING HUD ==================== */}
+      {/* PLAYING PHASE HUD & INTERFACE */}
       {phase === 'PLAYING' && (
         <>
-          {/* TOP-LEFT: Empire Stats & Capacity Bar */}
-          <div className="absolute top-3 left-3 z-20 flex flex-col gap-2 max-w-[72vw] sm:max-w-sm">
-            <div className="bg-slate-900/85 backdrop-blur-md border border-white/15 rounded-2xl p-2.5 sm:p-3 shadow-2xl">
-              <div className="flex items-center gap-2.5">
-                <img
-                  src={flagDataUrl}
-                  alt="Bayrak"
-                  className="w-11 h-8 rounded-lg object-cover border border-amber-400 shadow shrink-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="font-black text-sm text-white truncate max-w-[140px] sm:max-w-[190px]">
-                      {empireName}
-                    </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/40 text-amber-300 font-black">
-                      {hud.tierName}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-slate-300 flex items-center gap-2 mt-0.5 font-semibold flex-wrap">
-                    <span>🌍 %{hud.landPct}</span>
-                    <span className="text-emerald-400 font-black">+{formatTroops(hud.incomePerSec)}/sn</span>
-                    <span className="text-sky-300 hidden sm:inline">🚢 {hud.shipLabel}</span>
-                    {hud.catchUpPct > 0 && (
-                      <span className="text-amber-300 font-black">⚡ +{hud.catchUpPct}% Yetişme</span>
+          {/* Top Bar: Empire Status & Turn Info */}
+          <div className="absolute top-3 left-3 right-3 sm:left-6 sm:right-6 flex items-center justify-between pointer-events-none z-10">
+            {/* Active Player Card */}
+            <div className="pointer-events-auto bg-stone-900/90 border border-stone-700/80 backdrop-blur-md rounded-2xl p-2 sm:p-2.5 shadow-2xl flex items-center gap-2.5">
+              <button
+                onClick={onReturnToModeSelect}
+                className="p-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 transition"
+                title="Ana Menüye Dön"
+              >
+                <ArrowLeft size={16} />
+              </button>
+
+              {hud.activePlayer && (
+                <>
+                  <div className="w-10 h-7 rounded-md overflow-hidden border border-amber-400/40 shadow shrink-0 bg-stone-950">
+                    {hud.activePlayer.flagDataUrl && (
+                      <img
+                        src={hud.activePlayer.flagDataUrl}
+                        alt="Flag"
+                        className="w-full h-full object-cover"
+                      />
                     )}
                   </div>
-                </div>
-              </div>
 
-              {/* Troop Reserve Progress Bar */}
-              <div className="mt-2">
-                <div className="flex items-center justify-between text-[11px] font-black mb-1">
-                  <span className="text-amber-300">⚔️ {formatTroops(hud.troops)} Asker</span>
-                  <span className="text-slate-400">Kapasite: {formatTroops(hud.maxTroops)}</span>
-                </div>
-                <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden border border-white/10">
-                  <div
-                    className="h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-emerald-400 transition-all duration-150"
-                    style={{ width: `${Math.min(100, (hud.troops / Math.max(1, hud.maxTroops)) * 100)}%` }}
-                  />
-                </div>
-              </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs sm:text-sm font-black text-white">
+                        {hud.activePlayer.name}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-black text-amber-400">
+                        Tur {hud.roundNumber}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px] text-stone-300 font-bold mt-0.5">
+                      <span className="text-amber-400">
+                        ⚔️ {hud.activePlayer.troops} Asker
+                      </span>
+                      <span>
+                        📍 {hud.activePlayer.landCount} Piksel
+                      </span>
+                      {hud.activePlayer.conqueredCities?.length > 0 && (
+                        <span className="text-emerald-400">
+                          🏛️ {hud.activePlayer.conqueredCities.length} Şehir
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
-            {/* Hovered Territory Subtle Pill */}
-            {hoveredInfo && (
-              <div className="self-start bg-slate-900/80 backdrop-blur-md border border-white/10 rounded-xl px-2.5 py-1 text-[11px] font-bold text-slate-200 shadow-lg flex items-center gap-2 pointer-events-none">
-                <span>{hoveredInfo.name}</span>
-                {hoveredInfo.troops !== null && (
-                  <span className="text-amber-300 font-black">⚔️ {formatTroops(hoveredInfo.troops)}</span>
-                )}
-                {hoveredInfo.ally && <span className="text-emerald-400">🛡️ Müttefik</span>}
-                {hoveredInfo.vassal && <span className="text-purple-400">👑 Vasal</span>}
-              </div>
-            )}
-          </div>
-
-          {/* TOP-RIGHT: Controls + Live Leaderboard */}
-          <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
-            {/* Quick Action Bar */}
-            <div className="flex items-center gap-1.5">
+            {/* Top Right Utilities */}
+            <div className="pointer-events-auto flex items-center gap-2">
               <button
-                type="button"
-                onClick={() => {
-                  const next = !guardianActive;
-                  setGuardianActive(next);
-                  engineRef.current.guardianActive = next;
-                  soundManager.playClick();
-                  showToast(
-                    next
-                      ? '🛡️ Vekil Muhafız AÇIK: Sınırlarında 1.85x direnç + AFK iken otomatik savunma!'
-                      : '⚠️ Vekil Muhafız KAPALI.',
-                    next ? 'success' : 'info'
-                  );
-                }}
-                className={`px-2.5 py-2 rounded-xl border text-[11px] font-black flex items-center gap-1.5 backdrop-blur-md shadow-lg transition cursor-pointer ${
-                  guardianActive
-                    ? 'bg-emerald-500/25 border-emerald-400/60 text-emerald-200'
-                    : 'bg-slate-900/80 border-white/15 text-slate-400 hover:text-white'
-                }`}
-                title="Vekil Muhafız Botu (Savunma AI)"
+                onClick={() => setPhase('SETUP')}
+                className="px-2.5 py-1.5 rounded-xl bg-stone-900/80 border border-stone-700 text-amber-400 hover:bg-stone-800 text-xs font-bold transition shadow flex items-center gap-1.5"
+                title="Yeni Sefer Başlat"
               >
-                <Shield size={14} className={guardianActive ? 'text-emerald-400' : ''} />
-                <span className="hidden md:inline">Vekil Bot:</span>
-                <span>{guardianActive ? 'Açık' : 'Kapalı'}</span>
+                <RotateCcw size={14} />
+                <span className="hidden sm:inline">Yeni Sefer</span>
               </button>
 
               <button
-                type="button"
+                onClick={() => setSoundEnabled((prev) => !prev)}
+                className="w-9 h-9 rounded-xl bg-stone-900/80 border border-stone-700 text-stone-300 flex items-center justify-center hover:bg-stone-800 transition shadow"
+                title={soundEnabled ? 'Sesi Kapat' : 'Sesi Aç'}
+              >
+                {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+              </button>
+
+              <button
+                onClick={() => setShowRules(true)}
+                className="w-9 h-9 rounded-xl bg-stone-900/80 border border-stone-700 text-stone-300 flex items-center justify-center hover:bg-stone-800 transition shadow"
+                title="Nasıl Oynanır?"
+              >
+                <HelpCircle size={16} />
+              </button>
+            </div>
+          </div>
+
+          {/* Floating Camera Controls (Right Side) */}
+          <div className="absolute right-3 sm:right-6 top-20 flex flex-col gap-2 z-10">
+            <button
+              onClick={() => handleZoom(1.35)}
+              className="w-10 h-10 rounded-2xl bg-stone-900/90 border border-stone-700 text-stone-200 flex items-center justify-center hover:bg-stone-800 shadow-xl transition"
+              title="Yakınlaştır"
+            >
+              <ZoomIn size={18} />
+            </button>
+            <button
+              onClick={() => handleZoom(0.75)}
+              className="w-10 h-10 rounded-2xl bg-stone-900/90 border border-stone-700 text-stone-200 flex items-center justify-center hover:bg-stone-800 shadow-xl transition"
+              title="Uzaklaştır"
+            >
+              <ZoomOut size={18} />
+            </button>
+            <button
+              onClick={() => {
+                const p = hud.activePlayer;
+                if (p) centerOnCoords(p.capitalX, p.capitalY, 3.8);
+              }}
+              className="w-10 h-10 rounded-2xl bg-stone-900/90 border border-stone-700 text-amber-400 flex items-center justify-center hover:bg-stone-800 shadow-xl transition"
+              title="Başkente Odaklan"
+            >
+              <Compass size={18} />
+            </button>
+          </div>
+
+          {/* Bottom Action Controls (Exact Original Format Adapted to Soldiers) */}
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-xl px-4 pointer-events-none">
+            <div className="pointer-events-auto bg-stone-900/95 border border-stone-700/80 backdrop-blur-lg rounded-3xl p-2.5 sm:p-3 shadow-2xl flex items-center justify-between gap-1.5 sm:gap-2">
+              {/* Kaydır (Pan/Drag) */}
+              <button
                 onClick={() => {
-                  if (window.confirm('Mevcut dünyayı sıfırlayıp yeni bir dünya başlatmak istiyor musun?')) {
-                    localStorage.removeItem(SAVE_KEY);
-                    setSelectedNationId(0);
-                    setPhase('SETUP');
-                  }
+                  setPlacingMode('PAN');
+                  setNavalStartCell(null);
                 }}
-                className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-white/15 text-slate-300 hover:text-amber-300 backdrop-blur-md shadow-lg transition cursor-pointer"
-                title="Yeni Dünya Başlat"
+                className={`py-2 px-2.5 sm:px-3 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1 transition ${
+                  placingMode === 'PAN'
+                    ? 'bg-indigo-500 text-white shadow-lg'
+                    : 'bg-stone-800/80 text-stone-300 hover:bg-stone-800'
+                }`}
+                title="Haritada serbestçe gezin"
+              >
+                <span>🖐️</span>
+                <span className="hidden sm:inline">Kaydır</span>
+              </button>
+
+              {/* Fetih Modu (Expand/Paint) */}
+              <button
+                onClick={() => {
+                  setPlacingMode('EXPAND');
+                  setNavalStartCell(null);
+                }}
+                className={`flex-1 py-2 px-2.5 sm:px-3 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition ${
+                  placingMode === 'EXPAND'
+                    ? 'bg-amber-500 text-stone-950 shadow-lg'
+                    : 'bg-stone-800/80 text-stone-300 hover:bg-stone-800'
+                }`}
+              >
+                <Swords size={16} />
+                <span>Fethet</span>
+              </button>
+
+              {/* Sur / Duvar Ör (Wall) */}
+              <button
+                onClick={() => {
+                  setPlacingMode('WALL');
+                  setNavalStartCell(null);
+                }}
+                className={`flex-1 py-2 px-2.5 sm:px-3 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition ${
+                  placingMode === 'WALL'
+                    ? 'bg-slate-300 text-stone-950 shadow-lg'
+                    : 'bg-stone-800/80 text-stone-300 hover:bg-stone-800'
+                }`}
+                title="Sınır surları ör (3 Asker)"
+              >
+                <Shield size={16} />
+                <span>Sur Kur</span>
+              </button>
+
+              {/* Donanma / Deniz Çıkarması (Naval Fleet) */}
+              <button
+                onClick={() => setPlacingMode('NAVAL')}
+                className={`flex-1 py-2 px-2.5 sm:px-3 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition ${
+                  placingMode === 'NAVAL'
+                    ? 'bg-sky-400 text-stone-950 shadow-lg'
+                    : 'bg-stone-800/80 text-stone-300 hover:bg-stone-800'
+                }`}
+                title="Donanmayla karşı kıyılara çıkarma yap"
+              >
+                <Anchor size={16} />
+                <span>Donanma</span>
+              </button>
+
+              {/* Geri Al (Undo) */}
+              <button
+                onClick={handleUndo}
+                disabled={hud.turnMovesCount === 0}
+                className={`p-2.5 rounded-2xl font-black text-xs flex items-center justify-center transition ${
+                  hud.turnMovesCount > 0
+                    ? 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+                    : 'bg-stone-800/40 text-stone-600 cursor-not-allowed'
+                }`}
+                title="Son hamleyi geri al"
               >
                 <RotateCcw size={16} />
               </button>
 
+              {/* Turu Bitir (End Turn) */}
               <button
-                type="button"
-                onClick={() => {
-                  saveNow();
-                  soundManager.playClick();
-                  onReturnToModeSelect();
-                }}
-                className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-white/15 text-slate-300 hover:text-white backdrop-blur-md shadow-lg transition cursor-pointer"
-                title="Kaydet ve Mod Seçimine Dön"
+                onClick={handleEndTurn}
+                className="py-2.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white font-black text-xs sm:text-sm shadow-xl flex items-center gap-1.5 transition"
               >
-                <Home size={16} />
+                <Check size={16} />
+                <span>Turu Bitir</span>
               </button>
-            </div>
-
-            {/* Live World Leaderboard */}
-            <div className="bg-slate-900/82 backdrop-blur-md border border-white/12 rounded-2xl shadow-2xl overflow-hidden w-48 sm:w-56">
-              <button
-                type="button"
-                onClick={() => setShowLeaderboard((v) => !v)}
-                className="w-full px-3 py-2 flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-amber-300 hover:bg-white/5 transition cursor-pointer"
-              >
-                <span className="flex items-center gap-1.5">
-                  <Crown size={13} />
-                  Dünya Liderleri
-                </span>
-                {showLeaderboard ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              </button>
-
-              {showLeaderboard && (
-                <div className="px-2 pb-2 space-y-1">
-                  {hud.leaderboard.map((row) => (
-                    <button
-                      key={row.id}
-                      type="button"
-                      onClick={() => {
-                        const n = engineRef.current.nationMap.get(row.id);
-                        if (!n) return;
-                        const regs = engineRef.current.regions.filter((r) => r.ownerId === row.id);
-                        const main = regs.sort((a, b) => b.count - a.count)[0];
-                        if (main) focusCameraOn(main.cx, main.cy, 2.3);
-                        else focusCameraOn(n.capitalX, n.capitalY, 2.3);
-                        if (!row.isPlayer) setSelectedNationId(row.id);
-                        soundManager.playClick();
-                      }}
-                      className={`w-full flex items-center gap-2 px-2 py-1 rounded-xl text-left text-[11px] transition cursor-pointer ${
-                        row.isPlayer
-                          ? 'bg-amber-500/25 border border-amber-400/50 text-amber-200 font-black'
-                          : 'hover:bg-white/10 text-slate-200 font-semibold'
-                      }`}
-                    >
-                      <span className="w-3.5 text-[10px] font-black text-slate-400">
-                        {row.rank === 1 ? '👑' : `${row.rank}.`}
-                      </span>
-                      <img src={row.flagDataUrl} alt="" className="w-5 h-3.5 rounded-sm object-cover shrink-0" />
-                      <span className="truncate flex-1">{row.name}</span>
-                      <span className="text-[10px] font-black text-amber-300/90">%{row.pct}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* RIGHT-MIDDLE: Floating Camera Controls */}
-          <div className="absolute right-3 bottom-28 sm:bottom-24 z-20 flex flex-col gap-1.5 bg-slate-900/80 backdrop-blur-md border border-white/12 rounded-2xl p-1.5 shadow-xl">
-            <button
-              type="button"
-              onClick={() => {
-                cameraRef.current.zoom = Math.min(6.0, cameraRef.current.zoom * 1.3);
-              }}
-              className="p-2 hover:bg-white/10 rounded-xl text-slate-200 transition cursor-pointer"
-              title="Yakınlaştır"
-            >
-              <ZoomIn size={17} />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                cameraRef.current.zoom = Math.max(0.85, cameraRef.current.zoom * 0.77);
-              }}
-              className="p-2 hover:bg-white/10 rounded-xl text-slate-200 transition cursor-pointer"
-              title="Uzaklaştır"
-            >
-              <ZoomOut size={17} />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const p = engineRef.current.getPlayer();
-                if (!p) return;
-                const regs = engineRef.current.regions.filter((r) => r.ownerId === p.id);
-                const main = regs.sort((a, b) => b.count - a.count)[0];
-                if (main) focusCameraOn(main.cx, main.cy, 2.3);
-                else focusCameraOn(p.capitalX, p.capitalY, 2.3);
-              }}
-              className="p-2 hover:bg-white/10 rounded-xl text-amber-300 transition cursor-pointer"
-              title="Başkentime Odaklan"
-            >
-              <Crosshair size={17} />
-            </button>
-            <button
-              type="button"
-              onClick={resetCamera}
-              className="p-2 hover:bg-white/10 rounded-xl text-sky-300 transition cursor-pointer"
-              title="Tüm Dünya Haritası"
-            >
-              <Maximize2 size={16} />
-            </button>
-          </div>
-
-          {/* BOTTOM-LEFT: Live War Ticker */}
-          <div className="hidden sm:flex flex-col gap-1 absolute bottom-24 left-3 z-10 max-w-xs pointer-events-none">
-            {events.map((ev) => (
-              <div
-                key={ev.id}
-                className="px-2.5 py-1 rounded-xl bg-slate-900/75 backdrop-blur-md border border-white/10 text-[11px] font-semibold text-slate-200 shadow animate-in fade-in"
-              >
-                {ev.text}
-              </div>
-            ))}
-          </div>
-
-          {/* FLOATING NATION DIPLOMACY & INTEL CARD */}
-          {inspectedNation && (
-            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 sm:left-auto sm:translate-x-0 sm:right-16 z-30 w-[92vw] max-w-xs bg-slate-900/95 backdrop-blur-lg border border-amber-400/40 rounded-2xl p-4 shadow-2xl space-y-3 animate-in zoom-in-95">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <img
-                    src={inspectedNation.flagDataUrl}
-                    alt=""
-                    className="w-11 h-7 rounded-lg object-cover border border-white/25 shrink-0"
-                  />
-                  <div className="min-w-0">
-                    <div className="font-black text-sm text-white truncate">{inspectedNation.name}</div>
-                    <div className="text-[11px] text-slate-300 flex items-center gap-2">
-                      <span>🌍 %{inspectedNation.pct}</span>
-                      <span className="text-amber-300 font-bold">⚔️ {formatTroops(inspectedNation.troops)}</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedNationId(0)}
-                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 cursor-pointer"
-                >
-                  <X size={15} />
-                </button>
-              </div>
-
-              {inspectedNation.vassalOfPlayer && (
-                <div className="text-[11px] px-2.5 py-1.5 rounded-xl bg-purple-500/20 border border-purple-400/40 text-purple-200 font-bold">
-                  👑 Senin Vasalın! Üretiminin %14&apos;ünü haraç olarak gönderiyor.
-                </div>
-              )}
-              {inspectedNation.alliedWithPlayer && !inspectedNation.vassalOfPlayer && (
-                <div className="text-[11px] px-2.5 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 font-bold">
-                  🛡️ Saldırmazlık İttifakı Aktif
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-2">
-                {!inspectedNation.alliedWithPlayer ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const res = engineRef.current.launchAttack(1, inspectedNation.id, sendRatio);
-                        if (!res.ok && res.reason === 'NO_BORDER') {
-                          const nRes = engineRef.current.launchNavalInvasion(1, inspectedNation.capitalX, inspectedNation.capitalY, sendRatio);
-                          if (!nRes.ok) showToast(nRes.reason, 'error');
-                          else showToast(`🚢 ${inspectedNation.name} kıyısına donanma gönderildi!`, 'success');
-                        } else if (!res.ok) {
-                          showToast(res.reason, 'error');
-                        }
-                        setSelectedNationId(0);
-                      }}
-                      className="py-2 px-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Swords size={14} />
-                      <span>Saldır</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const r = engineRef.current.proposeAlliance(inspectedNation.id);
-                        showToast(r.msg, r.ok ? 'success' : 'error');
-                      }}
-                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Handshake size={14} />
-                      <span>İttifak Kur</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const r = engineRef.current.demandTribute(inspectedNation.id);
-                        showToast(r.msg, r.ok ? 'success' : 'error');
-                      }}
-                      className="col-span-2 py-2 px-3 bg-gradient-to-r from-amber-500 to-purple-600 hover:from-amber-400 hover:to-purple-500 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Crown size={14} />
-                      <span>Haraç / Vasal İste (Büyük Devlet Gücü)</span>
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const r = engineRef.current.breakAlliance(inspectedNation.id);
-                      showToast(r.msg, 'info');
-                    }}
-                    className="col-span-2 py-2 px-3 bg-red-600/85 hover:bg-red-600 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Swords size={14} />
-                    <span>İttifakı Boz ve Sınırları Aç</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* BOTTOM CENTER: Sleek Floating Command Dock */}
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 w-[96vw] max-w-2xl bg-slate-900/88 backdrop-blur-lg border border-white/15 rounded-2xl px-3 py-2.5 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-2.5">
-            {/* 4 Command Mode Pills */}
-            <div className="flex items-center gap-1.5 w-full sm:w-auto justify-center">
-              <button
-                type="button"
-                onClick={() => { setActionMode('AUTO'); soundManager.playClick(); }}
-                className={`flex-1 sm:flex-none px-3 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                  actionMode === 'AUTO'
-                    ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 shadow-md'
-                    : 'bg-white/8 hover:bg-white/15 text-slate-200'
-                }`}
-              >
-                <Swords size={14} />
-                <span>Fethet</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMode('NAVAL');
-                  soundManager.playClick();
-                  showToast('🚢 Donanma Modu: Çıkarma yapmak istediğin kıyıya veya kıtaya tıkla!');
-                }}
-                className={`flex-1 sm:flex-none px-3 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                  actionMode === 'NAVAL'
-                    ? 'bg-sky-500 text-white shadow-md'
-                    : 'bg-white/8 hover:bg-white/15 text-slate-200'
-                }`}
-              >
-                <Anchor size={14} />
-                <span>Donanma</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMode('FORTIFY');
-                  soundManager.playClick();
-                  showToast(`🏰 Kale Modu: Kendi toprağına tıkla (1.2K Asker • ${hud.fortCount}/${hud.maxForts} Kale)`);
-                }}
-                className={`flex-1 sm:flex-none px-3 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                  actionMode === 'FORTIFY'
-                    ? 'bg-amber-200 text-slate-950 shadow-md'
-                    : 'bg-white/8 hover:bg-white/15 text-slate-200'
-                }`}
-              >
-                <Castle size={14} />
-                <span>Kale ({hud.fortCount}/{hud.maxForts})</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMode('DIPLOMACY');
-                  soundManager.playClick();
-                  showToast('🤝 Diplomasi Modu: İttifak veya haraç için bir ülkeye tıkla!');
-                }}
-                className={`flex-1 sm:flex-none px-3 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                  actionMode === 'DIPLOMACY'
-                    ? 'bg-emerald-500 text-slate-950 shadow-md'
-                    : 'bg-white/8 hover:bg-white/15 text-slate-200'
-                }`}
-              >
-                <Handshake size={14} />
-                <span className="hidden xs:inline">Diplomasi</span>
-              </button>
-            </div>
-
-            {/* Smooth Army Deployment Ratio Slider */}
-            <div className="flex items-center gap-2 w-full sm:w-auto sm:min-w-[235px]">
-              <div className="flex items-center gap-1">
-                {[25, 50, 75].map((pct) => (
-                  <button
-                    key={pct}
-                    type="button"
-                    onClick={() => { setSendRatio(pct); soundManager.playClick(); }}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${
-                      sendRatio === pct
-                        ? 'bg-amber-400 text-slate-950'
-                        : 'bg-white/10 text-slate-300 hover:bg-white/20'
-                    }`}
-                  >
-                    %{pct}
-                  </button>
-                ))}
-              </div>
-              <input
-                type="range"
-                min={10}
-                max={90}
-                step={5}
-                value={sendRatio}
-                onChange={(e) => setSendRatio(Number(e.target.value))}
-                className="flex-1 accent-amber-400 cursor-pointer h-1.5"
-              />
-              <span className="text-[11px] font-black text-amber-300 min-w-[54px] text-right">
-                {formatTroops(troopsToDeploy)}
-              </span>
             </div>
           </div>
         </>
       )}
 
-      {/* TOAST NOTIFICATION */}
-      {toast && (
-        <div
-          className={`absolute top-16 sm:top-4 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-2xl shadow-2xl border font-black text-xs sm:text-sm flex items-center gap-2 animate-in fade-in slide-in-from-top-2 ${
-            toast.type === 'error'
-              ? 'bg-red-950/95 border-red-500/60 text-red-100'
-              : toast.type === 'success'
-              ? 'bg-emerald-950/95 border-emerald-400/60 text-emerald-100'
-              : 'bg-slate-900/95 border-amber-400/60 text-amber-200'
-          }`}
-        >
-          {toast.type === 'error' ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
-          <span>{toast.msg}</span>
+      {/* TOAST MESSAGE */}
+      {toastMessage && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-stone-900/95 border border-amber-400/50 text-white px-4 py-2 rounded-2xl shadow-2xl text-xs sm:text-sm font-bold flex items-center gap-2 animate-bounce">
+          <Sparkles size={16} className="text-amber-400 shrink-0" />
+          <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* OFFLINE GUARDIAN AI REPORT MODAL */}
-      {offlineReport && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-slate-900 border-2 border-emerald-400/60 rounded-3xl p-6 max-w-sm w-full text-center space-y-4 shadow-2xl">
-            <div className="w-14 h-14 mx-auto rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
-              <Shield size={32} />
+      {/* CITY CAPTURE CELEBRATION MODAL */}
+      {celebrationModal && (
+        <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-gradient-to-b from-stone-900 to-zinc-950 border-2 border-amber-400 rounded-3xl p-6 shadow-2xl text-center animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 rounded-3xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-3xl mx-auto mb-3 shadow-inner">
+              {celebrationModal.icon || '🏛️'}
             </div>
-            <div>
-              <div className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
-                Vekil Muhafız Raporu
-              </div>
-              <h3 className="text-xl font-black text-white mt-1">Tekrar Hoş Geldin, Kumandan!</h3>
-              <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                Yaklaşık <strong>{offlineReport.elapsedMinutes} dakika</strong> boyunca devletini nöbette korudum.
-              </p>
+            <h3 className="text-xl font-black text-white">
+              ŞEHİR FETHEDİLDİ!
+            </h3>
+            <div className="text-2xl font-black text-amber-400 mt-1">
+              {celebrationModal.name.toUpperCase()}
             </div>
-            <div className="bg-slate-800/80 rounded-2xl p-3.5 text-left text-xs space-y-2 border border-white/10">
-              <div className="flex justify-between">
-                <span className="text-slate-400">Garnizonda Üretilen Asker:</span>
-                <span className="font-black text-emerald-400">+{formatTroops(offlineReport.producedTroops)}</span>
-              </div>
-              {offlineReport.guardianWasOn && (
-                <>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Püskürtülen Sınır Akını:</span>
-                    <span className="font-black text-amber-300">{offlineReport.raidsRepelled} Saldırı</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Düşmana Verdirilen Kayıp:</span>
-                    <span className="font-black text-red-400">-{formatTroops(offlineReport.enemyCasualties)} Asker</span>
-                  </div>
-                </>
-              )}
+            <p className="text-xs text-stone-400 mt-1">
+              {celebrationModal.country} • {celebrationModal.tier}
+            </p>
+
+            <div className="my-4 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs font-bold text-amber-300 space-y-1">
+              <div>🎁 +{celebrationModal.bonusTroops} Asker Anında Orduna Katıldı!</div>
+              <div>⚡ Her Tur +{celebrationModal.incomeBonus} Asker Ekstra Üretim!</div>
             </div>
+
             <button
-              type="button"
-              onClick={() => {
-                soundManager.playClick();
-                setOfflineReport(null);
-              }}
-              className="w-full py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm rounded-xl shadow-lg cursor-pointer"
+              onClick={() => setCelebrationModal(null)}
+              className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-sm transition shadow-lg"
             >
-              Komutayı Devral ⚔️
+              Fethe Devam Et!
             </button>
           </div>
         </div>
       )}
 
-      {/* VICTORY / DEFEAT OVERLAY */}
-      {phase === 'PLAYING' && (!hud.alive || hud.winner) && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 animate-in zoom-in-95">
-          <div className="bg-slate-900 border-2 border-amber-400 rounded-3xl p-7 max-w-sm w-full text-center space-y-4 shadow-2xl">
-            <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
-              <Trophy size={36} />
-            </div>
-            <h2 className="text-2xl font-black text-white">
-              {hud.winner?.isPlayer ? 'DÜNYA HAKİMİYETİ!' : !hud.alive ? 'İMPARATORLUK DÜŞTÜ' : 'SAVAŞ SONA ERDİ'}
-            </h2>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              {hud.winner?.isPlayer
-                ? `${empireName} dünyaya hükmetti ve tüm kıtalarda bayrağını dalgalandırdı!`
-                : !hud.alive
-                ? 'Toprakların kaybedildi, ama yeni bir kıtadan çok daha güçlü doğabilirsin!'
-                : `${hud.winner?.name} dünya hakimiyetini ilan etti.`}
-            </p>
-            <div className="flex flex-col gap-2 pt-2">
+      {/* RULES / HELP MODAL */}
+      {showRules && (
+        <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-stone-900 border border-stone-700 rounded-3xl p-6 shadow-2xl text-white">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-black text-amber-400">Dev Dünya Haritası Nasıl Oynanır?</h3>
               <button
-                type="button"
-                onClick={() => {
-                  localStorage.removeItem(SAVE_KEY);
-                  setPhase('SETUP');
-                }}
-                className="w-full py-3 bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 font-black text-sm rounded-xl shadow-lg cursor-pointer"
+                onClick={() => setShowRules(false)}
+                className="p-1 rounded-lg text-stone-400 hover:text-white"
               >
-                Yeni İmparatorluk Kur 🌍
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  localStorage.removeItem(SAVE_KEY);
-                  onReturnToModeSelect();
-                }}
-                className="w-full py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl cursor-pointer"
-              >
-                Ana Menüye Dön
+                <X size={18} />
               </button>
             </div>
+
+            <div className="space-y-3 text-xs text-stone-300 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
+                <div className="font-black text-white text-sm mb-1">⚔️ Asker ve Fetih Sistemi</div>
+                <div>
+                  Çark şansı yoktur. Her tur topraklarından ve fethettiğin şehirlerden asker üretirsin. Komşu topraklara parmağınla veya farenle sürükleyerek fetih yapabilirsin.
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
+                <div className="font-black text-white text-sm mb-1">🏔️ Arazi Zorlukları</div>
+                <div className="space-y-0.5 mt-1">
+                  <div>🌾 <strong>Ova:</strong> 1 Asker</div>
+                  <div>🌲 <strong>Orman:</strong> 2 Asker</div>
+                  <div>🏜️ <strong>Çöl:</strong> 3 Asker</div>
+                  <div>⛰️ <strong>Dağ:</strong> 5 Asker</div>
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
+                <div className="font-black text-white text-sm mb-1">🏛️ Dünya Metropolleri</div>
+                <div>
+                  İstanbul, Ankara, Roma, Paris, Londra gibi dünya şehirlerini ele geçirdiğinde büyük asker bonusları ve kalıcı tur geliri kazanırsın.
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
+                <div className="font-black text-white text-sm mb-1">⚓ Donanma Çıkarmaları</div>
+                <div>
+                  Denizleri ve okyanusları aşmak için donanma seferi başlatabilir, karşı kıyılarda yeni koloniler kurabilirsin.
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowRules(false)}
+              className="w-full mt-5 py-2.5 rounded-xl bg-amber-500 text-stone-950 font-black text-xs hover:bg-amber-400 transition"
+            >
+              Anladım, Kapat
+            </button>
           </div>
         </div>
       )}
