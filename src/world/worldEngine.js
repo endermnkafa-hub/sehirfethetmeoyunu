@@ -75,9 +75,9 @@ export const UPGRADE_DEFINITIONS = [
   },
   {
     key: 'citadel',
-    name: 'Başkent İç Kalesi',
+    name: 'Vatan Direnişi & Siper Ağı',
     icon: '🏰',
-    desc: 'Her seviyede başkentin ve yakın çevresinin kuşatma direncini +%10 artırır.',
+    desc: 'Her seviyede tüm topraklarının işgal direncini +%8 artırır; toprağına saldıranlar çok daha fazla asker harcar.',
     baseCost: 35,
     costScale: 1.38,
     maxLevel: 25,
@@ -170,10 +170,28 @@ export class WorldSimulationEngine {
       (1 + (up.economy || 0) * 0.06) *
       popBonus;
 
-    // 4. Saldırı & Savunma Gücü (Her seviye +%6, küçük ülkelere +%35 Vatan Savunması)
+    // 4. Saldırı & Savunma Gücü (Tüm topraklarda eşit savunma; Başkent ayrımı yoktur!)
     c.attackPower = 1.0 + (up.weapons || 0) * 0.06;
     const underdogBonus = c.landCount < 40 ? 0.35 : c.landCount < 100 ? 0.15 : 0;
-    c.defensePower = 1.0 + (up.fortification || 0) * 0.06 + underdogBonus;
+    c.defensePower =
+      1.0 +
+      (up.fortification || 0) * 0.06 +
+      (up.citadel || 0) * 0.08 +
+      underdogBonus;
+  }
+
+  // Get live center coordinates of a country's current territory
+  getCountryCenter(countryId) {
+    const bounds = this.countryBounds || this.computeCountryBounds();
+    const b = bounds.get(countryId);
+    if (b && b.count > 0) {
+      return {
+        x: Math.round(b.sumX / b.count),
+        y: Math.round(b.sumY / b.count),
+      };
+    }
+    const c = this.countryMap.get(countryId);
+    return c ? { x: c.capitalX, y: c.capitalY } : { x: MAP_W / 2, y: MAP_H / 2 };
   }
 
   // Change Country Border Color live
@@ -301,14 +319,7 @@ export class WorldSimulationEngine {
       const defender = this.countryMap.get(currentOwner);
       const defPower = defender ? (defender.defensePower || 1.0) : 1.0;
       const atkPower = attacker.attackPower || 1.0;
-      let citadelMult = 1.0;
-      if (defender) {
-        const dist = Math.hypot(x - defender.capitalX, y - defender.capitalY);
-        if (dist <= 5) {
-          citadelMult = 1.3 + (defender.upgrades?.citadel || 0) * 0.10;
-        }
-      }
-      cost = Math.max(1.0, Number(((2.0 * defPower * citadelMult) / atkPower).toFixed(2)));
+      cost = Math.max(1.0, Number(((2.0 * defPower) / atkPower).toFixed(2)));
     }
 
     return {

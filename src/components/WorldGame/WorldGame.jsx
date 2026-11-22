@@ -141,7 +141,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!eng) return;
     const myC = eng.getMyCountry();
     if (myC) {
-      centerOnCoords(myC.capitalX, myC.capitalY, 3.8);
+      const center = eng.getCountryCenter(myC.id);
+      centerOnCoords(center.x, center.y, 3.8);
     }
   }, [centerOnCoords]);
 
@@ -554,10 +555,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
         </button>
         <button
           onClick={() => {
-            if (myCountry) centerOnCoords(myCountry.capitalX, myCountry.capitalY, 6.0);
+            const eng = engineRef.current;
+            if (myCountry && eng) {
+              const center = eng.getCountryCenter(myCountry.id);
+              centerOnCoords(center.x, center.y, 6.0);
+            }
           }}
           className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-amber-400 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
-          title="Başkente Odaklan"
+          title="Ülkeme Odaklan"
         >
           <Compass size={18} />
         </button>
