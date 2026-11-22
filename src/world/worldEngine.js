@@ -313,7 +313,10 @@ export class WorldSimulationEngine {
   }
 
   getCountryCenter(countryId) {
-    const bounds = this.countryBounds || this.computeCountryBounds();
+    if (this.dirtyRegions || !this.countryBounds) {
+      this.computeCountryBounds();
+    }
+    const bounds = this.countryBounds;
     const b = bounds.get(countryId);
     if (b && b.count > 0) {
       return {
@@ -1155,8 +1158,11 @@ export class WorldSimulationEngine {
   }
 
   // Export up to maxPts [x1, y1, x2, y2...] coordinates for a country (used by cloud sync)
-  getCountryPixelCoords(countryId, maxPts = 1500) {
-    const b = (this.countryBounds || this.computeCountryBounds()).get(countryId);
+  getCountryPixelCoords(countryId, maxPts = 3000) {
+    if (this.dirtyRegions || !this.countryBounds) {
+      this.computeCountryBounds();
+    }
+    const b = this.countryBounds?.get(countryId);
     if (!b || b.count === 0) return [];
     const pts = [];
     for (let y = b.minY; y <= b.maxY; y++) {
@@ -1219,7 +1225,6 @@ export class WorldSimulationEngine {
     const idxCap = country.capitalY * MAP_W + country.capitalX;
     if (this.worldData.isLand[idxCap] && this.owners[idxCap] === 0) {
       this.owners[idxCap] = country.id;
-      this._expandCountryBound(country.id, country.capitalX, country.capitalY);
     }
 
     if (Array.isArray(pts)) {
@@ -1234,17 +1239,11 @@ export class WorldSimulationEngine {
 
       // If we are not the owner of this country, synchronize its territory exactly with the owner's authoritative pts
       if (country.id !== this.myCountryId && validPtsSet.size > 0) {
-        // Clear any old/orphaned pixels that this country no longer owns
-        const b = (this.countryBounds || this.computeCountryBounds()).get(country.id);
-        if (b && b.count > 0) {
-          for (let y = b.minY; y <= b.maxY; y++) {
-            const row = y * MAP_W;
-            for (let x = b.minX; x <= b.maxX; x++) {
-              const idx = row + x;
-              if (this.owners[idx] === country.id && !validPtsSet.has(idx)) {
-                this.owners[idx] = 0;
-              }
-            }
+        // Clear any old/orphaned pixels that this country no longer owns across the entire map
+        const total = MAP_W * MAP_H;
+        for (let idx = 0; idx < total; idx++) {
+          if (this.owners[idx] === country.id && !validPtsSet.has(idx)) {
+            this.owners[idx] = 0;
           }
         }
 
@@ -1254,31 +1253,21 @@ export class WorldSimulationEngine {
             this.owners[idx] = country.id;
           }
         }
-      } else {
+      } else if (country.id === this.myCountryId) {
+        // If this is our own country, fill any valid land points
         for (const idx of validPtsSet) {
-          if (this.worldData.isLand[idx] && this.owners[idx] !== country.id) {
+          if (this.worldData.isLand[idx] && this.owners[idx] === 0) {
             this.owners[idx] = country.id;
-            this._expandCountryBound(country.id, idx % MAP_W, (idx / MAP_W) | 0);
           }
         }
       }
     }
 
-    // Recount country land inside its bounding box
-    const b = (this.countryBounds || this.computeCountryBounds()).get(country.id);
-    if (b) {
-      let cnt = 0;
-      for (let y = b.minY; y <= b.maxY; y++) {
-        const row = y * MAP_W;
-        for (let x = b.minX; x <= b.maxX; x++) {
-          if (this.owners[row + x] === country.id) cnt++;
-        }
-      }
-      country.landCount = Math.max(1, cnt);
-    }
-
-    this._recalculateDerivedStats(country);
+    // Immediately recompute full country bounds & stats so rendering and territory size are 100% exact!
+    this.computeCountryBounds();
+    this.dirtyRegions = false;
     this.dirtyPixels = true;
+    this._recalculateDerivedStats(country);
     this.scheduleSave();
   }
 

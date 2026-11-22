@@ -196,7 +196,7 @@ export class SharedWorldSync {
     const myC = this.engine.getMyCountry();
     if (!myC || myC.landCount <= 0) return;
 
-    const pts = this.engine.getCountryPixelCoords(myC.id, 1500);
+    const pts = this.engine.getCountryPixelCoords(myC.id, 3000);
     const compactFlag = this.getCompactFlagFromCountry(myC);
 
     this._sendToCloud({
@@ -251,6 +251,11 @@ export class SharedWorldSync {
       countryId,
       pts,
     });
+    // Send full authoritative country snapshot 1.2s after conquest stops so all remote devices match 100%
+    if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
+    this._authoritativeSnapshotTimer = setTimeout(() => {
+      this.publishMyCountrySnapshot();
+    }, 1200);
   }
 
   broadcast(data) {
@@ -342,6 +347,8 @@ export class SharedWorldSync {
       for (let i = 0; i < data.pts.length; i += 2) {
         this.engine.handleRemoteConquerPixel(data.countryId, data.pts[i], data.pts[i + 1], 0);
       }
+      this.engine.computeCountryBounds();
+      this.engine.dirtyPixels = true;
       this.onRemoteUpdate();
     } else if (data.type === 'LAUNCH_SHIP' && data.ship) {
       this.engine.handleRemoteLaunchShip(data.ship);
