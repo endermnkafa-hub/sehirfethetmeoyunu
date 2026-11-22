@@ -98,9 +98,11 @@ export default function App() {
     }
   });
 
-  const territoryCounts = grid.length > 0 && players.length > 0
-    ? countPlayerTerritories(grid, players)
-    : {};
+  const territoryCounts = useMemo(() => {
+    return grid.length > 0 && players.length > 0
+      ? countPlayerTerritories(grid, players)
+      : {};
+  }, [grid, players]);
 
   const activePlayer = players[activePlayerIndex] || { id: 1, name: 'Oyuncu 1', hex: '#2563eb' };
   const activePlayerArea = territoryCounts[activePlayer.id] || 0;
@@ -711,6 +713,9 @@ export default function App() {
     cellsToApply.forEach(cell => {
       if (!cell.isWallBreachOnly) {
         newGrid[cell.y][cell.x] = activePlayer.id;
+        if (cell.isWallDemolished) {
+          delete newWalls[`${cell.x},${cell.y}`];
+        }
       }
     });
 
