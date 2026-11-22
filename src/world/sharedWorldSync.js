@@ -213,6 +213,7 @@ export class SharedWorldSync {
     const updateFlags = new Map(); // countryId -> { idx, flagDataUrl }
     const pixelOps = []; // { idx, data }
     const treatyOps = [];
+    const nuclearStrikes = [];
     const chats = [];
 
     for (let i = startIdx; i < payloads.length; i++) {
@@ -231,6 +232,8 @@ export class SharedWorldSync {
         latestStats.set(p.countryId, { idx: i, data: p });
       } else if (p.type === 'CONQUER_BATCH' || p.type === 'CONQUER_PIXEL' || p.type === 'UNDO_PIXEL') {
         pixelOps.push({ idx: i, data: p });
+      } else if (p.type === 'NUCLEAR_STRIKE' && p.strike) {
+        nuclearStrikes.push(p.strike);
       } else if (
         p.type === 'TREATY_PROPOSAL' ||
         p.type === 'TREATY_ACCEPT' ||
@@ -333,6 +336,11 @@ export class SharedWorldSync {
       } else if (p.type === 'TREATY_PAYMENT' && p.treatyId) {
         this.engine.handleRemoteTreatyPayment(p.treatyId, p.amount, p.time, true);
       }
+    }
+
+    // Replay Nuclear Strikes (radioactive wastelands)
+    for (const strike of nuclearStrikes) {
+      this.engine.handleRemoteNuclearStrike(strike, true);
     }
 
     // 6. Compute exact country bounds ONCE for the entire map
@@ -620,6 +628,9 @@ export class SharedWorldSync {
     } else if (data.type === 'TREATY_PAYMENT' && data.treatyId) {
       this.engine.handleRemoteTreatyPayment(data.treatyId, data.amount, data.time, false);
       this.onRemoteUpdate();
+    } else if (data.type === 'NUCLEAR_STRIKE' && data.strike) {
+      this.engine.handleRemoteNuclearStrike(data.strike, false);
+      this.onRemoteUpdate();
     } else if (data.type === 'GLOBAL_CHAT' && data.chat) {
       this.engine.handleRemoteChatMessage(data.chat);
       this.onRemoteUpdate();
@@ -638,6 +649,9 @@ export class SharedWorldSync {
   sendChatMessage(text, isAdmin = false) {
     if (!text || !text.trim()) return;
     const myC = this.engine.getMyCountry();
+    const richest = this.engine.getRichestCountry();
+    const isRichest = Boolean(myC && richest && myC.id === richest.id && myC.gold >= 500);
+
     const chat = {
       id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       countryId: myC?.id || 0,
@@ -645,6 +659,7 @@ export class SharedWorldSync {
       countryColor: isAdmin ? '#FBBF24' : myC?.color || '#38BDF8',
       flagDataUrl: myC ? this.getCompactFlagFromCountry(myC) : null,
       isAdmin: Boolean(isAdmin),
+      isRichest,
       text: text.trim().slice(0, 160),
       time: Date.now(),
     };

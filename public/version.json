@@ -1,8 +1,8 @@
 {
-  "versionCode": 3,
-  "versionName": "1.2",
-  "minVersionCode": 3,
+  "versionCode": 4,
+  "versionName": "1.3",
+  "minVersionCode": 4,
   "apkUrl": "https://github.com/endermnkafa-hub/sehirfethetmeoyunu/releases/download/v1.0-latest/sehir-fethetme-oyunu.apk",
-  "releaseNotes": "Diplomasi & Anlaşma Sistemi (İttifak ve Haraç paktları), ceza tazminatları, harita arma netleştirme ve optimizasyonlar.",
+  "releaseNotes": "Paralı askerler (1 Asker = 1.000 Altın), Taktik Nükleer Silah ve radyoaktif yaşanamaz bölgeler, Toprak Satın Alma diplomasisi, [En Zengin] chat rozeti, kesin tek piksel fetih kontrolü ve altın aktif cephe vurgulaması.",
   "updatedAt": "2026-11-22"
 }

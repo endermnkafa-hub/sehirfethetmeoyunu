@@ -111,6 +111,9 @@ export class WorldSimulationEngine {
     for (let i = 0; i < total; i++) {
       this.owners[i] = worldData.isLand[i] ? 0 : -1;
     }
+    this.isWasteland = new Uint8Array(total); // 1 = scorched radioactive wasteland (uninhabitable)
+    this.nuclearStrikes = []; // History of nuclear strikes
+    this.activeExplosions = []; // Real-time rendering explosion animations [{ x, y, radius, startTime, duration }]
 
     this.countries = [];
     this.countryMap = new Map();
@@ -684,6 +687,245 @@ export class WorldSimulationEngine {
     return { ok: true, level: currentLevel + 1, cost };
   }
 
+  // Mercenary Recruitment: 1 Troop = 1,000 Gold
+  buyMercenaries(countryId, troopCount) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    const maxTroops = this.getMaxTroops(c);
+    const availableCap = Math.max(0, maxTroops - c.troops);
+    if (availableCap <= 0.05) {
+      return { ok: false, reason: `Asker kapasiten dolu! (Maks: ${Math.floor(maxTroops)})` };
+    }
+    const count = Math.min(troopCount, availableCap);
+    const cost = Math.round(count * 1000);
+    if (c.gold < cost) {
+      return { ok: false, reason: `Yetersiz altın! ${Math.floor(count)} asker için ${cost.toLocaleString()} Altın gereklidir.` };
+    }
+    c.gold -= cost;
+    c.troops += count;
+    this.dirtyPixels = true;
+    this.onSound("celebration");
+    this.onEvent(`⚔️ ${Math.floor(count)} Paralı Asker kiralandı! (-${cost.toLocaleString()} Altın)`);
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        gold: Math.round(c.gold),
+        population: Math.round(c.population),
+        troops: Number(c.troops.toFixed(1)),
+        upgrades: c.upgrades,
+      },
+    });
+
+    return { ok: true, count, cost };
+  }
+
+  // Detect the richest country in the world for prestige title [En Zengin]
+  getRichestCountry() {
+    let best = null;
+    let maxGold = -1;
+    for (const c of this.countries) {
+      if (c && c.landCount > 0 && c.gold > maxGold) {
+        maxGold = c.gold;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  // Launch Nuclear Strike: costs 35,000 Gold, scorches a 22-pixel radius into uninhabitable wasteland
+  launchNuclearStrike(countryId, targetX, targetY) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    const COST = 35000;
+    if (c.gold < COST) {
+      return { ok: false, reason: `Yetersiz altın! Taktik Nükleer Silah için ${COST.toLocaleString()} Altın gereklidir.` };
+    }
+    c.gold -= COST;
+    const strike = {
+      id: "nuke_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      attackerId: countryId,
+      attackerName: c.name,
+      x: targetX,
+      y: targetY,
+      radius: 22,
+      time: Date.now(),
+    };
+
+    this.handleRemoteNuclearStrike(strike, true);
+
+    this.sync.broadcast({
+      type: "NUCLEAR_STRIKE",
+      strike,
+    });
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        gold: Math.round(c.gold),
+        population: Math.round(c.population),
+        troops: Number(c.troops.toFixed(1)),
+        upgrades: c.upgrades,
+      },
+    });
+
+    this.sync.sendChatMessage(
+      `🚨 ${c.name} haritaya TAKTİK NÜKLEER BAŞLIK fırlattı! Hedef bölge radyoaktif yaşanamaz alana dönüştü! ☢️`,
+      true,
+    );
+
+    return { ok: true, strike };
+  }
+
+  handleRemoteNuclearStrike(strike, isLocal = false) {
+    if (!strike || strike.x == null || strike.y == null) return;
+    const { x, y, radius = 22 } = strike;
+    this.nuclearStrikes.push(strike);
+    this.activeExplosions.push({
+      x,
+      y,
+      radius,
+      startTime: Date.now(),
+      duration: 3500, // 3.5s explosion & shockwave
+    });
+
+    const r2 = radius * radius;
+    const affected = new Set();
+
+    for (let dy = -radius; dy <= radius; dy++) {
+      const cy = y + dy;
+      if (cy < 0 || cy >= MAP_H) continue;
+      const row = cy * MAP_W;
+      for (let dx = -radius; dx <= radius; dx++) {
+        const cx = x + dx;
+        if (cx < 0 || cx >= MAP_W) continue;
+        if (dx * dx + dy * dy > r2) continue;
+        const idx = row + cx;
+        if (!this.worldData.isLand[idx]) continue;
+
+        this.isWasteland[idx] = 1;
+        const prevOwner = this.owners[idx];
+        if (prevOwner > 0) {
+          this.owners[idx] = 0;
+          const country = this.countryMap.get(prevOwner);
+          if (country) {
+            country.landCount = Math.max(0, country.landCount - 1);
+            country.troops = Math.max(0, country.troops - 0.75);
+            affected.add(country);
+          }
+        }
+      }
+    }
+
+    // Capital preservation: If capital was scorched, relocate to nearest owned pixel
+    for (const country of affected) {
+      const capIdx = country.capitalY * MAP_W + country.capitalX;
+      if (this.isWasteland[capIdx] || this.owners[capIdx] !== country.id) {
+        let found = false;
+        for (let i = 0; i < MAP_W * MAP_H; i++) {
+          if (this.owners[i] === country.id && !this.isWasteland[i]) {
+            country.capitalX = i % MAP_W;
+            country.capitalY = Math.floor(i / MAP_W);
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          country.landCount = 0;
+        }
+      }
+    }
+
+    this.dirtyPixels = true;
+    this.dirtyRegions = true;
+
+    if (this.onEvent) {
+      this.onEvent({
+        type: "NUCLEAR_STRIKE",
+        strike,
+        isLocal,
+      });
+    }
+    this.onSound("bomb_explosion");
+  }
+
+  // Transfer seller's border pixels adjacent to buyer (Land Purchase)
+  transferBorderPixels({ buyerId, sellerId, count }) {
+    const buyer = this.countryMap.get(buyerId);
+    const seller = this.countryMap.get(sellerId);
+    if (!buyer || !seller || count <= 0) return 0;
+
+    const queue = [];
+    const visited = new Set();
+
+    for (let y = 0; y < MAP_H; y++) {
+      const row = y * MAP_W;
+      for (let x = 0; x < MAP_W; x++) {
+        const idx = row + x;
+        if (this.owners[idx] === sellerId && !this.isWasteland[idx]) {
+          const touchesBuyer =
+            (x > 0 && this.owners[idx - 1] === buyerId) ||
+            (x < MAP_W - 1 && this.owners[idx + 1] === buyerId) ||
+            (y > 0 && this.owners[idx - MAP_W] === buyerId) ||
+            (y < MAP_H - 1 && this.owners[idx + MAP_W] === buyerId);
+          if (touchesBuyer) {
+            queue.push(idx);
+            visited.add(idx);
+          }
+        }
+      }
+    }
+
+    let transferred = 0;
+    while (queue.length > 0 && transferred < count) {
+      const idx = queue.shift();
+      if (this.owners[idx] === sellerId && !this.isWasteland[idx]) {
+        this.owners[idx] = buyerId;
+        buyer.landCount++;
+        seller.landCount = Math.max(0, seller.landCount - 1);
+        transferred++;
+
+        const cx = idx % MAP_W;
+        const cy = Math.floor(idx / MAP_W);
+        const neighbors = [
+          cy > 0 ? idx - MAP_W : -1,
+          cy < MAP_H - 1 ? idx + MAP_W : -1,
+          cx > 0 ? idx - 1 : -1,
+          cx < MAP_W - 1 ? idx + 1 : -1,
+        ];
+        for (const n of neighbors) {
+          if (
+            n >= 0 &&
+            this.owners[n] === sellerId &&
+            !this.isWasteland[n] &&
+            !visited.has(n)
+          ) {
+            visited.add(n);
+            queue.push(n);
+          }
+        }
+      }
+    }
+
+    // Capital preservation
+    const selCapIdx = seller.capitalY * MAP_W + seller.capitalX;
+    if (this.owners[selCapIdx] !== sellerId && seller.landCount > 0) {
+      for (let i = 0; i < MAP_W * MAP_H; i++) {
+        if (this.owners[i] === sellerId && !this.isWasteland[i]) {
+          seller.capitalX = i % MAP_W;
+          seller.capitalY = Math.floor(i / MAP_W);
+          break;
+        }
+      }
+    }
+
+    this.dirtyPixels = true;
+    this.dirtyRegions = true;
+    return transferred;
+  }
+
   // Check if country has any internal holes/cavities inside its bounding box
   hasInternalCavities(countryId) {
     const b = this.countryBounds ? this.countryBounds.get(countryId) : null;
@@ -721,6 +963,9 @@ export class WorldSimulationEngine {
     const idx = y * MAP_W + x;
     if (!this.worldData.isLand[idx]) {
       return { valid: false, reason: "Deniz veya okyanus fethedilemez." };
+    }
+    if (this.isWasteland && this.isWasteland[idx]) {
+      return { valid: false, reason: "Bu bölge nükleer serpinti ve radyasyon nedeniyle yaşanamaz haldedir! ☢️" };
     }
 
     const currentOwner = this.owners[idx];
@@ -1998,7 +2243,15 @@ export class WorldSimulationEngine {
     );
   }
 
-  proposeTreaty({ toCountryId, type, penalty, tributeAmount, tributeRole }) {
+  proposeTreaty({
+    toCountryId,
+    type,
+    penalty,
+    tributeAmount,
+    tributeRole,
+    landPixelCount,
+    landPricePerPixel,
+  }) {
     const fromC = this.getMyCountry();
     if (!fromC || fromC.landCount <= 0) {
       return { ok: false, reason: "Önce aktif bir devletin olmalı!" };
@@ -2012,7 +2265,7 @@ export class WorldSimulationEngine {
     }
 
     const existingActive = this.getActiveTreatyBetween(fromC.id, toC.id);
-    if (existingActive) {
+    if (existingActive && type !== "LAND_PURCHASE") {
       return {
         ok: false,
         reason: `Bu devletle zaten aktif bir "${existingActive.type === "ALLIANCE" ? "İttifak" : "Haraç"}" anlaşman var!`,
@@ -2045,9 +2298,24 @@ export class WorldSimulationEngine {
       tributeReceiverId = tributeRole === "RECEIVER" ? fromC.id : toC.id;
     }
 
+    let cleanLandPixelCount = 0;
+    let cleanLandPricePerPixel = 0;
+    let landTotalPrice = 0;
+    if (type === "LAND_PURCHASE") {
+      cleanLandPixelCount = Math.max(5, Math.min(500, Math.round(Number(landPixelCount) || 25)));
+      cleanLandPricePerPixel = Math.max(10, Math.round(Number(landPricePerPixel) || 50));
+      landTotalPrice = cleanLandPixelCount * cleanLandPricePerPixel;
+      if (fromC.gold < landTotalPrice) {
+        return {
+          ok: false,
+          reason: `Kasanda yeterli altın yok! (${cleanLandPixelCount} piksel için ${landTotalPrice.toLocaleString()} Altın gerekli)`,
+        };
+      }
+    }
+
     const treaty = {
       id: "tr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-      type, // 'ALLIANCE' | 'TRIBUTE'
+      type, // 'ALLIANCE' | 'TRIBUTE' | 'LAND_PURCHASE'
       fromId: fromC.id,
       toId: toC.id,
       fromName: fromC.name,
@@ -2058,6 +2326,11 @@ export class WorldSimulationEngine {
       tributeAmount: cleanTribute,
       tributePayerId,
       tributeReceiverId,
+      landPixelCount: cleanLandPixelCount,
+      landPricePerPixel: cleanLandPricePerPixel,
+      landTotalPrice,
+      buyerId: fromC.id,
+      sellerId: toC.id,
       status: "PENDING",
       createdAt: Date.now(),
       activatedAt: null,
@@ -2072,9 +2345,13 @@ export class WorldSimulationEngine {
     });
 
     this.onSound("pencil");
-    this.onEvent(
-      `Diplomasi: ${toC.name} devletine ${type === "ALLIANCE" ? "İttifak" : "Haraç"} teklifi gönderildi.`,
-    );
+    const typeLabel =
+      type === "ALLIANCE"
+        ? "İttifak"
+        : type === "TRIBUTE"
+          ? "Haraç"
+          : "Toprak Satın Alma";
+    this.onEvent(`Diplomasi: ${toC.name} devletine ${typeLabel} teklifi gönderildi.`);
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     return { ok: true, treaty };
   }
@@ -2083,6 +2360,72 @@ export class WorldSimulationEngine {
     const treaty = this.treaties.find((t) => t.id === treatyId);
     if (!treaty || treaty.status !== "PENDING") {
       return { ok: false, reason: "Anlaşma bulunamadı veya süresi geçmiş." };
+    }
+
+    if (treaty.type === "LAND_PURCHASE") {
+      const buyer = this.countryMap.get(treaty.buyerId);
+      const seller = this.countryMap.get(treaty.sellerId);
+      if (!buyer || !seller) {
+        return { ok: false, reason: "Devletlerden biri bulunamadı." };
+      }
+      if (buyer.gold < treaty.landTotalPrice) {
+        return {
+          ok: false,
+          reason: "Alıcının kasasında yeterli altın bulunmuyor!",
+        };
+      }
+
+      buyer.gold = Math.max(0, buyer.gold - treaty.landTotalPrice);
+      seller.gold += treaty.landTotalPrice;
+      const transferred = this.transferBorderPixels({
+        buyerId: treaty.buyerId,
+        sellerId: treaty.sellerId,
+        count: treaty.landPixelCount,
+      });
+
+      treaty.status = "COMPLETED";
+      treaty.activatedAt = Date.now();
+
+      this.sync.broadcast({
+        type: "TREATY_ACCEPT",
+        treatyId,
+        activatedAt: treaty.activatedAt,
+        transferred,
+      });
+
+      this.sync.broadcast({
+        type: "SYNC_COUNTRY_STATS",
+        countryId: buyer.id,
+        stats: {
+          gold: Math.round(buyer.gold),
+          population: Math.round(buyer.population),
+          troops: Number(buyer.troops.toFixed(1)),
+          upgrades: buyer.upgrades,
+        },
+      });
+
+      this.sync.broadcast({
+        type: "SYNC_COUNTRY_STATS",
+        countryId: seller.id,
+        stats: {
+          gold: Math.round(seller.gold),
+          population: Math.round(seller.population),
+          troops: Number(seller.troops.toFixed(1)),
+          upgrades: seller.upgrades,
+        },
+      });
+
+      this.sync.sendChatMessage(
+        `📜 ${treaty.fromName}, ${treaty.toName} devletinden ${transferred} piksel toprağı ${treaty.landTotalPrice.toLocaleString()} Altın karşılığında satın aldı! 💰`,
+        true,
+      );
+
+      this.onSound("celebration");
+      this.onEvent(
+        `💰 Toprak Satışı: ${treaty.fromName}, ${treaty.toName} devletinden ${transferred} piksel toprağı satın aldı!`,
+      );
+      if (this.onTreatyUpdate) this.onTreatyUpdate();
+      return { ok: true, treaty, transferred };
     }
 
     treaty.status = "ACTIVE";

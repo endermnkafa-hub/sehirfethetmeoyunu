@@ -110,10 +110,16 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   // New Treaty Form State
   const [targetCountryId, setTargetCountryId] = useState("");
-  const [treatyType, setTreatyType] = useState("ALLIANCE"); // 'ALLIANCE' | 'TRIBUTE'
+  const [treatyType, setTreatyType] = useState("ALLIANCE"); // 'ALLIANCE' | 'TRIBUTE' | 'LAND_PURCHASE'
   const [penaltyAmount, setPenaltyAmount] = useState(2500);
   const [tributeAmount, setTributeAmount] = useState(150);
   const [tributeRole, setTributeRole] = useState("RECEIVER"); // 'RECEIVER' | 'PAYER'
+  const [landPixelCount, setLandPixelCount] = useState(25);
+  const [landPricePerPixel, setLandPricePerPixel] = useState(50);
+
+  // Nuclear Strike Weapon State
+  const [isTargetingNuke, setIsTargetingNuke] = useState(false);
+  const [nukeConfirmModal, setNukeConfirmModal] = useState(null); // { x, y }
 
   // Real-time HUD state
   const [hud, setHud] = useState({
@@ -453,6 +459,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
         return;
       }
 
+      if (isTargetingNuke) {
+        const pos = getMapCoords(e.clientX, e.clientY);
+        if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
+          setNukeConfirmModal({ x: pos.x, y: pos.y });
+          setIsTargetingNuke(false);
+        }
+        return;
+      }
+
       if (e.button === 2 || e.button === 1 || toolMode === "PAN") {
         isPaintingRef.current = false;
         return;
@@ -493,17 +508,25 @@ export default function WorldGame({ onReturnToModeSelect }) {
           !smartTarget.check.isNaval &&
           myCountry.troops >= smartTarget.check.cost
         ) {
-          isPaintingRef.current = true;
+          // Strictly conquer 1 single pixel per tap! (Never drag-conquers clusters)
+          isPaintingRef.current = false;
           conqueredOnDownRef.current = true;
           eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
         } else {
-          // If player doesn't have enough troops or touched outside border, allow smooth camera panning!
           isPaintingRef.current = false;
           conqueredOnDownRef.current = false;
+          if (smartTarget && myCountry.troops < smartTarget.check.cost) {
+            showToast(`Yetersiz Asker! (Gereken: ${smartTarget.check.cost.toFixed(1)} Asker)`);
+          } else {
+            const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
+            if (!check.valid && check.reason) {
+              showToast(check.reason);
+            }
+          }
         }
       }
     },
-    [getMapCoords, toolMode],
+    [getMapCoords, toolMode, isTargetingNuke, showToast],
   );
 
   const handlePointerMove = useCallback(
@@ -549,37 +572,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
           return;
         }
 
-        if (isPaintingRef.current) {
-          const pos = getMapCoords(e.clientX, e.clientY);
-          if (
-            pos &&
-            lastCellRef.current &&
-            (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y)
-          ) {
-            const eng = engineRef.current;
-            const myCountry = eng?.getMyCountry();
-            if (myCountry) {
-              const smartTarget = eng.findSmartExpandTarget(
-                myCountry.id,
-                pos.x,
-                pos.y,
-                5,
-              );
-              if (smartTarget && !smartTarget.check.isNaval) {
-                const res = eng.conquerPixel(
-                  myCountry.id,
-                  smartTarget.x,
-                  smartTarget.y,
-                );
-                if (!res.ok) {
-                  isPaintingRef.current = false;
-                }
-              }
-            }
-            lastCellRef.current = { x: pos.x, y: pos.y };
-          }
-        } else if (isMouseDownRef.current) {
-          // Clamp per-frame delta to prevent any browser pointer spike from teleporting the camera
+        // IN PAN MODE: Smooth 1:1 camera drag panning
+        // IN CONQUER MODE: Map stays steady so player can accurately tap border pixels!
+        if (toolMode === "PAN" && isMouseDownRef.current) {
           if (Math.abs(dx) < 120 && Math.abs(dy) < 120) {
             cameraRef.current.panX += dx;
             cameraRef.current.panY += dy;
@@ -587,7 +582,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
         }
       }
     },
-    [getMapCoords, handleZoom],
+    [getMapCoords, handleZoom, toolMode],
   );
 
   const handlePointerUp = useCallback(
@@ -854,6 +849,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
       penalty: Number(penaltyAmount),
       tributeAmount: Number(tributeAmount),
       tributeRole: tributeRole,
+      landPixelCount: Number(landPixelCount),
+      landPricePerPixel: Number(landPricePerPixel),
     });
     if (res.ok) {
       showToast("Anlaşma teklifi başarıyla gönderildi!");
@@ -861,7 +858,32 @@ export default function WorldGame({ onReturnToModeSelect }) {
     } else {
       showToast(res.reason || "Teklif gönderilemedi.");
     }
-  }, [myCountry, targetCountryId, treatyType, penaltyAmount, tributeAmount, tributeRole, showToast]);
+  }, [myCountry, targetCountryId, treatyType, penaltyAmount, tributeAmount, tributeRole, landPixelCount, landPricePerPixel, showToast]);
+
+  const handleBuyMercenaries = useCallback((count) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const res = eng.buyMercenaries(myCountry.id, count);
+    if (res.ok) {
+      showToast(`⚔️ ${res.count} Paralı Asker kiralandı! (-${res.cost.toLocaleString()} 🪙)`);
+    } else {
+      showToast(res.reason || "Paralı asker alınamadı.");
+    }
+  }, [myCountry, showToast]);
+
+  const handleConfirmNukeStrike = useCallback(() => {
+    if (!nukeConfirmModal) return;
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const { x, y } = nukeConfirmModal;
+    const res = eng.launchNuclearStrike(myCountry.id, x, y);
+    if (res.ok) {
+      showToast("☢️ TAKTİK NÜKLEER BAŞLIK FIRLATILDI! BÖLGE YOK EDİLDİ!");
+    } else {
+      showToast(res.reason || "Nükleer silah fırlatılamadı.");
+    }
+    setNukeConfirmModal(null);
+  }, [nukeConfirmModal, myCountry, showToast]);
 
   const handleAcceptTreaty = useCallback((treatyId) => {
     const eng = engineRef.current;
@@ -1093,10 +1115,36 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <button
               onClick={() => setShowUpgrades(true)}
               className="px-2.5 sm:px-3 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
-              title="Devlet Geliştirmeleri"
+              title="Devlet Geliştirmeleri & Paralı Asker"
             >
               <LogoCitadel size={15} />
               <span className="hidden xs:inline sm:inline">Geliştir</span>
+            </button>
+          )}
+
+          {myCountry && (
+            <button
+              onClick={() => {
+                if (myCountry.gold < 35000) {
+                  showToast("Yetersiz Altın! Taktik Nükleer Silah için 35.000 Altın gereklidir.");
+                  return;
+                }
+                setIsTargetingNuke((prev) => !prev);
+                if (!isTargetingNuke) {
+                  showToast("☢️ Hedef Seçimi: Haritada vurmak istediğin koordinata dokun!");
+                }
+              }}
+              className={`px-2 sm:px-2.5 h-9 rounded-xl font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition active:scale-95 ${
+                isTargetingNuke
+                  ? "bg-rose-600 text-white animate-pulse shadow-rose-600/50"
+                  : myCountry.gold >= 35000
+                    ? "bg-gradient-to-r from-emerald-600 to-lime-600 hover:from-emerald-500 hover:to-lime-500 text-white shadow-emerald-600/30"
+                    : "bg-slate-800/80 text-slate-400 border border-slate-700/60"
+              }`}
+              title="Taktik Nükleer Silah (35.000 Altın)"
+            >
+              <span>☢️</span>
+              <span className="hidden xs:inline sm:inline">Nükleer</span>
             </button>
           )}
 
@@ -1203,6 +1251,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           {msg.isAdmin && (
                             <span className="px-1 py-0.2 rounded bg-gradient-to-r from-rose-600 to-amber-500 text-white font-black text-[8px] shrink-0">
                               ADMIN
+                            </span>
+                          )}
+                          {msg.isRichest && (
+                            <span className="px-1.5 py-0.2 rounded-md bg-gradient-to-r from-amber-500/25 to-yellow-500/35 border border-amber-400/50 text-amber-300 font-black text-[8px] flex items-center gap-0.5 shrink-0 animate-pulse shadow-sm">
+                              <Crown size={9} className="text-amber-400" />
+                              <span>En Zengin</span>
                             </span>
                           )}
                           <span
@@ -1631,7 +1685,53 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </div>
             </div>
 
-            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
+              {/* PARALI ASKER SATIN ALMA (1 ASKER = 1.000 ALTIN) */}
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/15 to-yellow-500/10 border border-amber-500/30 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm">⚔️</span>
+                    <span className="text-xs font-black text-amber-300">
+                      Paralı Asker Kiralama
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full">
+                    1 Asker = 1.000 🪙
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-tight">
+                  Altınını anında askere çevir. Maksimum ordu sınırını aşmayacak şekilde orduna katılır.
+                </p>
+                <div className="grid grid-cols-4 gap-1.5 pt-1">
+                  {[
+                    { count: 1, cost: 1000 },
+                    { count: 5, cost: 5000 },
+                    { count: 10, cost: 10000 },
+                    { count: 50, cost: 50000 },
+                  ].map(({ count, cost }) => {
+                    const canAfford = myCountry.gold >= cost;
+                    return (
+                      <button
+                        key={count}
+                        type="button"
+                        disabled={!canAfford}
+                        onClick={() => handleBuyMercenaries(count)}
+                        className={`py-2 px-1 rounded-xl text-center flex flex-col items-center justify-center transition ${
+                          canAfford
+                            ? "bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow active:scale-95 cursor-pointer"
+                            : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
+                        }`}
+                      >
+                        <span className="text-xs font-black">+{count} Asker</span>
+                        <span className="text-[10px] font-bold opacity-80">
+                          {cost >= 1000 ? `${cost / 1000}K` : cost} 🪙
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {UPGRADE_DEFINITIONS.map((def) => {
                 const lvl = myCountry.upgrades?.[def.key] || 0;
                 const isMax = lvl >= def.maxLevel;
@@ -2391,7 +2491,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       </div>
 
                       <div className="text-[11px] text-slate-200 bg-slate-900/70 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
-                        {isAlliance ? (
+                        {tr.type === "LAND_PURCHASE" ? (
+                          <div className="text-amber-200">
+                            💰 Bu devlet sizden <strong className="text-amber-400">{tr.landPixelCount} piksel</strong> sınır toprağınızı toplam <strong className="text-amber-400">{tr.landTotalPrice?.toLocaleString()} Altın</strong> karşılığında satın almak istiyor.
+                          </div>
+                        ) : isAlliance ? (
                           <div>
                             Bu devlet seninle <strong>saldırmazlık paktı</strong> imzalamak istiyor. Anlaşma süresince birbirinize saldıramazsınız.
                           </div>
@@ -2405,8 +2509,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           </div>
                         )}
                         <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 flex items-center justify-between">
-                          <span>Anlaşmayı bozana ceza tazminatı:</span>
-                          <span className="font-black text-amber-400">{tr.penalty} Altın</span>
+                          <span>{tr.type === "LAND_PURCHASE" ? "Satış Türü:" : "Anlaşmayı bozana ceza tazminatı:"}</span>
+                          <span className="font-black text-amber-400">
+                            {tr.type === "LAND_PURCHASE" ? "Peşin Altın Ödemesi" : `${tr.penalty} Altın`}
+                          </span>
                         </div>
                       </div>
 
@@ -2423,7 +2529,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           className="py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5"
                         >
                           <Check size={14} />
-                          <span>Kabul Et</span>
+                          <span>{tr.type === "LAND_PURCHASE" ? "Satışı Onayla (Altını Al)" : "Kabul Et"}</span>
                         </button>
                       </div>
                     </div>
@@ -2469,40 +2575,58 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1.5">
                         Anlaşma Türü
                       </label>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-3 gap-1.5">
                         <button
                           type="button"
                           onClick={() => setTreatyType("ALLIANCE")}
-                          className={`p-3 rounded-2xl border text-left transition flex flex-col gap-1 ${
+                          className={`p-2.5 rounded-2xl border text-left transition flex flex-col gap-0.5 ${
                             treatyType === "ALLIANCE"
                               ? "bg-indigo-600/20 border-indigo-500 text-white"
                               : "bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200"
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 font-black text-xs text-white">
-                            <Shield size={14} className="text-indigo-400" />
-                            <span>İttifak (Barış Paktı)</span>
+                          <div className="flex items-center gap-1 font-black text-[11px] text-white">
+                            <Shield size={12} className="text-indigo-400" />
+                            <span>İttifak</span>
                           </div>
-                          <span className="text-[10px] text-slate-400">
-                            İki taraf da birbirine saldıramaz. Bozan ceza öder.
+                          <span className="text-[9px] text-slate-400 leading-tight">
+                            Saldırmazlık
                           </span>
                         </button>
 
                         <button
                           type="button"
                           onClick={() => setTreatyType("TRIBUTE")}
-                          className={`p-3 rounded-2xl border text-left transition flex flex-col gap-1 ${
+                          className={`p-2.5 rounded-2xl border text-left transition flex flex-col gap-0.5 ${
                             treatyType === "TRIBUTE"
                               ? "bg-amber-500/20 border-amber-500 text-white"
                               : "bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200"
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 font-black text-xs text-white">
-                            <Coins size={14} className="text-amber-400" />
-                            <span>Haraç Anlaşması</span>
+                          <div className="flex items-center gap-1 font-black text-[11px] text-white">
+                            <Coins size={12} className="text-amber-400" />
+                            <span>Haraç</span>
                           </div>
-                          <span className="text-[10px] text-slate-400">
-                            Dakikalık düzenli altın ödemesi karşılığında barış.
+                          <span className="text-[9px] text-slate-400 leading-tight">
+                            Dakikalık Altın
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setTreatyType("LAND_PURCHASE")}
+                          className={`p-2.5 rounded-2xl border text-left transition flex flex-col gap-0.5 ${
+                            treatyType === "LAND_PURCHASE"
+                              ? "bg-emerald-500/20 border-emerald-500 text-white"
+                              : "bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1 font-black text-[11px] text-white">
+                            <span className="text-emerald-400">📜</span>
+                            <span>Toprak Satın Al</span>
+                          </div>
+                          <span className="text-[9px] text-slate-400 leading-tight">
+                            Parayla Genişle
                           </span>
                         </button>
                       </div>
@@ -2565,31 +2689,89 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       </div>
                     )}
 
-                    {/* Penalty Selection */}
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
-                        Anlaşma İhlal / Fesih Cezası ({penaltyAmount} Altın)
-                      </label>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {[1000, 2500, 5000, 10000].map((amt) => (
-                          <button
-                            key={amt}
-                            type="button"
-                            onClick={() => setPenaltyAmount(amt)}
-                            className={`py-1.5 rounded-xl text-xs font-bold border transition ${
-                              penaltyAmount === amt
-                                ? "bg-rose-500 text-white border-rose-400 font-black"
-                                : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
-                            }`}
-                          >
-                            {amt} Altın
-                          </button>
-                        ))}
+                    {/* Land Purchase Specific Options */}
+                    {treatyType === "LAND_PURCHASE" && (
+                      <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-3">
+                        <div>
+                          <label className="block text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
+                            Satın Alınacak Toprak Miktarı ({landPixelCount} Piksel)
+                          </label>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {[10, 25, 50, 100].map((pxCount) => (
+                              <button
+                                key={pxCount}
+                                type="button"
+                                onClick={() => setLandPixelCount(pxCount)}
+                                className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                                  landPixelCount === pxCount
+                                    ? "bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow"
+                                    : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+                                }`}
+                              >
+                                {pxCount} px
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
+                            Piksel Başına Teklif ({landPricePerPixel} 🪙 / piksel)
+                          </label>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {[25, 50, 100, 250].map((price) => (
+                              <button
+                                key={price}
+                                type="button"
+                                onClick={() => setLandPricePerPixel(price)}
+                                className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                                  landPricePerPixel === price
+                                    ? "bg-amber-400 text-slate-950 border-amber-300 font-black shadow"
+                                    : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+                                }`}
+                              >
+                                {price} 🪙
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-slate-900/80 border border-emerald-500/20 text-xs flex items-center justify-between">
+                          <span className="text-slate-300 font-bold">Toplam Teklif Tutarı:</span>
+                          <span className="text-amber-400 font-black text-sm">
+                            {(landPixelCount * landPricePerPixel).toLocaleString()} Altın
+                          </span>
+                        </div>
                       </div>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        Anlaşmayı tek taraflı bozan veya müttefikine saldıran taraf bu cezayı karşı tarafa tazminat olarak öder.
-                      </p>
-                    </div>
+                    )}
+
+                    {/* Penalty Selection (for Alliance and Tribute) */}
+                    {treatyType !== "LAND_PURCHASE" && (
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                          Anlaşma İhlal / Fesih Cezası ({penaltyAmount} Altın)
+                        </label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[1000, 2500, 5000, 10000].map((amt) => (
+                            <button
+                              key={amt}
+                              type="button"
+                              onClick={() => setPenaltyAmount(amt)}
+                              className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                                penaltyAmount === amt
+                                  ? "bg-rose-500 text-white border-rose-400 font-black"
+                                  : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+                              }`}
+                            >
+                              {amt} Altın
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          Anlaşmayı tek taraflı bozan veya müttefikine saldıran taraf bu cezayı karşı tarafa tazminat olarak öder.
+                        </p>
+                      </div>
+                    )}
 
                     {/* Submit Button */}
                     <button
@@ -2664,6 +2846,70 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 className="py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs transition shadow-lg shadow-rose-600/30 active:scale-95"
               >
                 Anlaşmayı Boz & Saldır
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NUCLEAR TARGETING ACTIVE BANNER */}
+      {isTargetingNuke && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 bg-rose-950/95 border-2 border-rose-500 text-rose-100 px-4 py-2 rounded-2xl shadow-2xl text-xs font-black flex items-center gap-3 animate-bounce">
+          <span className="text-base">☢️</span>
+          <span>HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!</span>
+          <button
+            onClick={() => setIsTargetingNuke(false)}
+            className="px-2 py-0.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-[11px]"
+          >
+            İptal
+          </button>
+        </div>
+      )}
+
+      {/* NUCLEAR STRIKE CONFIRMATION MODAL */}
+      {nukeConfirmModal && (
+        <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none">
+          <div className="w-full max-w-sm bg-slate-900 border-2 border-rose-600 rounded-3xl p-5 shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95">
+            <div className="w-16 h-16 rounded-2xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center mx-auto text-3xl shadow-lg shadow-rose-600/30">
+              ☢️
+            </div>
+
+            <div>
+              <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 font-black text-[10px] tracking-wider uppercase">
+                Süper Silah: Taktik Nükleer
+              </span>
+              <h3 className="text-lg font-black text-white mt-1.5">
+                Nükleer Taarruz Onayı!
+              </h3>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                <strong className="text-amber-400">({nukeConfirmModal.x}, {nukeConfirmModal.y})</strong> koordinatına taktik nükleer başlık fırlatılacak.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-rose-950/50 border border-rose-500/40 text-left text-xs space-y-1.5 text-slate-200">
+              <div className="flex items-center justify-between text-amber-400 font-black">
+                <span>Fırlatma Maliyeti:</span>
+                <span>35.000 Altın</span>
+              </div>
+              <p className="text-[11px] text-rose-200">
+                22 piksel yarıçapındaki tüm topraklar ve ordular yok edilecek. Bölge kalıcı olarak radyoaktif, yaşanamaz ve fethedilemez alana dönüşecektir!
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setNukeConfirmModal(null)}
+                className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition active:scale-95"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmNukeStrike}
+                className="py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs transition shadow-lg shadow-rose-600/40 active:scale-95"
+              >
+                Fırlat & Ateşle! 🚀
               </button>
             </div>
           </div>

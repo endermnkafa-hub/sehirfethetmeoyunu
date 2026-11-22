@@ -136,6 +136,20 @@ export class WorldMapRenderer {
       }
     }
 
+    // Render radioactive wasteland zones (scorched toxic soil)
+    if (engine.isWasteland) {
+      for (let i = 0; i < total; i++) {
+        if (engine.isWasteland[i]) {
+          const p4 = i * 4;
+          const noise = ((i * 1337 + 7) & 0x0f);
+          dst[p4] = 20 + noise;     // Charred soot
+          dst[p4 + 1] = 36 + noise; // Toxic irradiated olive/green
+          dst[p4 + 2] = 22 + (noise >> 1);
+          dst[p4 + 3] = 255;
+        }
+      }
+    }
+
     this.bufferCtx.putImageData(this.imageData, 0, 0);
   }
 
@@ -336,37 +350,137 @@ export class WorldMapRenderer {
 
       const myCountry = engine.getMyCountry();
 
-      // 4. Fast Frontier Highlight (Only when zoomed in and country bounding box is small)
-      if (myCountry && myCountry.troops >= 1.0 && scale >= 4.0) {
+      // 4. Active Conquerable Frontier Highlight (Shows all land border pixels you have troops to conquer!)
+      if (myCountry && myCountry.troops >= 0.5) {
         const myB = bounds.get(myCountry.id);
-        if (myB && myB.count > 0 && myB.maxX - myB.minX < 80) {
+        if (myB && myB.count > 0) {
           const owners = engine.owners;
           const isLand = this.worldData.isLand;
+          const isWasteland = engine.isWasteland;
           const myId = myCountry.id;
+          const troops = myCountry.troops;
+          const siegeLvl = myCountry.upgrades?.siege || 0;
+          const baseNeutralCost = Math.max(0.5, 1.0 - siegeLvl * 0.02);
 
-          const minX = Math.max(0, myB.minX - 1);
-          const maxX = Math.min(MAP_W - 1, myB.maxX + 1);
-          const minY = Math.max(0, myB.minY - 1);
-          const maxY = Math.min(MAP_H - 1, myB.maxY + 1);
+          const minX = Math.max(0, myB.minX - 4);
+          const maxX = Math.min(MAP_W - 1, myB.maxX + 4);
+          const minY = Math.max(0, myB.minY - 4);
+          const maxY = Math.min(MAP_H - 1, myB.maxY + 4);
 
-          ctx.fillStyle = "rgba(251, 191, 36, 0.22)";
+          const pulse = 0.40 + 0.35 * Math.sin(Date.now() / 200);
+          ctx.fillStyle = `rgba(251, 191, 36, ${pulse})`;
+
           for (let y = minY; y <= maxY; y++) {
+            const py = y * scale;
+            if (py + originY < -20 || py + originY > viewH + 20) continue;
             const row = y * MAP_W;
             for (let x = minX; x <= maxX; x++) {
               const idx = row + x;
-              if (!isLand[idx] || owners[idx] === myId) continue;
+              if (!isLand[idx] || owners[idx] === myId || (isWasteland && isWasteland[idx])) continue;
 
-              if (
+              const isAdj =
                 (x > 0 && owners[idx - 1] === myId) ||
                 (x < MAP_W - 1 && owners[idx + 1] === myId) ||
                 (y > 0 && owners[idx - MAP_W] === myId) ||
-                (y < MAP_H - 1 && owners[idx + MAP_W] === myId)
-              ) {
-                ctx.fillRect(x * scale, y * scale, scale, scale);
+                (y < MAP_H - 1 && owners[idx + MAP_W] === myId);
+
+              if (!isAdj) continue;
+
+              const enemyId = owners[idx];
+              let cost = baseNeutralCost;
+              if (enemyId > 0) {
+                const def = engine.countryMap.get(enemyId);
+                const fortLvl = def?.upgrades?.fortress || 0;
+                cost = 2.0 + fortLvl * 0.25;
+              }
+
+              if (troops >= cost) {
+                const px = x * scale;
+                ctx.fillRect(px, py, Math.max(1.8, scale), Math.max(1.8, scale));
               }
             }
           }
         }
+      }
+
+      // 4.5. Radioactive Exclusion Zone Epic Markers
+      if (Array.isArray(engine.nuclearStrikes)) {
+        for (const strike of engine.nuclearStrikes) {
+          const sx = (strike.x + 0.5) * scale;
+          const sy = (strike.y + 0.5) * scale;
+          if (sx + originX < -60 || sx + originX > viewW + 60 || sy + originY < -60 || sy + originY > viewH + 60) continue;
+          ctx.save();
+          ctx.translate(sx, sy);
+          ctx.fillStyle = "rgba(20, 83, 45, 0.88)";
+          ctx.strokeStyle = "#4ade80";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(0, 0, 11, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.font = "900 11px system-ui";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("☢️", 0, 0);
+          ctx.restore();
+        }
+      }
+
+      // 4.6. Real-time Nuclear Detonations & Supersonic Shockwave Animations
+      if (Array.isArray(engine.activeExplosions) && engine.activeExplosions.length > 0) {
+        const now = Date.now();
+        for (const exp of engine.activeExplosions) {
+          const elapsed = now - exp.startTime;
+          if (elapsed < 0 || elapsed > exp.duration) continue;
+          const progress = elapsed / exp.duration; // 0 to 1
+          const sx = (exp.x + 0.5) * scale;
+          const sy = (exp.y + 0.5) * scale;
+          const maxScreenR = exp.radius * scale;
+          const currentR = Math.max(2, maxScreenR * Math.sin(progress * Math.PI * 0.5));
+
+          ctx.save();
+          ctx.translate(sx, sy);
+
+          // 1. Initial atomic flash
+          if (progress < 0.22) {
+            const flashAlpha = 1.0 - progress / 0.22;
+            ctx.fillStyle = `rgba(255, 255, 240, ${flashAlpha * 0.9})`;
+            ctx.beginPath();
+            ctx.arc(0, 0, currentR * 1.6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // 2. Fiery nuclear blast core
+          const fireAlpha = Math.max(0, 1.0 - progress);
+          const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, currentR);
+          grad.addColorStop(0, `rgba(255, 255, 255, ${fireAlpha})`);
+          grad.addColorStop(0.3, `rgba(245, 158, 11, ${fireAlpha * 0.9})`);
+          grad.addColorStop(0.7, `rgba(220, 38, 38, ${fireAlpha * 0.7})`);
+          grad.addColorStop(1, `rgba(75, 85, 99, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(0, 0, currentR, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 3. Shockwave ring
+          ctx.strokeStyle = `rgba(251, 191, 36, ${fireAlpha * 0.95})`;
+          ctx.lineWidth = Math.max(2, 6 * (1 - progress));
+          ctx.beginPath();
+          ctx.arc(0, 0, currentR, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // 4. Toxic fallout smoke
+          if (progress > 0.3) {
+            const smokeAlpha = (1 - progress) * 0.5;
+            ctx.fillStyle = `rgba(34, 197, 94, ${smokeAlpha})`;
+            ctx.beginPath();
+            ctx.arc(0, 0, currentR * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.restore();
+        }
+        engine.activeExplosions = engine.activeExplosions.filter((e) => now - e.startTime < e.duration);
       }
 
       // 5. Render Active Naval Ships Sailing Across Seas
