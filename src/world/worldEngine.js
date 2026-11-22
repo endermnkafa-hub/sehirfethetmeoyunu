@@ -6,7 +6,7 @@ import { loadDataUrlToFlagBuffer } from './flagLibrary';
 import { getOrCreateDeviceId, getMyCountryId, saveMyCountryId } from './networkSecurity';
 import { SharedWorldSync } from './sharedWorldSync';
 
-export const WORLD_SAVE_KEY = 'sf_shared_world_v8_clean';
+export const WORLD_SAVE_KEY = 'sf_shared_world_v9_clean';
 
 export const UPGRADE_DEFINITIONS = [
   {
@@ -796,7 +796,7 @@ export class WorldSimulationEngine {
       rle.push(cur, len);
 
       const payload = {
-        v: 8,
+        v: 9,
         w: MAP_W,
         h: MAP_H,
         countries: this.countries.map((c) => ({
@@ -826,19 +826,20 @@ export class WorldSimulationEngine {
 
   loadState() {
     try {
-      if (!localStorage.getItem('sf_world_reset_v8_done')) {
+      if (!localStorage.getItem('sf_world_reset_v9_done')) {
         localStorage.removeItem('sf_shared_world_v4_data');
         localStorage.removeItem('sf_shared_world_v5_worldbox');
         localStorage.removeItem('sf_shared_world_v7_fresh');
+        localStorage.removeItem('sf_shared_world_v8_clean');
         localStorage.removeItem('sf_my_country_id');
-        localStorage.setItem('sf_world_reset_v8_done', '1');
+        localStorage.setItem('sf_world_reset_v9_done', '1');
         return false;
       }
 
       const raw = localStorage.getItem(WORLD_SAVE_KEY);
       if (!raw) return false;
       const data = JSON.parse(raw);
-      if (data.v !== 8 || data.w !== MAP_W || data.h !== MAP_H || !Array.isArray(data.rle)) {
+      if (data.v !== 9 || data.w !== MAP_W || data.h !== MAP_H || !Array.isArray(data.rle)) {
         return false;
       }
 

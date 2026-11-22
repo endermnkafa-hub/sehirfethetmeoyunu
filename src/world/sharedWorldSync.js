@@ -25,6 +25,7 @@ export class SharedWorldSync {
     if (typeof window !== 'undefined') {
       this._storageListener = (e) => {
         if (
+          e.key === 'sf_shared_world_v9_clean' ||
           e.key === 'sf_shared_world_v8_clean' ||
           e.key === 'sf_shared_world_v7_fresh' ||
           e.key === 'sf_shared_world_v5_worldbox' ||
