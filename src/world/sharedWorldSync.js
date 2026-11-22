@@ -4,9 +4,9 @@
 
 import { FLAG_W, FLAG_H } from './flagLibrary';
 
-const CLOUD_TOPIC = 'sf_world_mmo_v11_global_earth_sync';
-const CLOUD_ROOT_URL = 'https://ntfy.sh';
-const CLOUD_TOPIC_URL = `https://ntfy.sh/${CLOUD_TOPIC}`;
+const CLOUD_TOPIC = 'sf_world_mmo_v12_global_sync';
+const CLOUD_ROOT_URL = 'https://ntfy.envs.net';
+const CLOUD_TOPIC_URL = `${CLOUD_ROOT_URL}/${CLOUD_TOPIC}`;
 
 export class SharedWorldSync {
   constructor(engine, onRemoteUpdate) {
@@ -116,7 +116,7 @@ export class SharedWorldSync {
               this._lastPollTime = env.time;
             }
             if (env && env.event === 'message' && env.message) {
-              const payload = JSON.parse(env.message);
+              const payload = typeof env.message === 'string' ? JSON.parse(env.message) : env.message;
               this._handleRemoteMessage(payload, false);
             }
           } catch {}
@@ -148,7 +148,7 @@ export class SharedWorldSync {
             maxTime = env.time;
           }
           if (env && env.event === 'message' && env.message) {
-            const data = JSON.parse(env.message);
+            const data = typeof env.message === 'string' ? JSON.parse(env.message) : env.message;
             this._handleRemoteMessage(data, true);
             anyHandled = true;
           }
@@ -304,20 +304,10 @@ export class SharedWorldSync {
     };
     this.seenMsgIds.add(fullPacket._msgId);
 
-    const now = Date.now();
-    const delay = Math.max(0, (this._lastPostTime || 0) + 650 - now);
-    this._lastPostTime = now + delay;
-
-    setTimeout(() => {
-      // Post wrapped in official ntfy JSON envelope { topic, message }
-      fetch(CLOUD_ROOT_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          topic: CLOUD_TOPIC,
-          message: JSON.stringify(fullPacket),
-        }),
-      }).catch(() => {});
-    }, delay);
+    fetch(CLOUD_TOPIC_URL, {
+      method: 'POST',
+      body: JSON.stringify(fullPacket),
+    }).catch(() => {});
   }
 
   _handleRemoteMessage(data, isHistoryReplay = false) {

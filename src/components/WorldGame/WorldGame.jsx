@@ -444,17 +444,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
         const idx = pos.y * MAP_W + pos.x;
         const tappedOwnerId = eng.owners[idx];
 
-        // If player taps an existing country on the map when they don't have one in this app/browser yet,
-        // let them link to it if it was created from their IP!
         if (tappedOwnerId > 0) {
           const tappedCountry = eng.countryMap.get(tappedOwnerId);
-          if (tappedCountry && (!networkInfo.clientIp || tappedCountry.creatorIp === networkInfo.clientIp || tappedCountry.creatorIp === 'unknown')) {
-            eng.claimExistingCountry(tappedCountry.id);
-            const center = eng.getCountryCenter(tappedCountry.id);
-            centerOnCoords(center.x, center.y, 16.0);
-            return;
-          }
-          showToast('Bu piksel zaten başka bir devlete ait!');
+          showToast(
+            tappedCountry
+              ? `Bu toprak "${tappedCountry.name}" devletine ait! Sahipsiz gri bir piksele dokunarak kendi devletini kurabilirsin.`
+              : 'Bu piksel zaten başka bir devlete ait!'
+          );
           return;
         }
 
@@ -592,21 +588,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   const myCountry = hud.myCountry;
 
-  // Auto-link player's country across Web <-> Android App if created from the same IP
-  useEffect(() => {
-    const eng = engineRef.current;
-    if (!eng || myCountry) return;
-    if (!networkInfo.clientIp || networkInfo.clientIp === 'unknown') return;
-    const ipCountry = eng.countries.find(
-      (c) => c.landCount > 0 && c.creatorIp === networkInfo.clientIp
-    );
-    if (ipCountry) {
-      eng.claimExistingCountry(ipCountry.id);
-      const center = eng.getCountryCenter(ipCountry.id);
-      centerOnCoords(center.x, center.y, 16.0);
-    }
-  }, [myCountry, hud.totalCountriesCount, networkInfo.clientIp, centerOnCoords]);
-
   const handleBuyUpgrade = useCallback((key) => {
     const eng = engineRef.current;
     const myC = eng?.getMyCountry();
@@ -699,15 +680,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
           ) : (
             <div className="flex items-center gap-2 text-[11px] sm:text-xs font-bold text-amber-400 pr-1.5">
               <Sparkles size={14} className="shrink-0" />
-              <span>Gri piksele dokunup devlet kur veya mevcut devletini seç!</span>
-              {hud.totalCountriesCount > 0 && (
-                <button
-                  onClick={() => setShowCountriesList(true)}
-                  className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 font-black text-[10px] shrink-0"
-                >
-                  Devletimi Seç
-                </button>
-              )}
+              <span>Haritada sahipsiz gri bir piksele dokunarak kendi devletini kur!</span>
             </div>
           )}
         </div>
@@ -981,10 +954,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
               <div>
                 <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
                   <Globe size={18} className="text-emerald-400" />
-                  <span>Haritadaki Devletler ({engineRef.current?.countries?.length || 0})</span>
+                  <span>Haritadaki Devletler ({hud.totalCountriesCount})</span>
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Sitede kurduğun devleti uygulamada yönetmek için <b>"Devletim Yap"</b> butonuna dokunabilirsin.
+                  Haritadaki tüm aktif devletleri görebilir ve devlete tıklayarak kamerasını odaklayabilirsin.
                 </p>
               </div>
               <button
@@ -996,89 +969,72 @@ export default function WorldGame({ onReturnToModeSelect }) {
             </div>
 
             <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
-              {(engineRef.current?.countries || [])
-                .filter((c) => c.landCount > 0)
-                .sort((a, b) => b.landCount - a.landCount)
-                .map((c) => {
-                  const isMine = myCountry && c.id === myCountry.id;
-                  const sameIp =
-                    c.creatorIp &&
-                    networkInfo.clientIp &&
-                    c.creatorIp !== 'unknown' &&
-                    c.creatorIp === networkInfo.clientIp;
-                  const canClaim = !isMine && (!myCountry || sameIp);
+              {(() => {
+                const uniqueCountries = [];
+                const seenIds = new Set();
+                for (const c of engineRef.current?.countries || []) {
+                  if (c.landCount > 0 && !seenIds.has(c.id)) {
+                    seenIds.add(c.id);
+                    uniqueCountries.push(c);
+                  }
+                }
+                return uniqueCountries
+                  .sort((a, b) => b.landCount - a.landCount)
+                  .map((c) => {
+                    const isMine = myCountry && c.id === myCountry.id;
 
-                  return (
-                    <div
-                      key={c.id}
-                      className={`p-2.5 sm:p-3 rounded-2xl border flex items-center justify-between gap-2 ${
-                        isMine
-                          ? 'bg-amber-500/10 border-amber-500/50'
-                          : 'bg-slate-800/80 border-slate-700/80'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div
-                          className="w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950"
-                          style={{ borderColor: c.color || '#FBBF24' }}
-                        >
-                          {c.flagDataUrl && (
-                            <img src={c.flagDataUrl} alt={c.name} className="w-full h-full object-cover" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-black text-xs text-white flex items-center gap-1.5 truncate">
-                            <span className="truncate">{c.name}</span>
-                            {isMine && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black shrink-0">
-                                SEN
-                              </span>
+                    return (
+                      <div
+                        key={c.id}
+                        className={`p-2.5 sm:p-3 rounded-2xl border flex items-center justify-between gap-2 ${
+                          isMine
+                            ? 'bg-amber-500/10 border-amber-500/50'
+                            : 'bg-slate-800/80 border-slate-700/80'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className="w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950"
+                            style={{ borderColor: c.color || '#FBBF24' }}
+                          >
+                            {c.flagDataUrl && (
+                              <img src={c.flagDataUrl} alt={c.name} className="w-full h-full object-cover" />
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-400 font-bold">
-                            {c.landCount} Piksel • {Math.floor(c.troops)}/{c.capacity} Asker
+                          <div className="min-w-0">
+                            <div className="font-black text-xs text-white flex items-center gap-1.5 truncate">
+                              <span className="truncate">{c.name}</span>
+                              {isMine && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black shrink-0">
+                                  SEN
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-400 font-bold">
+                              {c.landCount} Piksel • {Math.floor(c.troops)}/{c.capacity} Asker
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {canClaim && (
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             onClick={() => {
                               const eng = engineRef.current;
                               if (eng) {
-                                const res = eng.claimExistingCountry(c.id);
-                                if (res.ok) {
-                                  const center = eng.getCountryCenter(c.id);
-                                  centerOnCoords(center.x, center.y, 16.0);
-                                  setShowCountriesList(false);
-                                  showToast(`${c.name} artık bu cihazda senin kontrolünde!`);
-                                }
+                                const center = eng.getCountryCenter(c.id);
+                                centerOnCoords(center.x, center.y, 16.0);
+                                setShowCountriesList(false);
                               }
                             }}
-                            className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
                           >
-                            Devletim Yap
+                            Yaklaş
                           </button>
-                        )}
-
-                        <button
-                          onClick={() => {
-                            const eng = engineRef.current;
-                            if (eng) {
-                              const center = eng.getCountryCenter(c.id);
-                              centerOnCoords(center.x, center.y, 16.0);
-                              setShowCountriesList(false);
-                            }
-                          }}
-                          className="px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
-                        >
-                          Yaklaş
-                        </button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+              })()}
 
               {(!engineRef.current?.countries || engineRef.current.countries.filter((c) => c.landCount > 0).length === 0) && (
                 <div className="p-6 text-center text-xs text-slate-400">
@@ -1363,13 +1319,44 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </div>
                 <div>Topraklarında yaşayan halk zamanla çoğalır ve hazinene otomatik <b>Altın</b> vergisi öder. Biriken altınlarla 9 farklı geliştirme dalını 25. seviyeye kadar yükseltebilirsin.</div>
               </div>
+
+              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
+                <div className="font-black text-amber-400 mb-0.5 flex items-center gap-1.5">
+                  <Sparkles size={16} />
+                  <span>Estetik Sınırlar & Otomatik Boşluk Doldurma</span>
+                </div>
+                <div>Devletler tek piksel çizgi çekerek yılan gibi büyüyemez; sınırlarını kalınlaştırarak genişlemelisin. Etrafını çevrelediğin tüm iç boşluklar otomatik olarak fethedilip ülkene katılır. Yanlış fethettiğin bir pikseli alt bardaki <b>Geri Al (5s)</b> butonuna basarak anında geri alabilirsin.</div>
+              </div>
             </div>
+
             <button
               onClick={() => setShowRules(false)}
               className="w-full mt-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 font-black text-xs hover:bg-amber-400 transition"
             >
               Anladım
             </button>
+
+            {myCountry && (
+              <button
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `"${myCountry.name}" devletinin yönetimini bu cihazdan bırakmak ve haritada sıfırdan yeni bir devlet kurmak istiyor musun?`
+                    )
+                  ) {
+                    localStorage.removeItem('sf_my_country_id');
+                    if (engineRef.current) {
+                      engineRef.current.myCountryId = null;
+                    }
+                    setShowRules(false);
+                    showToast('Devlet yönetimi bırakıldı. Sahipsiz gri bir piksele dokunarak yeni devletini kurabilirsin!');
+                  }
+                }}
+                className="w-full mt-2 py-2 rounded-xl bg-rose-500/20 border border-rose-500/50 hover:bg-rose-500/30 text-rose-300 font-bold text-[11px] transition"
+              >
+                Devletimi Bırak (Sıfırdan Yeni Devlet Kur)
+              </button>
+            )}
           </div>
         </div>
       )}

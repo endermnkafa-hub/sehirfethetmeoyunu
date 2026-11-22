@@ -162,8 +162,16 @@ export class WorldSimulationEngine {
       const o = this.owners[i];
       if (o > 0) activeIds.add(o);
     }
+    const seenIds = new Set();
+    const cleanList = [];
+    for (const c of this.countries) {
+      if (activeIds.has(c.id) && !seenIds.has(c.id)) {
+        seenIds.add(c.id);
+        cleanList.push(c);
+      }
+    }
     const beforeCount = this.countries.length;
-    this.countries = this.countries.filter((c) => activeIds.has(c.id));
+    this.countries = cleanList;
     this.countryMap.clear();
     for (const c of this.countries) {
       this.countryMap.set(c.id, c);
@@ -1182,7 +1190,9 @@ export class WorldSimulationEngine {
         flagDataUrl: flagUrl,
         flagRgba,
       });
-      this.countries.push(country);
+      if (!this.countries.some((c) => c.id === country.id)) {
+        this.countries.push(country);
+      }
       this.countryMap.set(country.id, country);
     } else {
       if (remoteCountry.color) country.color = remoteCountry.color;
