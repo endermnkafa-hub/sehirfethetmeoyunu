@@ -96,6 +96,12 @@ export default function OnlineRoomModal({
           multiplayer.broadcastState(syncPayload);
         };
 
+        // Problem 4: Update lobby status immediately when remote client disconnects
+        multiplayer.onPeerDisconnected = () => {
+          setClientConnected(false);
+          setClientIsReady(false);
+        };
+
         // Host listens to client actions
         multiplayer.onActionReceived = (action, conn) => {
           if (!action) return;
@@ -194,6 +200,9 @@ export default function OnlineRoomModal({
             }
           } else if (msg.type === 'CLIENT_READY_SYNC') {
             setClientIsReady(msg.ready);
+          } else if (msg.type === 'ROOM_FULL') {
+            setStatus('ERROR');
+            setErrorMsg(msg.message || 'Oda dolu (Maksimum 1 katılımcı cihaz bağlanabilir).');
           } else if (msg.type === 'START_GAME') {
             onStartOnlineGame({
               isHost: false,
@@ -203,6 +212,12 @@ export default function OnlineRoomModal({
             });
             onClose();
           }
+        };
+
+        // Problem 4: Update join state if host disconnects in lobby
+        multiplayer.onPeerDisconnected = () => {
+          setStatus('ERROR');
+          setErrorMsg('Oda sahibi ile bağlantı kesildi.');
         };
       },
       (err) => {

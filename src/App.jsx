@@ -75,6 +75,7 @@ export default function App() {
   // Online Multiplayer State
   const [onlineInfo, setOnlineInfo] = useState(null); // { isHost, roomCode, myPlayer }
   const [disconnectAlert, setDisconnectAlert] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   // Diplomacy
   const [alliances, setAlliances] = useState([]);
@@ -186,6 +187,9 @@ export default function App() {
   };
 
   const advanceTurn = useCallback((currentGrid = grid, currentPlayers = players, currentWalls = walls, overrideAlliances = undefined) => {
+    // Problem 2 Fix: In online multiplayer, ONLY the Host authoritatively advances turns and decides game over
+    if (onlineInfo && !onlineInfo.isHost) return;
+
     const alivePlayers = currentPlayers.filter(p => p.alive && (countPlayerTerritories(currentGrid, currentPlayers)[p.id] || 0) > 0);
     if (alivePlayers.length <= 1 && currentPlayers.length > 1) {
       const finalWinner = alivePlayers[0] || currentPlayers[0];
@@ -270,10 +274,17 @@ export default function App() {
   const handleSelectChosenNumber = (num) => {
     setChosenNumber(num);
     if (onlineInfo) {
-      broadcastToAll({
-        type: 'CHOSEN_NUMBER_SYNC',
-        chosenNumber: num,
-      });
+      if (onlineInfo.isHost) {
+        broadcastToAll({
+          type: 'CHOSEN_NUMBER_SYNC',
+          chosenNumber: num,
+        });
+      } else {
+        broadcastToAll({
+          type: 'CHOSEN_NUMBER_SELECT',
+          chosenNumber: num,
+        });
+      }
     }
   };
 
@@ -286,7 +297,16 @@ export default function App() {
       setChosenNumber(safeChosen);
     }
 
-    // Active player rolls uniformly
+    // Problem 2 Fix: If Client, request authoritative roll from Host
+    if (onlineInfo && !onlineInfo.isHost) {
+      multiplayer.sendAction({
+        type: 'CLIENT_SPIN_REQUEST',
+        chosenNumber: safeChosen,
+      });
+      return;
+    }
+
+    // Host or Local: generate spin
     const roll = fixedRoll !== null ? fixedRoll : Math.floor(Math.random() * 10);
     const jitter = Math.floor(Math.random() * 19) - 9;
     const fullSpins = 10 + Math.floor(Math.random() * 3);
@@ -295,8 +315,8 @@ export default function App() {
     setWheelRollData(rollData);
     setIsWheelOpen(true);
 
-    if (onlineInfo) {
-      broadcastToAll({
+    if (onlineInfo && onlineInfo.isHost) {
+      multiplayer.broadcastState({
         type: 'WHEEL_SPIN_SYNC',
         phase: 'SPINNING',
         chosenNumber: safeChosen,
@@ -306,11 +326,15 @@ export default function App() {
   };
 
   const handleWheelFinish = ({ resultNumber, outcome, diff }) => {
-    if (!isMyTurn) return;
     setIsWheelOpen(false);
 
-    if (onlineInfo) {
-      broadcastToAll({
+    // Problem 2 Fix: In online mode, Host is authoritative for computing shrink / turn advance
+    if (onlineInfo && !onlineInfo.isHost) {
+      return;
+    }
+
+    if (onlineInfo && onlineInfo.isHost) {
+      multiplayer.broadcastState({
         type: 'WHEEL_SPIN_SYNC',
         phase: 'FINISHED',
         chosenNumber,
@@ -550,17 +574,25 @@ export default function App() {
     return { valid: true };
   };
 
-  const finalizeTurnPlacing = (penaltyCells = 0, allianceIdsToDissolve = null) => {
+  const finalizeTurnPlacing = (
+    penaltyCells = 0,
+    allianceIdsToDissolve = null,
+    overrideCells = null,
+    overrideWalls = null
+  ) => {
     let newGrid = grid.map(row => [...row]);
     let newWalls = { ...walls };
 
-    pendingCells.forEach(cell => {
+    const cellsToApply = overrideCells || pendingCells;
+    const wallsToApply = overrideWalls || pendingWalls;
+
+    cellsToApply.forEach(cell => {
       if (!cell.isWallBreachOnly) {
         newGrid[cell.y][cell.x] = activePlayer.id;
       }
     });
 
-    pendingWalls.forEach(w => {
+    wallsToApply.forEach(w => {
       newWalls[`${w.x},${w.y}`] = true;
     });
 
@@ -670,6 +702,19 @@ export default function App() {
     if (!breachPrompt) return;
     const { penaltyCells, allianceIds, allianceId } = breachPrompt;
     setBreachPrompt(null);
+
+    // Problem 2 Fix: In online mode, Client requests Host to finalize
+    if (onlineInfo && !onlineInfo.isHost) {
+      multiplayer.sendAction({
+        type: 'CLIENT_FINISH_PLACING',
+        pendingCells,
+        pendingWalls,
+        penaltyCells,
+        allianceIds: allianceIds || allianceId,
+      });
+      return;
+    }
+
     finalizeTurnPlacing(penaltyCells, allianceIds || allianceId);
   };
 
@@ -748,6 +793,18 @@ export default function App() {
         });
         return;
       }
+    }
+
+    // Problem 2 Fix: In online mode, Client requests Host to finalize authoritatively
+    if (onlineInfo && !onlineInfo.isHost) {
+      multiplayer.sendAction({
+        type: 'CLIENT_FINISH_PLACING',
+        pendingCells,
+        pendingWalls,
+        penaltyCells: 0,
+        allianceIds: null,
+      });
+      return;
     }
 
     finalizeTurnPlacing(0, null);
@@ -931,166 +988,297 @@ export default function App() {
     advanceTurn(newGrid, updatedPlayers, newWalls, nextAlliances);
   };
 
-  // Online Multiplayer State Listener for Both Host & Client
+  // Authoritative State Snapshot Sender for Host
+  const sendFullStateSnapshot = useCallback(() => {
+    if (!onlineInfo || !onlineInfo.isHost) return;
+    multiplayer.broadcastState({
+      type: 'FULL_STATE_RECOVERY',
+      gameMode,
+      players,
+      grid,
+      walls,
+      roundNumber,
+      activePlayerIndex,
+      turnPhase,
+      chosenNumber,
+      totalToPlace,
+      alliances,
+      pendingCells,
+      pendingWalls,
+      placingMode,
+    });
+  }, [onlineInfo, gameMode, players, grid, walls, roundNumber, activePlayerIndex, turnPhase, chosenNumber, totalToPlace, alliances, pendingCells, pendingWalls, placingMode]);
+
+  // Host validates and executes Client's finished placing turn authoritatively
+  const handleClientFinishPlacing = (action) => {
+    if (!onlineInfo || !onlineInfo.isHost) return;
+    const curActive = players[activePlayerIndex];
+    if (!curActive || curActive.phoneId !== 'CLIENT') {
+      sendFullStateSnapshot();
+      return;
+    }
+
+    const clientPendingCells = action.pendingCells || [];
+    const clientPendingWalls = action.pendingWalls || [];
+
+    // Verify spent points against available points
+    const spent = clientPendingCells.reduce((sum, c) => sum + (c.cost || 1), 0) + clientPendingWalls.length;
+    if (spent > totalToPlace && totalToPlace > 0) {
+      showMessage('Geçersiz hamle tespit edildi, oyun durumu eşitleniyor.', 3000);
+      sendFullStateSnapshot();
+      return;
+    }
+
+    finalizeTurnPlacing(
+      action.penaltyCells || 0,
+      action.allianceIds || null,
+      clientPendingCells,
+      clientPendingWalls
+    );
+  };
+
+  // Reconnect handler for client when connection drops
+  const handleTryReconnect = () => {
+    if (!onlineInfo || onlineInfo.isHost) return;
+    setIsReconnecting(true);
+    showMessage('Odaya yeniden bağlanılıyor...', 3000);
+    multiplayer.reconnect(
+      () => {
+        setIsReconnecting(false);
+        multiplayer.sendAction({ type: 'REQUEST_FULL_STATE_SYNC' });
+        showMessage('Yeniden bağlanıldı! Oyun durumu yükleniyor...', 3000);
+      },
+      () => {
+        setIsReconnecting(false);
+        showMessage('Yeniden bağlanılamadı. Oda sahibinin oyunda olduğundan emin olun.', 3500);
+      }
+    );
+  };
+
+  // Online Multiplayer State Listener: Host Authoritative Architecture (Problem 2, 3, 4)
   useEffect(() => {
     if (!onlineInfo) return;
 
-    const handleIncomingSync = (msg) => {
-      if (!msg) return;
-
-      if (msg.type === 'START_GAME') {
-        pendingCellsRef.current = [];
-        pendingWallsRef.current = [];
-        turnHistoryRef.current = [];
-        setGameMode(msg.gameMode || 'KLASIK');
-        setPlayers(msg.players || []);
-        setGrid(msg.grid || []);
-        setWalls(msg.walls || {});
-        setRoundNumber(msg.roundNumber || 1);
-        setActivePlayerIndex(msg.activePlayerIndex || 0);
-        setGridWidth(msg.grid?.[0]?.length || 60);
-        setGridHeight(msg.grid?.length || 60);
-        setTurnPhase('PICK_NUMBER');
-        setChosenNumber(2);
-        setAlliances([]);
-        setWinner(null);
-        setDisconnectAlert(false);
-        setIncomingProposal(null);
-        setIncomingCancelRequest(null);
-        setPendingCells([]);
-        setPendingWalls([]);
-        setTurnHistory([]);
-        setTotalToPlace(0);
-        setGameState('PLAYING');
-      } else if (msg.type === 'LIVE_PENDING_SYNC') {
-        if (msg.pendingCells !== undefined) setPendingCells(msg.pendingCells);
-        if (msg.pendingWalls !== undefined) setPendingWalls(msg.pendingWalls);
-        if (msg.walls !== undefined) setWalls(msg.walls);
-      } else if (msg.type === 'WHEEL_SPIN_SYNC') {
-        if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
-        if (msg.phase === 'SPINNING') {
-          if (msg.rollData) setWheelRollData(msg.rollData);
-          setIsWheelOpen(true);
-        } else if (msg.phase === 'FINISHED') {
-          setIsWheelOpen(false);
-          if (msg.outcome === 'win') {
-            setTotalToPlace(msg.diff);
-            setPendingCells([]);
-            setPendingWalls([]);
-            setTurnHistory([]);
-            setTurnPhase('PLACING');
-            setPlacingMode('EXPAND');
-          } else if (msg.outcome === 'draw') {
-            setTurnPhase('PICK_NUMBER');
-          }
-        }
-      } else if (msg.type === 'DIPLOMACY_PROPOSAL') {
-        const p = msg.proposal;
-        if (!onlineInfo || p?.target?.phoneId === onlineInfo.myDevice) {
-          setIncomingProposal(p);
-          soundManager.playTick();
-        }
-      } else if (msg.type === 'DIPLOMACY_PROPOSAL_RESPONSE') {
-        setIsDiplomacyOpen(false);
-        if (msg.accepted && msg.alliance) {
-          setAlliances(prev => [...prev.filter(a => a.id !== msg.alliance.id), msg.alliance]);
-          soundManager.playWin();
-          confetti({ particleCount: 90, spread: 60 });
-        }
-        if (msg.message) showMessage(msg.message, 3500);
-      } else if (msg.type === 'DIPLOMACY_PROPOSAL_ABORTED') {
-        setIncomingProposal(null);
-        showMessage('İttifak teklifi gönderen tarafından iptal edildi.', 2500);
-      } else if (msg.type === 'DIPLOMACY_CANCEL_PROPOSAL') {
-        if (!onlineInfo || msg.ally?.phoneId === onlineInfo.myDevice) {
-          setIncomingCancelRequest(msg);
-          soundManager.playTick();
-        }
-      } else if (msg.type === 'DIPLOMACY_CANCEL_ABORTED') {
-        setIncomingCancelRequest(null);
-        showMessage('Fesih isteği gönderen tarafından iptal edildi.', 2500);
-      } else if (msg.type === 'DIPLOMACY_CANCEL_RESPONSE') {
-        setIsDiplomacyOpen(false);
-        if (msg.accepted && msg.allianceId) {
-          setAlliances(prev => prev.filter(a => a.id !== msg.allianceId));
-        }
-        if (msg.message) showMessage(msg.message, 3500);
-      } else if (msg.type === 'TURN_FINISH_SYNC') {
-        if (msg.grid) setGrid(msg.grid);
-        if (msg.walls) setWalls(msg.walls);
-        if (msg.players) setPlayers(msg.players);
-        if (msg.roundNumber !== undefined) setRoundNumber(msg.roundNumber);
-        if (msg.activePlayerIndex !== undefined) setActivePlayerIndex(msg.activePlayerIndex);
-        if (msg.alliances) setAlliances(msg.alliances);
-        if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
-        pendingCellsRef.current = [];
-        pendingWallsRef.current = [];
-        turnHistoryRef.current = [];
-        setPendingCells([]);
-        setPendingWalls([]);
-        setTurnHistory([]);
-        setTotalToPlace(0);
-        setTurnPhase('PICK_NUMBER');
-        setPlacingMode('EXPAND');
-        if (msg.message) showMessage(msg.message, 3500);
-      } else if (msg.type === 'DIPLOMACY_SYNC') {
-        if (msg.alliances) setAlliances(msg.alliances);
-        if (msg.grid) setGrid(msg.grid);
-        if (msg.walls) setWalls(msg.walls);
-        if (msg.message) showMessage(msg.message, 3000);
-      } else if (msg.type === 'CHOSEN_NUMBER_SYNC') {
-        if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
-      } else if (msg.type === 'GAME_OVER_SYNC') {
-        if (msg.grid) setGrid(msg.grid);
-        if (msg.walls) setWalls(msg.walls);
-        if (msg.players) setPlayers(msg.players);
-        if (msg.winner) setWinner(msg.winner);
-        pendingCellsRef.current = [];
-        pendingWallsRef.current = [];
-        turnHistoryRef.current = [];
-        setPendingCells([]);
-        setPendingWalls([]);
-        setTurnHistory([]);
-        setGameState('GAMEOVER');
-        soundManager.playWin();
-        confetti({ particleCount: 150, spread: 80 });
-      } else if (msg.type === 'RESET_GAME_SYNC') {
-        returnToSetup(false);
-        showMessage('Oyun yeniden başlatıldı, ana menüye dönüldü.', 3500);
-      } else if (msg.type === 'SYNC_STATE') {
-        if (msg.grid) setGrid(msg.grid);
-        if (msg.walls) setWalls(msg.walls);
-        if (msg.players) setPlayers(msg.players);
-        if (msg.roundNumber !== undefined) setRoundNumber(msg.roundNumber);
-        if (msg.activePlayerIndex !== undefined) setActivePlayerIndex(msg.activePlayerIndex);
-        if (msg.alliances) setAlliances(msg.alliances);
-        if (msg.totalToPlace !== undefined) setTotalToPlace(msg.totalToPlace);
-        if (msg.turnPhase !== undefined) setTurnPhase(msg.turnPhase);
-        if (msg.wallAttack1Hit !== undefined) setWallAttack1Hit(msg.wallAttack1Hit);
-        if (msg.pendingCells !== undefined) setPendingCells(msg.pendingCells);
-        if (msg.pendingWalls !== undefined) setPendingWalls(msg.pendingWalls);
-      }
-    };
-
-    multiplayer.onPeerDisconnected = () => {
-      setDisconnectAlert(true);
-    };
-
     if (onlineInfo.isHost) {
+      // ==================== HOST: Authoritative Game Server ====================
       multiplayer.onActionReceived = (action) => {
-        handleIncomingSync(action);
-        multiplayer.broadcastState(action);
+        if (!action || typeof action !== 'object') return;
+
+        // Security check: Ignore unauthorized state mutations directly from client
+        if (action.type === 'TURN_FINISH_SYNC' || action.type === 'GAME_OVER_SYNC' || action.type === 'START_GAME') {
+          console.warn('Host rejected unauthorized client state mutation:', action.type);
+          return;
+        }
+
+        if (action.type === 'REQUEST_FULL_STATE_SYNC') {
+          sendFullStateSnapshot();
+        } else if (action.type === 'CHOSEN_NUMBER_SELECT') {
+          if (typeof action.chosenNumber === 'number' && action.chosenNumber >= 1 && action.chosenNumber <= 9) {
+            setChosenNumber(action.chosenNumber);
+            multiplayer.broadcastState({
+              type: 'CHOSEN_NUMBER_SYNC',
+              chosenNumber: action.chosenNumber,
+            });
+          }
+        } else if (action.type === 'CLIENT_SPIN_REQUEST') {
+          const curActive = players[activePlayerIndex];
+          if (curActive && curActive.phoneId === 'CLIENT' && turnPhase === 'PICK_NUMBER' && !isWheelOpen) {
+            const maxSafe = calculateMaxSafeNumber(activePlayerArea);
+            const safeChosen = Math.min(action.chosenNumber || chosenNumber, maxSafe);
+            setChosenNumber(safeChosen);
+
+            const roll = fixedRoll !== null ? fixedRoll : Math.floor(Math.random() * 10);
+            const jitter = Math.floor(Math.random() * 19) - 9;
+            const fullSpins = 10 + Math.floor(Math.random() * 3);
+            const rollData = { target: roll, jitter, fullSpins };
+
+            setWheelRollData(rollData);
+            setIsWheelOpen(true);
+
+            multiplayer.broadcastState({
+              type: 'WHEEL_SPIN_SYNC',
+              phase: 'SPINNING',
+              chosenNumber: safeChosen,
+              rollData,
+            });
+          }
+        } else if (action.type === 'LIVE_PENDING_SYNC') {
+          if (action.pendingCells !== undefined) setPendingCells(action.pendingCells);
+          if (action.pendingWalls !== undefined) setPendingWalls(action.pendingWalls);
+          if (action.walls !== undefined) setWalls(action.walls);
+          multiplayer.broadcastState(action);
+        } else if (action.type === 'CLIENT_FINISH_PLACING') {
+          handleClientFinishPlacing(action);
+        } else if (action.type === 'DIPLOMACY_PROPOSAL') {
+          setIncomingProposal(action.proposal);
+          soundManager.playTick();
+        } else if (action.type === 'DIPLOMACY_CANCEL_PROPOSAL') {
+          setIncomingCancelRequest(action);
+          soundManager.playTick();
+        } else if (action.type === 'DIPLOMACY_PROPOSAL_RESPONSE') {
+          setIsDiplomacyOpen(false);
+          if (action.accepted && action.alliance) {
+            setAlliances(prev => [...prev.filter(a => a.id !== action.alliance.id), action.alliance]);
+            soundManager.playWin();
+            confetti({ particleCount: 90, spread: 60 });
+          }
+          if (action.message) showMessage(action.message, 3500);
+          multiplayer.broadcastState(action);
+        } else if (action.type === 'DIPLOMACY_CANCEL_RESPONSE') {
+          setIsDiplomacyOpen(false);
+          if (action.accepted && action.allianceId) {
+            setAlliances(prev => prev.filter(a => a.id !== action.allianceId));
+          }
+          if (action.message) showMessage(action.message, 3500);
+          multiplayer.broadcastState(action);
+        }
+      };
+
+      multiplayer.onPeerDisconnected = () => {
+        setDisconnectAlert(true);
       };
     } else {
+      // ==================== CLIENT: Receives authoritative broadcasts ====================
       multiplayer.onStateChange = (msg) => {
-        handleIncomingSync(msg);
+        if (!msg) return;
+
+        if (msg.type === 'START_GAME' || msg.type === 'FULL_STATE_RECOVERY') {
+          pendingCellsRef.current = [];
+          pendingWallsRef.current = [];
+          turnHistoryRef.current = [];
+          setGameMode(msg.gameMode || 'KLASIK');
+          setPlayers(msg.players || []);
+          if (msg.grid) {
+            setGrid(msg.grid);
+            setGridWidth(msg.grid[0]?.length || 60);
+            setGridHeight(msg.grid.length || 60);
+          }
+          if (msg.walls) setWalls(msg.walls);
+          if (msg.roundNumber !== undefined) setRoundNumber(msg.roundNumber);
+          if (msg.activePlayerIndex !== undefined) setActivePlayerIndex(msg.activePlayerIndex);
+          if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
+          if (msg.totalToPlace !== undefined) setTotalToPlace(msg.totalToPlace);
+          if (msg.turnPhase !== undefined) setTurnPhase(msg.turnPhase);
+          if (msg.alliances !== undefined) setAlliances(msg.alliances);
+          if (msg.pendingCells !== undefined) setPendingCells(msg.pendingCells);
+          if (msg.pendingWalls !== undefined) setPendingWalls(msg.pendingWalls);
+          setWinner(msg.winner || null);
+          setDisconnectAlert(false);
+          setIncomingProposal(null);
+          setIncomingCancelRequest(null);
+          setTurnHistory([]);
+          setGameState('PLAYING');
+          if (msg.type === 'FULL_STATE_RECOVERY') {
+            showMessage('Oyun durumu başarıyla eşitlendi!', 2500);
+          }
+        } else if (msg.type === 'LIVE_PENDING_SYNC') {
+          if (msg.pendingCells !== undefined) setPendingCells(msg.pendingCells);
+          if (msg.pendingWalls !== undefined) setPendingWalls(msg.pendingWalls);
+          if (msg.walls !== undefined) setWalls(msg.walls);
+        } else if (msg.type === 'WHEEL_SPIN_SYNC') {
+          if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
+          if (msg.phase === 'SPINNING') {
+            if (msg.rollData) setWheelRollData(msg.rollData);
+            setIsWheelOpen(true);
+          } else if (msg.phase === 'FINISHED') {
+            setIsWheelOpen(false);
+            if (msg.outcome === 'win') {
+              setTotalToPlace(msg.diff);
+              setPendingCells([]);
+              setPendingWalls([]);
+              setTurnHistory([]);
+              setTurnPhase('PLACING');
+              setPlacingMode('EXPAND');
+            } else if (msg.outcome === 'draw') {
+              setTurnPhase('PICK_NUMBER');
+            }
+          }
+        } else if (msg.type === 'TURN_FINISH_SYNC') {
+          if (msg.grid) setGrid(msg.grid);
+          if (msg.walls) setWalls(msg.walls);
+          if (msg.players) setPlayers(msg.players);
+          if (msg.roundNumber !== undefined) setRoundNumber(msg.roundNumber);
+          if (msg.activePlayerIndex !== undefined) setActivePlayerIndex(msg.activePlayerIndex);
+          if (msg.alliances) setAlliances(msg.alliances);
+          if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
+          pendingCellsRef.current = [];
+          pendingWallsRef.current = [];
+          turnHistoryRef.current = [];
+          setPendingCells([]);
+          setPendingWalls([]);
+          setTurnHistory([]);
+          setTotalToPlace(0);
+          setTurnPhase('PICK_NUMBER');
+          setPlacingMode('EXPAND');
+          if (msg.message) showMessage(msg.message, 3500);
+        } else if (msg.type === 'GAME_OVER_SYNC') {
+          if (msg.grid) setGrid(msg.grid);
+          if (msg.walls) setWalls(msg.walls);
+          if (msg.players) setPlayers(msg.players);
+          if (msg.winner) setWinner(msg.winner);
+          pendingCellsRef.current = [];
+          pendingWallsRef.current = [];
+          turnHistoryRef.current = [];
+          setPendingCells([]);
+          setPendingWalls([]);
+          setTurnHistory([]);
+          setGameState('GAMEOVER');
+          soundManager.playWin();
+          confetti({ particleCount: 150, spread: 80 });
+        } else if (msg.type === 'CHOSEN_NUMBER_SYNC') {
+          if (msg.chosenNumber !== undefined) setChosenNumber(msg.chosenNumber);
+        } else if (msg.type === 'DIPLOMACY_SYNC') {
+          if (msg.alliances) setAlliances(msg.alliances);
+          if (msg.grid) setGrid(msg.grid);
+          if (msg.walls) setWalls(msg.walls);
+          if (msg.message) showMessage(msg.message, 3000);
+        } else if (msg.type === 'DIPLOMACY_PROPOSAL') {
+          setIncomingProposal(msg.proposal);
+          soundManager.playTick();
+        } else if (msg.type === 'DIPLOMACY_PROPOSAL_RESPONSE') {
+          setIsDiplomacyOpen(false);
+          if (msg.accepted && msg.alliance) {
+            setAlliances(prev => [...prev.filter(a => a.id !== msg.alliance.id), msg.alliance]);
+            soundManager.playWin();
+            confetti({ particleCount: 90, spread: 60 });
+          }
+          if (msg.message) showMessage(msg.message, 3500);
+        } else if (msg.type === 'DIPLOMACY_CANCEL_PROPOSAL') {
+          setIncomingCancelRequest(msg);
+          soundManager.playTick();
+        } else if (msg.type === 'DIPLOMACY_CANCEL_RESPONSE') {
+          setIsDiplomacyOpen(false);
+          if (msg.accepted && msg.allianceId) {
+            setAlliances(prev => prev.filter(a => a.id !== msg.allianceId));
+          }
+          if (msg.message) showMessage(msg.message, 3500);
+        } else if (msg.type === 'RESET_GAME_SYNC') {
+          returnToSetup(false);
+          showMessage('Oyun yeniden başlatıldı, ana menüye dönüldü.', 3500);
+        } else if (msg.type === 'SYNC_STATE') {
+          if (msg.grid) setGrid(msg.grid);
+          if (msg.walls) setWalls(msg.walls);
+          if (msg.players) setPlayers(msg.players);
+          if (msg.roundNumber !== undefined) setRoundNumber(msg.roundNumber);
+          if (msg.activePlayerIndex !== undefined) setActivePlayerIndex(msg.activePlayerIndex);
+          if (msg.alliances) setAlliances(msg.alliances);
+          if (msg.totalToPlace !== undefined) setTotalToPlace(msg.totalToPlace);
+          if (msg.turnPhase !== undefined) setTurnPhase(msg.turnPhase);
+          if (msg.wallAttack1Hit !== undefined) setWallAttack1Hit(msg.wallAttack1Hit);
+          if (msg.pendingCells !== undefined) setPendingCells(msg.pendingCells);
+          if (msg.pendingWalls !== undefined) setPendingWalls(msg.pendingWalls);
+        }
+      };
+
+      multiplayer.onPeerDisconnected = () => {
+        setDisconnectAlert(true);
       };
     }
 
     return () => {
       multiplayer.onPeerDisconnected = null;
     };
-  }, [onlineInfo]);
+  }, [onlineInfo, activePlayerIndex, activePlayer, chosenNumber, turnPhase, isWheelOpen, fixedRoll, activePlayerArea, totalToPlace, grid, walls, players, alliances, roundNumber, gameMode, sendFullStateSnapshot]);
 
   // Online Game Starter Callback
   const handleStartOnlineGame = ({ isHost, roomCode, myDevice, joinedPlayers, initialState, roomSettings }) => {
@@ -1665,13 +1853,25 @@ export default function App() {
             </div>
             <div>
               <h3 className="text-lg font-black text-stone-800">
-                Bağlantı Kesildi!
+                {onlineInfo?.isHost ? 'Katılımcının Bağlantısı Kesildi!' : 'Oda Sahibi ile Bağlantı Kesildi!'}
               </h3>
               <p className="text-xs text-stone-600 mt-1.5 leading-relaxed">
-                Diğer telefon veya oyuncunun internet bağlantısı koptu. Oyuna bu telefondan tek cihaz olarak devam edebilir ya da ana menüye dönebilirsiniz.
+                {onlineInfo?.isHost
+                  ? 'Katılımcı telefonun interneti koptu veya sayfadan ayrıldı. Katılımcının yeniden bağlanması bekleniyor...'
+                  : 'İnternet veya oda sahibi bağlantısı koptu. "Yeniden Bağlan" butonuna tıklayarak oyuna kaldığınız yerden devam edebilirsiniz.'}
               </p>
             </div>
             <div className="flex flex-col gap-2 pt-2">
+              {!onlineInfo?.isHost && (
+                <button
+                  disabled={isReconnecting}
+                  onClick={handleTryReconnect}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs rounded-xl shadow-md transition active:scale-95 flex items-center justify-center gap-1.5"
+                >
+                  <RotateCcw size={15} className={isReconnecting ? 'animate-spin' : ''} />
+                  {isReconnecting ? 'Yeniden Bağlanılıyor...' : '🔄 Yeniden Bağlan ve Devam Et'}
+                </button>
+              )}
               <button
                 onClick={() => {
                   multiplayer.cleanup();
@@ -1679,13 +1879,13 @@ export default function App() {
                   setDisconnectAlert(false);
                   showMessage('Oyun yerel (Pass & Play) moduna geçirildi, tek telefondan devam ediliyor.');
                 }}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md transition active:scale-95"
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md transition active:scale-95"
               >
                 📱 Bu Telefondan Devam Et (Yerel Mod)
               </button>
               <button
                 onClick={() => returnToSetup(false)}
-                className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 font-bold text-xs rounded-xl transition"
+                className="w-full py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 font-bold text-xs rounded-xl transition"
               >
                 🏠 Ana Menüye Dön
               </button>

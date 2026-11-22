@@ -1,12 +1,27 @@
 import PeerPkg from 'peerjs';
 const Peer = typeof PeerPkg === 'function' ? PeerPkg : (PeerPkg?.Peer || PeerPkg?.default || PeerPkg);
 
+const getStoredClientToken = () => {
+  try {
+    let token = sessionStorage.getItem('sf_client_token');
+    if (!token) {
+      token = 'ct_' + Math.random().toString(36).slice(2, 10);
+      sessionStorage.setItem('sf_client_token', token);
+    }
+    return token;
+  } catch (e) {
+    return 'ct_' + Math.random().toString(36).slice(2, 10);
+  }
+};
+
 class MultiplayerManager {
   constructor() {
     this.peer = null;
     this.isHost = false;
     this.roomCode = null;
-    this.connections = []; // For host: list of client conns
+    this.clientToken = getStoredClientToken();
+    this.activeClientToken = null; // On Host: token of the authorized remote client
+    this.connections = []; // For host: list of client conns (strictly 1 active client)
     this.hostConn = null; // For client: connection to host
     this.channel = null; // Native browser BroadcastChannel for instant local tab sync
     this.onStateChange = null;
@@ -16,6 +31,7 @@ class MultiplayerManager {
     this.status = 'DISCONNECTED'; // 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'
     this.seenMsgIds = new Set();
     this._msgCounter = 0;
+    this._connectTimeout = null;
   }
 
   _stamp(payload) {
@@ -23,6 +39,7 @@ class MultiplayerManager {
     if (payload._msgId) return payload;
     return {
       ...payload,
+      _clientToken: this.clientToken,
       _msgId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${++this._msgCounter}`,
     };
   }
@@ -77,7 +94,38 @@ class MultiplayerManager {
     });
 
     this.peer.on('connection', (conn) => {
-      this.connections.push(conn);
+      const incomingToken = conn.metadata?.clientToken;
+      const activeOpenConns = this.connections.filter(c => c !== conn && c.open);
+
+      // Problem 3 Fix: Enforce single remote client limit
+      if (activeOpenConns.length >= 1) {
+        // If this is the SAME client reconnecting (e.g. WiFi hiccup or page refresh), replace stale connection
+        if (incomingToken && this.activeClientToken && incomingToken === this.activeClientToken) {
+          activeOpenConns.forEach(old => {
+            try { old.close(); } catch (e) {}
+          });
+          this.connections = [conn];
+        } else {
+          // A second different remote device is trying to connect: REJECT!
+          conn.on('open', () => {
+            try {
+              conn.send(this._stamp({
+                type: 'ROOM_FULL',
+                message: 'Bu oda dolu! Sadece 2 cihaz (Oda Sahibi ve 1 Katılımcı) desteklenmektedir.',
+              }));
+              setTimeout(() => {
+                try { conn.close(); } catch (e) {}
+              }, 500);
+            } catch (e) {}
+          });
+          return;
+        }
+      } else {
+        this.connections.push(conn);
+        if (incomingToken) {
+          this.activeClientToken = incomingToken;
+        }
+      }
 
       conn.on('open', () => {
         if (this.onPeerConnected) {
@@ -86,6 +134,10 @@ class MultiplayerManager {
       });
 
       conn.on('data', (data) => {
+        if (!data) return;
+        if (data.type === 'CLIENT_HANDSHAKE' && data.clientToken) {
+          this.activeClientToken = data.clientToken;
+        }
         if (this._isDuplicate(data)) return;
         if (this.onActionReceived) {
           this.onActionReceived(data, conn);
@@ -95,7 +147,7 @@ class MultiplayerManager {
       conn.on('close', () => {
         this.connections = this.connections.filter(c => c !== conn);
         if (this.onPeerDisconnected) {
-          this.onPeerDisconnected();
+          this.onPeerDisconnected(conn);
         }
       });
     });
@@ -130,7 +182,7 @@ class MultiplayerManager {
       if (onConnected) onConnected();
     };
 
-    // Fail gracefully if no host responds within 12 seconds (e.g. wrong room code)
+    // Fail gracefully if no host responds within 12 seconds
     this._connectTimeout = setTimeout(() => {
       if (!hasConnected) {
         this.cleanup();
@@ -166,10 +218,18 @@ class MultiplayerManager {
     this.peer.on('open', () => {
       this.hostConn = this.peer.connect(targetPeerId, {
         reliable: true,
+        metadata: { clientToken: this.clientToken },
       });
 
       this.hostConn.on('open', () => {
         markConnected();
+        // Send initial handshake with clientToken
+        try {
+          this.hostConn.send(this._stamp({
+            type: 'CLIENT_HANDSHAKE',
+            clientToken: this.clientToken,
+          }));
+        } catch (e) {}
       });
 
       this.hostConn.on('data', (data) => {
@@ -193,7 +253,6 @@ class MultiplayerManager {
 
     this.peer.on('error', (err) => {
       if (!hasConnected && err?.type === 'peer-unavailable') {
-        // Only fail immediately if BroadcastChannel hasn't connected either
         setTimeout(() => {
           if (!hasConnected) {
             this.cleanup();
@@ -205,6 +264,12 @@ class MultiplayerManager {
         onError(err);
       }
     });
+  }
+
+  // Reconnect client to existing room
+  reconnect(onSuccess, onError) {
+    if (!this.roomCode || this.isHost) return;
+    this.joinRoom(this.roomCode, onSuccess, onError);
   }
 
   // Host broadcasts state to all clients
@@ -232,7 +297,6 @@ class MultiplayerManager {
   // Client sends action to host (or host sends to self)
   sendAction(action) {
     const stamped = this._stamp(action);
-    // Record own message ID so if Host echoes it back via broadcastState, Client drops the echo!
     if (stamped && stamped._msgId) {
       this.seenMsgIds.add(stamped._msgId);
     }
@@ -287,6 +351,7 @@ class MultiplayerManager {
     this.status = 'DISCONNECTED';
     this.roomCode = null;
     this.isHost = false;
+    this.activeClientToken = null;
   }
 }
 
