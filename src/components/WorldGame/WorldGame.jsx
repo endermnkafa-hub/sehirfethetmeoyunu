@@ -202,7 +202,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
     if (res.ok) {
       setFoundingModal(null);
-      centerOnCoords(res.country.capitalX, res.country.capitalY, 4.2);
+      centerOnCoords(res.country.capitalX, res.country.capitalY, 7.5);
     } else {
       showToast(res.reason || 'Devlet kurulamadı.');
     }
@@ -428,39 +428,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   const myCountry = hud.myCountry;
 
-  const handleRecruit = useCallback((amount) => {
-    const eng = engineRef.current;
-    const myC = eng?.getMyCountry();
-    if (!eng || !myC) return;
-    const res = eng.recruitSoldiers(myC.id, amount);
-    if (res.ok) {
-      showToast(`📯 ${res.recruited} halk vatandaşı silah altına alındı! (-${res.goldSpent} Altın)`);
-    } else {
-      showToast(`⚠️ ${res.reason}`);
-    }
-  }, [showToast]);
-
-  const handleDemobilize = useCallback((amount) => {
-    const eng = engineRef.current;
-    const myC = eng?.getMyCountry();
-    if (!eng || !myC) return;
-    const res = eng.demobilizeSoldiers(myC.id, amount);
-    if (res.ok) {
-      showToast(`🏠 ${res.demobilized} asker terhis edilip halkın arasına (üretime) döndü!`);
-    } else {
-      showToast(`⚠️ ${res.reason}`);
-    }
-  }, [showToast]);
-
-  const handleSetTax = useCallback((level) => {
-    const eng = engineRef.current;
-    const myC = eng?.getMyCountry();
-    if (!eng || !myC) return;
-    eng.setTaxLevel(myC.id, level);
-    const label = level === 'LOW' ? 'Düşük Vergi (Halk Mutlu)' : level === 'HIGH' ? 'Ağır Vergi (İsyan Riski!)' : 'Normal Vergi';
-    showToast(`⚖️ Vergi Politikası: ${label}`);
-  }, [showToast]);
-
   const handleBuyUpgrade = useCallback((key) => {
     const eng = engineRef.current;
     const myC = eng?.getMyCountry();
@@ -482,128 +449,75 @@ export default function WorldGame({ onReturnToModeSelect }) {
         className="hidden"
       />
 
-      {/* TOP STATUS BAR — WORLDBOX POPULATION, TREASURY, ARMY & LOYALTY */}
-      <div className="absolute top-3 left-3 right-3 sm:left-5 sm:right-5 flex flex-wrap items-start justify-between gap-2 pointer-events-none z-10">
-        {/* Left: Return & Country WorldBox Dashboard */}
-        <div className="pointer-events-auto bg-stone-900/95 border border-stone-700/80 backdrop-blur-md rounded-2xl p-2 sm:p-2.5 shadow-2xl flex flex-wrap items-center gap-2.5 max-w-full">
+      {/* SLEEK MINIMALIST TOP BAR */}
+      <div className="absolute top-3 left-3 right-3 sm:left-5 sm:right-5 flex items-center justify-between gap-2 pointer-events-none z-10">
+        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2.5 py-2 shadow-2xl flex items-center gap-3">
           <button
             onClick={onReturnToModeSelect}
-            className="p-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 transition shrink-0"
-            title="Harita Seçimine Dön"
+            className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+            title="Menüye Dön"
           >
             <ArrowLeft size={16} />
           </button>
 
           {myCountry ? (
-            <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
-              {/* Flag & Name */}
-              <div className="flex items-center gap-2 pr-2 border-r border-stone-700/80">
-                <div className="w-9 h-7 rounded-md overflow-hidden border border-amber-400/60 shadow shrink-0 bg-stone-950">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Flag & Country Name */}
+              <div className="flex items-center gap-2 pr-2.5 border-r border-slate-700/80">
+                <div className="w-8 h-6 rounded overflow-hidden border border-amber-400/60 shadow shrink-0 bg-slate-950">
                   {myCountry.flagDataUrl && (
                     <img src={myCountry.flagDataUrl} alt="Bayrak" className="w-full h-full object-cover" />
                   )}
                 </div>
-                <div>
-                  <div className="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
-                    <span>{myCountry.name}</span>
-                    {myCountry.landCount < 60 && (
-                      <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.5 rounded-full font-bold" title="Küçük Ülke Vatan Savunması Bonusu">
-                        🛡️ +%45 Vatan Direnci
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px] text-stone-400 font-bold">
-                    <span>📍 {myCountry.landCount} Toprak</span>
-                    <span>⚓ {myCountry.coastalCount || 0} Liman</span>
-                  </div>
-                </div>
+                <span className="text-xs sm:text-sm font-black text-white tracking-tight">
+                  {myCountry.name}
+                </span>
               </div>
 
-              {/* WorldBox Stats Pill Row */}
-              <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-[11px] font-bold">
-                {/* Population (Halk) */}
-                <div className="px-2.5 py-1 rounded-xl bg-stone-800/90 border border-stone-700 flex items-center gap-1.5" title="Çalışan Sivil Halk (Vergi üretir ve askere alınır)">
-                  <span>👥</span>
-                  <div>
-                    <div className="text-sky-300 font-black">
-                      {Math.floor(myCountry.population || 0)} / {myCountry.maxPopulation || 40} Halk
-                    </div>
-                    <div className="text-[9px] text-emerald-400">
-                      +{(myCountry.popGrowthRate || 0).toFixed(2)}/sn doğum
-                    </div>
-                  </div>
-                </div>
+              {/* Clean Metrics */}
+              <div className="flex flex-wrap items-center gap-3 text-xs font-bold">
+                <span className="text-amber-400" title="Mevcut Asker / Maksimum Kapasite">
+                  ⚔️ {myCountry.troops.toFixed(1)} / {myCountry.capacity}
+                  <span className="text-emerald-400 ml-1 text-[11px]">
+                    (+{(myCountry.productionRate || 0).toFixed(3)}/sn)
+                  </span>
+                </span>
 
-                {/* Gold Treasury (Hazine) */}
-                <div className="px-2.5 py-1 rounded-xl bg-stone-800/90 border border-stone-700 flex items-center gap-1.5" title="Devlet Hazinesi (Vergi + Liman Geliri - Ordu Maaşı)">
-                  <span>💰</span>
-                  <div>
-                    <div className="text-amber-300 font-black">
-                      {Math.floor(myCountry.gold || 0)} Altın
-                    </div>
-                    <div className={`text-[9px] ${(myCountry.netGoldRate || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {(myCountry.netGoldRate || 0) >= 0 ? '+' : ''}
-                      {(myCountry.netGoldRate || 0).toFixed(2)}/sn net
-                    </div>
-                  </div>
-                </div>
+                <span className="text-slate-300" title="Toplam Toprak (Piksel)">
+                  📍 {myCountry.landCount} Piksel
+                </span>
 
-                {/* Standing Army (Ordu) */}
-                <div className="px-2.5 py-1 rounded-xl bg-stone-800/90 border border-stone-700 flex items-center gap-1.5" title="Silah Altındaki Askerler (Maaş tüketir, fetih yapar)">
-                  <span>⚔️</span>
-                  <div>
-                    <div className="text-rose-300 font-black">
-                      {myCountry.troops.toFixed(1)} / {myCountry.capacity} Asker
-                    </div>
-                    <div className="text-[9px] text-stone-400">
-                      Maaş: -{(myCountry.armyUpkeep || 0).toFixed(2)} 💰/sn
-                    </div>
-                  </div>
-                </div>
+                <span className="text-sky-300 hidden sm:inline" title="Ülkende Yaşayan Halk Nüfusu">
+                  👥 {Math.floor(myCountry.population || 15)} Halk
+                </span>
 
-                {/* Loyalty & Happiness (Sadakat) */}
-                <div
-                  className={`px-2.5 py-1 rounded-xl border flex items-center gap-1.5 ${
-                    (myCountry.loyalty || 90) <= 25
-                      ? 'bg-red-950/90 border-red-500 animate-pulse'
-                      : 'bg-stone-800/90 border-stone-700'
-                  }`}
-                  title="Halkın Sadakati (%18 altına düşerse uzak eyaletlerde WorldBox İsyanı çıkar!)"
-                >
-                  <span>{(myCountry.loyalty || 90) <= 25 ? '🔥' : '❤️'}</span>
-                  <div>
-                    <div className={`font-black ${(myCountry.loyalty || 90) <= 25 ? 'text-red-300' : (myCountry.loyalty || 90) <= 55 ? 'text-amber-300' : 'text-emerald-300'}`}>
-                      %{Math.round(myCountry.loyalty ?? 95)} Sadakat
-                    </div>
-                    <div className="text-[9px] text-stone-400">
-                      Verim: %{Math.round((myCountry.adminEfficiency || 1) * 100)}
-                    </div>
-                  </div>
-                </div>
+                <span className="text-amber-300" title="Vergi Hazinesi (Geliştirmeler için kullanılır)">
+                  💰 {Math.floor(myCountry.gold || 0)} Altın
+                </span>
               </div>
             </div>
           ) : (
             <div className="flex items-center gap-2 text-xs font-bold text-amber-400 pr-2">
               <Sparkles size={15} />
-              <span>Devletin Yok • Sahipsiz bir gri piksele tıkla ve halkını kur!</span>
+              <span>Devletin Yok • Sahipsiz bir gri piksele tıkla ve kur!</span>
             </div>
           )}
         </div>
 
-        {/* Right: Upgrades, Sound & Help */}
+        {/* Right Controls */}
         <div className="pointer-events-auto flex items-center gap-2">
           {myCountry && (
             <button
               onClick={() => setShowUpgrades(true)}
-              className="px-3 h-9 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-stone-950 font-black text-xs flex items-center gap-1.5 shadow-xl transition"
+              className="px-3.5 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-xl transition"
             >
-              <span>🏛️ Geliştirmeler</span>
+              <span>🏛️ Geliştir</span>
             </button>
           )}
 
           <button
             onClick={() => setSoundEnabled((prev) => !prev)}
-            className="w-9 h-9 rounded-xl bg-stone-900/80 border border-stone-700 text-stone-300 flex items-center justify-center hover:bg-stone-800 transition shadow"
+            className="w-9 h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
             title={soundEnabled ? 'Sesi Kapat' : 'Sesi Aç'}
           >
             {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
@@ -611,7 +525,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
           <button
             onClick={() => setShowRules(true)}
-            className="w-9 h-9 rounded-xl bg-stone-900/80 border border-stone-700 text-stone-300 flex items-center justify-center hover:bg-stone-800 transition shadow"
+            className="w-9 h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
             title="Kurallar"
           >
             <HelpCircle size={16} />
@@ -620,136 +534,56 @@ export default function WorldGame({ onReturnToModeSelect }) {
       </div>
 
       {/* FLOATING CAMERA CONTROLS */}
-      <div className="absolute right-3 sm:right-5 top-24 flex flex-col gap-2 z-10">
+      <div className="absolute right-3 sm:right-5 top-20 flex flex-col gap-2 z-10">
         <button
           onClick={() => handleZoom(1.35)}
-          className="w-10 h-10 rounded-2xl bg-stone-900/90 border border-stone-700 text-stone-200 flex items-center justify-center hover:bg-stone-800 shadow-xl transition"
+          className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
           title="Yakınlaştır"
         >
           <ZoomIn size={18} />
         </button>
         <button
           onClick={() => handleZoom(0.75)}
-          className="w-10 h-10 rounded-2xl bg-stone-900/90 border border-stone-700 text-stone-200 flex items-center justify-center hover:bg-stone-800 shadow-xl transition"
+          className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
           title="Uzaklaştır"
         >
           <ZoomOut size={18} />
         </button>
         <button
           onClick={() => {
-            if (myCountry) centerOnCoords(myCountry.capitalX, myCountry.capitalY, 3.8);
+            if (myCountry) centerOnCoords(myCountry.capitalX, myCountry.capitalY, 6.0);
           }}
-          className="w-10 h-10 rounded-2xl bg-stone-900/90 border border-stone-700 text-amber-400 flex items-center justify-center hover:bg-stone-800 shadow-xl transition"
+          className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-amber-400 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
           title="Başkente Odaklan"
         >
           <Compass size={18} />
         </button>
       </div>
 
-      {/* BOTTOM COMMAND & WORLDBOX CONSCRIPTION DOCK */}
-      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 w-full max-w-2xl px-3 pointer-events-none">
-        <div className="pointer-events-auto bg-stone-900/95 border border-stone-700/85 backdrop-blur-lg rounded-3xl p-2.5 shadow-2xl space-y-2">
-          {/* Row 1: WorldBox Conscription (Halktan Asker Eğit) & Tax Controls */}
-          {myCountry && (
-            <div className="flex flex-wrap items-center justify-between gap-1.5 pb-2 border-b border-stone-800">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[10px] font-black uppercase tracking-wider text-stone-400 px-1">
-                  📯 Askere Al:
-                </span>
-                <button
-                  onClick={() => handleRecruit(5)}
-                  className="px-2.5 py-1.5 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-black text-[11px] transition shadow flex items-center gap-1"
-                  title="5 Sivil Halkı silah altına alır (13 Altın)"
-                >
-                  <span>+5 Asker</span>
-                  <span className="text-[9px] text-rose-200">(13💰 5👥)</span>
-                </button>
-                <button
-                  onClick={() => handleRecruit(25)}
-                  className="px-2.5 py-1.5 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-black text-[11px] transition shadow flex items-center gap-1"
-                  title="25 Sivil Halkı silah altına alır (63 Altın)"
-                >
-                  <span>+25 Asker</span>
-                  <span className="text-[9px] text-rose-200">(63💰 25👥)</span>
-                </button>
-                <button
-                  onClick={() => handleRecruit(100)}
-                  className="px-2.5 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white font-black text-[11px] transition shadow flex items-center gap-1"
-                  title="100 Sivil Halkı silah altına alır (250 Altın)"
-                >
-                  <span>+100</span>
-                  <span className="text-[9px] text-rose-200">(250💰)</span>
-                </button>
-                <button
-                  onClick={() => handleDemobilize(10)}
-                  className="px-2 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-emerald-300 border border-stone-700 font-bold text-[11px] transition"
-                  title="10 Askeri terhis edip tarlaya/vergi üretimine geri gönderir (Ordu maaş giderini düşürür)"
-                >
-                  🏠 Terhis (-10⚔️ ➔ +10👥)
-                </button>
-              </div>
+      {/* CLEAN BOTTOM TOOLBAR */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-xs px-4 pointer-events-none">
+        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/80 backdrop-blur-lg rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
+          <button
+            onClick={() => setToolMode('CONQUER')}
+            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
+              toolMode === 'CONQUER'
+                ? 'bg-amber-500 text-slate-950 shadow'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <span>⚔️ Fethet</span>
+          </button>
 
-              {/* Tax Rate Selector */}
-              <div className="flex items-center gap-1 bg-stone-950/80 p-1 rounded-xl border border-stone-800">
-                <span className="text-[10px] font-bold text-stone-400 px-1">Vergi:</span>
-                {[
-                  { id: 'LOW', label: 'Düşük' },
-                  { id: 'NORMAL', label: 'Normal' },
-                  { id: 'HIGH', label: 'Ağır' },
-                ].map((t) => (
-                  <button
-                    key={t.id}
-                    onClick={() => handleSetTax(t.id)}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-black transition ${
-                      myCountry.taxLevel === t.id
-                        ? t.id === 'HIGH'
-                          ? 'bg-red-600 text-white'
-                          : t.id === 'LOW'
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-amber-500 text-stone-950'
-                        : 'text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Row 2: Tool Mode Switcher */}
-          <div className="flex items-center justify-between gap-2">
-            <button
-              onClick={() => setToolMode('CONQUER')}
-              className={`flex-1 py-2 px-3 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition ${
-                toolMode === 'CONQUER'
-                  ? 'bg-amber-500 text-stone-950 shadow-lg'
-                  : 'bg-stone-800/80 text-stone-300 hover:bg-stone-800'
-              }`}
-            >
-              <span>⚔️ Fethet (Sınır Boya)</span>
-            </button>
-
-            <button
-              onClick={() => setToolMode('PAN')}
-              className={`flex-1 py-2 px-3 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 transition ${
-                toolMode === 'PAN'
-                  ? 'bg-indigo-500 text-white shadow-lg'
-                  : 'bg-stone-800/80 text-stone-300 hover:bg-stone-800'
-              }`}
-            >
-              <span>🖐️ Haritayı Kaydır</span>
-            </button>
-
-            {myCountry && (
-              <button
-                onClick={() => setShowUpgrades(true)}
-                className="py-2 px-3.5 rounded-2xl bg-stone-800 hover:bg-stone-700 border border-amber-500/40 text-amber-300 font-black text-xs sm:text-sm flex items-center gap-1.5 transition"
-              >
-                <span>🏛️ Teknoloji</span>
-              </button>
-            )}
-          </div>
+          <button
+            onClick={() => setToolMode('PAN')}
+            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
+              toolMode === 'PAN'
+                ? 'bg-indigo-500 text-white shadow'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <span>🖐️ Kaydır</span>
+          </button>
         </div>
       </div>
 
@@ -763,33 +597,26 @@ export default function WorldGame({ onReturnToModeSelect }) {
         className="w-full h-full cursor-crosshair touch-none"
       />
 
-      {/* UPGRADES & STATE DOCTRINE MODAL */}
+      {/* UPGRADES MODAL */}
       {showUpgrades && myCountry && (
-        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-gradient-to-b from-stone-900 to-zinc-950 border-2 border-amber-500/50 rounded-3xl p-5 sm:p-6 shadow-2xl text-left">
+        <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-5 shadow-2xl text-left">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="text-lg font-black text-white flex items-center gap-2">
-                  <span>🏛️ Devlet & Teknoloji Geliştirmeleri</span>
-                </h3>
-                <p className="text-xs text-stone-400">
-                  Halkından toplanan vergileri ve liman ticaret altınlarını devletini güçlendirmek için harca.
+                <h3 className="text-base font-black text-white">🏛️ Devlet Geliştirmeleri</h3>
+                <p className="text-[11px] text-slate-400">
+                  Halkının ödediği vergilerle ({Math.floor(myCountry.gold)} 💰 Altın) devletini kalıcı olarak güçlendir.
                 </p>
               </div>
               <button
                 onClick={() => setShowUpgrades(false)}
-                className="p-1.5 rounded-xl bg-stone-800 text-stone-400 hover:text-white"
+                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mb-3 px-3 py-2 rounded-2xl bg-stone-800/90 border border-stone-700 flex items-center justify-between text-xs font-bold">
-              <span className="text-amber-300">💰 Mevcut Hazine: {Math.floor(myCountry.gold)} Altın</span>
-              <span className="text-sky-300">⚔️ Taarruz: {(myCountry.attackPower || 1).toFixed(2)}x • 🛡️ Savunma: {(myCountry.defensePower || 1).toFixed(2)}x</span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[60vh] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
               {UPGRADE_DEFINITIONS.map((def) => {
                 const lvl = myCountry.upgrades?.[def.key] || 0;
                 const isMax = lvl >= def.maxLevel;
@@ -799,33 +626,32 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 return (
                   <div
                     key={def.key}
-                    className="p-3 rounded-2xl bg-stone-800/75 border border-stone-700/90 flex flex-col justify-between gap-2"
+                    className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/80 flex items-center justify-between gap-3"
                   >
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="font-black text-xs sm:text-sm text-white flex items-center gap-1.5">
-                          <span>{def.icon}</span>
-                          <span>{def.name}</span>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-black text-xs text-white">
+                          {def.icon} {def.name}
                         </span>
-                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
                           Sv. {lvl}/{def.maxLevel}
                         </span>
                       </div>
-                      <p className="text-[11px] text-stone-400 mt-1 leading-snug">{def.desc}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">{def.desc}</p>
                     </div>
 
                     <button
                       disabled={!canAfford}
                       onClick={() => handleBuyUpgrade(def.key)}
-                      className={`w-full py-2 rounded-xl font-black text-xs transition ${
+                      className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 transition ${
                         isMax
-                          ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-600/40 cursor-default'
+                          ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-600/40'
                           : canAfford
-                          ? 'bg-amber-500 hover:bg-amber-400 text-stone-950 shadow-lg'
-                          : 'bg-stone-700/60 text-stone-500 cursor-not-allowed'
+                          ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow'
+                          : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
                       }`}
                     >
-                      {isMax ? '✓ Maksimum Seviye' : `Geliştir (${cost} 💰 Altın)`}
+                      {isMax ? 'Maksimum' : `${cost} 💰`}
                     </button>
                   </div>
                 );
@@ -838,14 +664,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* FOUND COUNTRY MODAL */}
       {foundingModal && (
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-gradient-to-b from-stone-900 to-zinc-950 border-2 border-amber-500/50 rounded-3xl p-5 sm:p-6 shadow-2xl text-left animate-in zoom-in-95 duration-150">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-3xl p-5 sm:p-6 shadow-2xl text-left">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-black text-white flex items-center gap-2">
-                <span>🏛️ Devletini & Halkını Kur</span>
-              </h3>
+              <h3 className="text-lg font-black text-white">🏛️ Devletini Kur</h3>
               <button
                 onClick={() => setFoundingModal(null)}
-                className="p-1 rounded-lg text-stone-400 hover:text-white"
+                className="p-1 rounded-lg text-slate-400 hover:text-white"
               >
                 <X size={18} />
               </button>
@@ -853,44 +677,44 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-stone-300 uppercase mb-1">
-                  Ülke / Devlet Adı
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-1">
+                  Ülke Adı
                 </label>
                 <input
                   type="text"
                   value={foundName}
                   onChange={(e) => setFoundName(e.target.value)}
                   placeholder="Devletinin Adını Yaz..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-stone-800 border border-stone-700 text-white font-bold text-sm focus:outline-none focus:border-amber-400"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white font-bold text-sm focus:outline-none focus:border-amber-400"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-stone-300 uppercase mb-1">
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-1">
                   Özel Resim / Bayrak Yükle
                 </label>
                 <div className="flex items-center gap-3">
-                  <div className="w-16 h-12 rounded-xl overflow-hidden border border-stone-600 bg-stone-950 flex items-center justify-center shrink-0">
+                  <div className="w-16 h-12 rounded-xl overflow-hidden border border-slate-600 bg-slate-950 flex items-center justify-center shrink-0">
                     {foundFlagDataUrl ? (
                       <img src={foundFlagDataUrl} alt="Yüklenen" className="w-full h-full object-cover" />
                     ) : (
-                      <span className="text-[10px] text-stone-500 font-bold">Resim Yok</span>
+                      <span className="text-[10px] text-slate-500 font-bold">Resim Yok</span>
                     )}
                   </div>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex-1 py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs transition shadow flex items-center justify-center gap-1.5"
+                    className="flex-1 py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition shadow flex items-center justify-center gap-1.5"
                   >
                     <Upload size={14} />
-                    <span>Cihazdan Fotoğraf Seç</span>
+                    <span>Fotoğraf Seç</span>
                   </button>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-stone-300 uppercase mb-1.5">
-                  Sınır Işıltı Rengi
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                  Renk
                 </label>
                 <div className="flex gap-2.5">
                   {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'].map((c) => (
@@ -907,21 +731,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </div>
               </div>
 
-              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700 text-[11px] text-stone-400 space-y-0.5">
-                <div>📍 Başkent Konumu: ({foundingModal.x}, {foundingModal.y})</div>
-                <div>👥 Başlangıç Halkı: 30 Vatandaş • 💰 50 Altın Hazine</div>
-                <div>⚔️ Başlangıç Ordusu: 4 Hazır Muhafız (Halktan Asker Eğitilir)</div>
-                <div className="text-amber-400/90 text-[10px]">
-                  🛡️ WorldBox Simülasyonu: Halk vergi üretir, askere çağrılır, sadakat düşerse isyan çıkar!
-                </div>
+              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 space-y-0.5">
+                <div>📍 Konum: ({foundingModal.x}, {foundingModal.y})</div>
+                <div>⚔️ Başlangıç: 1 Piksel Toprak & 1 Asker Kapasitesi</div>
+                <div>🖼️ Yüklediğin resim 1 pikselde bile tam çözünürlükte toprağının içinde görünür.</div>
               </div>
 
               <button
                 type="button"
                 onClick={handleConfirmFoundCountry}
-                className="w-full py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-stone-950 font-black text-sm transition shadow-xl"
+                className="w-full py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm transition shadow-xl"
               >
-                Devletimi Kur ve Başla ➔
+                Devletimi Kur ➔
               </button>
             </div>
           </div>
@@ -931,23 +752,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* VPN / PROXY WARNING BLOCKED MODAL */}
       {vpnBlocked && (
         <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-gradient-to-b from-red-950/90 to-stone-950 border-2 border-red-500 rounded-3xl p-6 shadow-2xl text-center">
+          <div className="w-full max-w-sm bg-gradient-to-b from-red-950/90 to-slate-950 border-2 border-red-500 rounded-3xl p-6 shadow-2xl text-center">
             <div className="w-16 h-16 rounded-3xl bg-red-500/20 text-red-400 flex items-center justify-center mx-auto mb-3">
               <ShieldAlert size={36} />
             </div>
             <h3 className="text-xl font-black text-white">VPN / PROXY KULLANIMI YASAK!</h3>
-            <p className="text-xs text-stone-300 mt-2 leading-relaxed">
-              Dünya haritası gerçek oyuncuların eşit şartlarda mücadele ettiği ortak bir arenadır. Çoklu hesap veya suistimalleri önlemek için VPN ve Proxy kullanımı yasaklanmıştır.
+            <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+              Dünya haritasında çoklu hesap veya suistimalleri önlemek için VPN ve Proxy kullanımı yasaklanmıştır.
             </p>
-            <div className="my-4 p-3 rounded-2xl bg-red-500/10 border border-red-500/30 text-xs font-bold text-red-300">
-              Lütfen VPN veya Proxy bağlantınızı kapatıp sayfayı yenileyin.
-            </div>
             <button
               onClick={() => {
                 setVpnBlocked(false);
                 onReturnToModeSelect();
               }}
-              className="w-full py-2.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-white font-bold text-xs transition"
+              className="w-full mt-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition"
             >
               Menüye Dön
             </button>
@@ -958,34 +776,30 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* RULES MODAL */}
       {showRules && (
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-stone-900 border border-stone-700 rounded-3xl p-6 shadow-2xl text-white">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl text-white">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-base font-black text-amber-400">WorldBox Dünya Simülasyonu Kuralları</h3>
-              <button onClick={() => setShowRules(false)} className="p-1 rounded-lg text-stone-400 hover:text-white">
+              <h3 className="text-base font-black text-amber-400">Dünya Haritası Kuralları</h3>
+              <button onClick={() => setShowRules(false)} className="p-1 rounded-lg text-slate-400 hover:text-white">
                 <X size={18} />
               </button>
             </div>
-            <div className="space-y-2.5 text-xs text-stone-300 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
-              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
-                <div className="font-black text-white mb-0.5">👥 Halk (Nüfus) & Vergi Ekonomisi</div>
-                <div>Askerler yoktan var olmaz! Topraklarında yaşayan halk zamanla çoğalır ve çalışarak hazinene <b>Altın</b> kazandırır. Denize kıyısı olan pikseller <b>Liman (⚓)</b> sayılır ve ekstra ticaret altını getirir.</div>
+            <div className="space-y-2.5 text-xs text-slate-300 leading-relaxed">
+              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
+                <div className="font-black text-white mb-0.5">⚔️ Değerli Büyüme & Asker Üretimi</div>
+                <div>Her piksel değerlidir. Ülkenin asker kapasitesi toprak sayısına eşittir. Asker üretim hızı logaritmik artar; büyük devletler yüksek kapasiteye sahip olurken küçük devletler de üretim hızıyla onlara yetişebilir.</div>
               </div>
-              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
-                <div className="font-black text-white mb-0.5">📯 Askere Alma & Ordu Maaşı</div>
-                <div>Altın harcayarak sivil halkını <b>Askere Alırsın</b>. Ancak çok fazla vatandaşı askere alırsan tarlada çalışan halk azalır ve vergi gelirin düşer! Ayrıca silah altındaki her asker saniye başı maaş tüketir; barış zamanında askerlerini <b>Terhis Edip</b> ekonomini büyütebilirsin.</div>
+              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
+                <div className="font-black text-white mb-0.5">👥 Halk, Altın & Geliştirmeler</div>
+                <div>Topraklarında yaşayan halk zamanla çoğalır ve hazinene otomatik <b>Altın</b> vergisi öder. Biriken altınlarla <b>🏛️ Geliştir</b> menüsünden üretim hızını, saldırı/savunma gücünü ve ordu kapasiteni artırabilirsin.</div>
               </div>
-              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
-                <div className="font-black text-white mb-0.5">❤️ Sadakat, Küçük Ülke Direnci & İsyan</div>
-                <div>Küçük ülkeler (+%45 Vatan Savunması) ve başkent çevresi saldırılara karşı çok daha dirençlidir. Dev imparatorluklarda ise idari yük ve ağır vergiler halkın <b>Sadakatini</b> düşürür; sadakat %18 altına inerse uzak eyaletlerde <b>İsyan</b> çıkar!</div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-stone-800/80 border border-stone-700">
-                <div className="font-black text-white mb-0.5">🏛️ Teknoloji Geliştirmeleri</div>
-                <div>Biriktirdiğin altınlarla Süngü Gücü, Sınır Kaleleri, Tarım/Şehirleşme, Liman Ticareti, İmparatorluk İdaresi ve Kışla Lojistiği geliştirmelerini açabilirsin.</div>
+              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
+                <div className="font-black text-white mb-0.5">🖼️ Tam Çözünürlüklü Bayrak Haritası</div>
+                <div>Yüklediğin resim, ülken 1 piksel bile olsa harita üzerinde toprağının tam içine yüksek çözünürlüklü olarak çizilir ve sınırların genişledikçe haritaya yayılır.</div>
               </div>
             </div>
             <button
               onClick={() => setShowRules(false)}
-              className="w-full mt-4 py-2.5 rounded-xl bg-amber-500 text-stone-950 font-black text-xs hover:bg-amber-400 transition"
+              className="w-full mt-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 font-black text-xs hover:bg-amber-400 transition"
             >
               Anladım
             </button>
@@ -995,8 +809,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
       {/* TOAST MESSAGE */}
       {toastMessage && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 bg-stone-900/95 border border-amber-400/50 text-white px-4 py-2 rounded-2xl shadow-2xl text-xs font-bold flex items-center gap-2 animate-bounce">
-          <Sparkles size={16} className="text-amber-400 shrink-0" />
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 border border-amber-400/50 text-white px-4 py-2 rounded-2xl shadow-2xl text-xs font-bold flex items-center gap-2">
+          <Sparkles size={15} className="text-amber-400 shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}

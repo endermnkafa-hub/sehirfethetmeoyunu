@@ -1,134 +1,159 @@
 // High-DPI 60 FPS Cartographic Renderer for Massive Minimalist Grey Earth Map
-// Seamless custom picture mapping on territory + full image avatar badge even at 1 pixel
-// Clean grey continents, deep dark oceans, zero city clutter
+// Native screen-resolution image projection directly inside territory pixels (100% visible even at 1 pixel!)
+// Zero floating sticker clutter, zero tacky emojis, razor-sharp borders
 
 import { MAP_W, MAP_H } from './worldRasterizer';
-import { FLAG_W, FLAG_H } from './flagLibrary';
 
 export class WorldMapRenderer {
   constructor(worldData) {
     this.worldData = worldData;
 
-    // Offscreen 1000x500 buffer canvas
-    this.bufferCanvas = document.createElement('canvas');
-    this.bufferCanvas.width = MAP_W;
-    this.bufferCanvas.height = MAP_H;
-    this.bufferCtx = this.bufferCanvas.getContext('2d', { willReadFrequently: true });
-    this.imageData = this.bufferCtx.createImageData(MAP_W, MAP_H);
+    // Offscreen 1000x500 buffer canvas for the base Grey Earth map
+    this.baseCanvas = document.createElement('canvas');
+    this.baseCanvas.width = MAP_W;
+    this.baseCanvas.height = MAP_H;
+    this.baseCtx = this.baseCanvas.getContext('2d');
+    const imgData = this.baseCtx.createImageData(MAP_W, MAP_H);
+    imgData.data.set(worldData.baseMapRgba);
+    this.baseCtx.putImageData(imgData, 0, 0);
 
-    // Initialize with sleek grey Earth map
-    this.imageData.data.set(worldData.baseMapRgba);
-    this.bufferCtx.putImageData(this.imageData, 0, 0);
+    // Offscreen buffer for distant zoom (< 2.5x) fast pixel rendering
+    this.farCanvas = document.createElement('canvas');
+    this.farCanvas.width = MAP_W;
+    this.farCanvas.height = MAP_H;
+    this.farCtx = this.farCanvas.getContext('2d');
+    this.farImageData = this.farCtx.createImageData(MAP_W, MAP_H);
 
-    // Image cache for HTMLImageElements to draw crisp avatar pins on canvas
-    this.imgCache = new Map(); // dataUrl -> HTMLImageElement
+    // Image cache for HTMLImageElements
+    this.imgCache = new Map();
+
+    // Cached per-country pixel lists & Path2D in map coordinates (1 unit = 1 map pixel)
+    this.countryPaths = new Map(); // countryId -> { fillPath: Path2D, borderPath: Path2D }
   }
 
-  getOrLoadImage(dataUrl) {
+  getOrLoadImage(dataUrl, onLoadCallback) {
     if (!dataUrl) return null;
     let img = this.imgCache.get(dataUrl);
     if (!img) {
       img = new Image();
+      if (onLoadCallback) {
+        img.onload = onLoadCallback;
+      }
       img.src = dataUrl;
       this.imgCache.set(dataUrl, img);
     }
     return img.complete && img.naturalWidth > 0 ? img : null;
   }
 
-  // Composite custom country images onto the offscreen grey Earth buffer
-  updateTerritoryBuffer(engine) {
-    const dst = this.imageData.data;
-    const base = this.worldData.baseMapRgba;
+  // Rebuild vector Path2D in map-pixel space for each country so images render at full screen DPI!
+  rebuildTerritoryGeometry(engine) {
     const owners = engine.owners;
+    const dst = this.farImageData.data;
+    dst.set(this.worldData.baseMapRgba);
 
-    // 1. Reset to clean grey Earth
-    dst.set(base);
+    engine.computeCountryBounds();
+    this.countryPaths.clear();
 
-    // 2. Compute country bounding boxes for full-picture UV mapping
-    const bounds = engine.computeCountryBounds();
+    // Group horizontal spans per country for ultra-fast Path2D construction
+    const fillPaths = new Map();
+    const borderPaths = new Map();
 
-    for (let y = 0; y < MAP_H; y++) {
-      const row = y * MAP_W;
-      for (let x = 0; x < MAP_W; x++) {
-        const idx = row + x;
-        const o = owners[idx];
-        if (o <= 0) continue;
-
-        const country = engine.countryMap.get(o);
-        if (!country) continue;
-
-        const p4 = idx * 4;
-        const b = bounds.get(o);
-        const bw = b && b.maxX >= b.minX ? Math.max(1, b.maxX - b.minX + 1) : 1;
-        const bh = b && b.maxY >= b.minY ? Math.max(1, b.maxY - b.minY + 1) : 1;
-
-        let r = 220, g = 38, bCol = 38;
-
-        if (country.flagRgba && b) {
-          // Normalize (x, y) relative to country's total bounding box
-          // This ensures the ENTIRE uploaded image is visible across the country!
-          let u = (x - b.minX) / bw;
-          let v = (y - b.minY) / bh;
-          if (u < 0) u = 0; else if (u > 0.999) u = 0.999;
-          if (v < 0) v = 0; else if (v > 0.999) v = 0.999;
-
-          const fx = (u * FLAG_W) | 0;
-          const fy = (v * FLAG_H) | 0;
-          const fp = (fy * FLAG_W + fx) * 4;
-
-          r = country.flagRgba[fp];
-          g = country.flagRgba[fp + 1];
-          bCol = country.flagRgba[fp + 2];
-        }
-
-        // Crisp 1px perimeter border outline for country
-        const isBorder =
-          x === 0 ||
-          x === MAP_W - 1 ||
-          y === 0 ||
-          y === MAP_H - 1 ||
-          owners[idx - 1] !== o ||
-          owners[idx + 1] !== o ||
-          owners[idx - MAP_W] !== o ||
-          owners[idx + MAP_W] !== o;
-
-        if (isBorder) {
-          // Highlight border with bright nation outline
-          if (country.id === engine.myCountryId) {
-            r = Math.min(255, r * 0.4 + 220);
-            g = Math.min(255, g * 0.4 + 180);
-            bCol = Math.min(255, bCol * 0.4 + 40);
-          } else {
-            r = Math.max(0, r * 0.5);
-            g = Math.max(0, g * 0.5);
-            bCol = Math.max(0, bCol * 0.5);
-          }
-        }
-
-        dst[p4] = r;
-        dst[p4 + 1] = g;
-        dst[p4 + 2] = bCol;
-        dst[p4 + 3] = 255;
+    for (const c of engine.countries) {
+      if (c.landCount > 0) {
+        fillPaths.set(c.id, new Path2D());
+        borderPaths.set(c.id, new Path2D());
       }
     }
 
-    this.bufferCtx.putImageData(this.imageData, 0, 0);
+    for (let y = 0; y < MAP_H; y++) {
+      const row = y * MAP_W;
+      let x = 0;
+      while (x < MAP_W) {
+        const o = owners[row + x];
+        if (o <= 0) {
+          x++;
+          continue;
+        }
+
+        // Find horizontal run of same owner
+        let runEnd = x + 1;
+        while (runEnd < MAP_W && owners[row + runEnd] === o) {
+          runEnd++;
+        }
+
+        const fp = fillPaths.get(o);
+        if (fp) {
+          fp.rect(x, y, runEnd - x, 1);
+        }
+
+        const bp = borderPaths.get(o);
+        const country = engine.countryMap.get(o);
+
+        // Process per-pixel border edges & far-zoom fallback buffer
+        for (let px = x; px < runEnd; px++) {
+          const idx = row + px;
+          const p4 = idx * 4;
+
+          if (country) {
+            // Solid fallback color for macro zoom
+            dst[p4] = 225;
+            dst[p4 + 1] = 29;
+            dst[p4 + 2] = 72;
+            dst[p4 + 3] = 255;
+          }
+
+          if (bp) {
+            // Top edge
+            if (y === 0 || owners[idx - MAP_W] !== o) {
+              bp.moveTo(px, y);
+              bp.lineTo(px + 1, y);
+            }
+            // Bottom edge
+            if (y === MAP_H - 1 || owners[idx + MAP_W] !== o) {
+              bp.moveTo(px, y + 1);
+              bp.lineTo(px + 1, y + 1);
+            }
+            // Left edge
+            if (px === 0 || owners[idx - 1] !== o) {
+              bp.moveTo(px, y);
+              bp.lineTo(px, y + 1);
+            }
+            // Right edge
+            if (px === MAP_W - 1 || owners[idx + 1] !== o) {
+              bp.moveTo(px + 1, y);
+              bp.lineTo(px + 1, y + 1);
+            }
+          }
+        }
+
+        x = runEnd;
+      }
+    }
+
+    for (const c of engine.countries) {
+      if (c.landCount > 0) {
+        this.countryPaths.set(c.id, {
+          fillPath: fillPaths.get(c.id),
+          borderPath: borderPaths.get(c.id),
+        });
+      }
+    }
+
+    this.farCtx.putImageData(this.farImageData, 0, 0);
   }
 
   // Draw 60 FPS viewport frame
   renderFrame(ctx, viewW, viewH, camera, engine, uiState = {}) {
     const { hoveredMapPos = null, timeSec = 0 } = uiState;
 
-    if (engine.dirtyRegions) {
-      engine.computeCountryBounds();
-    }
-    if (engine.dirtyPixels) {
-      this.updateTerritoryBuffer(engine);
+    if (engine.dirtyRegions || engine.dirtyPixels) {
+      this.rebuildTerritoryGeometry(engine);
       engine.dirtyPixels = false;
+      engine.dirtyRegions = false;
     }
 
-    // 1. Deep space/ocean background
-    ctx.fillStyle = '#0a0e17';
+    // 1. Deep ocean background
+    ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, viewW, viewH);
 
     // World transform
@@ -142,29 +167,71 @@ export class WorldMapRenderer {
     ctx.save();
     ctx.translate(originX, originY);
 
-    // 2. Render Grey Earth Map + Countries buffer
-    ctx.imageSmoothingEnabled = scale < 2.5;
-    ctx.drawImage(this.bufferCanvas, 0, 0, mapScreenW, mapScreenH);
+    // 2. Render crisp Grey Earth base map
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.baseCanvas, 0, 0, mapScreenW, mapScreenH);
 
-    // 3. Subtle cartographic frame border
-    ctx.strokeStyle = 'rgba(71, 85, 105, 0.4)';
-    ctx.lineWidth = 1.5;
+    // 3. Render Each Country's Uploaded Image Directly Inside Its Exact Territory Pixels at Full Screen Resolution!
+    const bounds = engine.countryBounds || engine.computeCountryBounds();
+
+    ctx.save();
+    ctx.scale(scale, scale);
+
+    for (const country of engine.countries) {
+      if (country.landCount <= 0) continue;
+      const paths = this.countryPaths.get(country.id);
+      const b = bounds.get(country.id);
+      if (!paths || !b || b.count === 0) continue;
+
+      const bw = Math.max(1, b.maxX - b.minX + 1);
+      const bh = Math.max(1, b.maxY - b.minY + 1);
+
+      // Draw full uploaded image clipped to the exact pixel silhouette of the country
+      const img = this.getOrLoadImage(country.flagDataUrl, () => {
+        engine.dirtyPixels = true;
+      });
+
+      ctx.save();
+      ctx.clip(paths.fillPath);
+
+      if (img) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, b.minX, b.minY, bw, bh);
+      } else {
+        ctx.fillStyle = country.color || '#E11D48';
+        ctx.fillRect(b.minX, b.minY, bw, bh);
+      }
+      ctx.restore();
+
+      // Crisp territory perimeter border
+      const isMe = country.id === engine.myCountryId;
+      ctx.strokeStyle = isMe ? '#FBBF24' : 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = Math.max(0.08, (isMe ? 1.8 : 1.2) / scale);
+      ctx.stroke(paths.borderPath);
+    }
+
+    ctx.restore();
+
+    // 4. Subtle cartographic frame border
+    ctx.strokeStyle = 'rgba(71, 85, 105, 0.35)';
+    ctx.lineWidth = 1;
     ctx.strokeRect(0, 0, mapScreenW, mapScreenH);
 
     const myCountry = engine.getMyCountry();
 
-    // 4. Highlight frontier cells where player can legally conquer (glow effect)
-    if (myCountry && myCountry.troops >= 1.0 && scale > 1.0) {
+    // 5. Subtle frontier highlight only when player has >= 1 full soldier ready to conquer
+    if (myCountry && myCountry.troops >= 1.0 && scale >= 2.0) {
       const owners = engine.owners;
       const isLand = this.worldData.isLand;
       const myId = myCountry.id;
 
-      const minX = Math.max(0, Math.floor(-camera.panX / scale));
-      const maxX = Math.min(MAP_W - 1, Math.ceil((viewW - camera.panX) / scale));
-      const minY = Math.max(0, Math.floor(-camera.panY / scale));
-      const maxY = Math.min(MAP_H - 1, Math.ceil((viewH - camera.panY) / scale));
+      const minX = Math.max(0, Math.floor(-originX / scale));
+      const maxX = Math.min(MAP_W - 1, Math.ceil((viewW - originX) / scale));
+      const minY = Math.max(0, Math.floor(-originY / scale));
+      const maxY = Math.min(MAP_H - 1, Math.ceil((viewH - originY) / scale));
 
-      ctx.fillStyle = 'rgba(251, 191, 36, 0.28)';
+      ctx.fillStyle = 'rgba(251, 191, 36, 0.16)';
       for (let y = minY; y <= maxY; y++) {
         const row = y * MAP_W;
         for (let x = minX; x <= maxX; x++) {
@@ -178,204 +245,97 @@ export class WorldMapRenderer {
             (y < MAP_H - 1 && owners[idx + MAP_W] === myId);
 
           if (isAdj) {
-            ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+            ctx.fillRect(x * scale, y * scale, scale, scale);
           }
         }
       }
     }
 
-    // 5. Render Country Avatar Badges & Names (Guaranteeing image is ALWAYS visible even at 1 pixel!)
-    const bounds = engine.countryBounds || engine.computeCountryBounds();
-
+    // 6. Clean, Non-Intrusive Country Name Label (Positioned ABOVE the country's top boundary so it never covers the pixels!)
     for (const country of engine.countries) {
       if (country.landCount <= 0) continue;
-
       const b = bounds.get(country.id);
-      let cx = country.capitalX;
-      let cy = country.capitalY;
-      if (b && b.count > 0) {
-        cx = Math.round(b.sumX / b.count);
-        cy = Math.round(b.sumY / b.count);
-      }
+      if (!b || b.count === 0) continue;
 
-      const sx = cx * scale;
-      const sy = cy * scale;
+      const centerX = ((b.minX + b.maxX + 1) / 2) * scale;
+      const topY = b.minY * scale;
 
-      // Skip offscreen countries
-      if (sx + originX < -80 || sx + originX > viewW + 80 || sy + originY < -80 || sy + originY > viewH + 80) {
+      if (
+        centerX + originX < -100 ||
+        centerX + originX > viewW + 100 ||
+        topY + originY < -60 ||
+        topY + originY > viewH + 60
+      ) {
         continue;
       }
 
       const isMe = country.id === engine.myCountryId;
-      const badgeW = Math.max(22, Math.min(36, 7 * scale));
-      const badgeH = Math.max(15, Math.min(24, 4.8 * scale));
+      if (scale < 1.4 && !isMe) continue;
 
       ctx.save();
-      ctx.translate(sx, sy);
+      const fontSize = Math.max(10, Math.min(13, 2.2 * Math.sqrt(scale) + 7));
+      ctx.font = `800 ${Math.round(fontSize)}px Inter, system-ui, sans-serif`;
+      const label = `${country.name} (${Math.floor(country.troops)})`;
+      const tw = ctx.measureText(label).width + 10;
+      const th = fontSize + 6;
+      const labelY = topY - th - 4;
 
-      // Outer glow for player's country
-      if (isMe) {
-        ctx.beginPath();
-        ctx.arc(0, 0, badgeW * 0.7, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(251, 191, 36, 0.2)';
-        ctx.fill();
-      }
-
-      // Draw country's complete uploaded image in an avatar badge
-      const loadedImg = this.getOrLoadImage(country.flagDataUrl);
-      if (loadedImg) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.roundRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 4);
-        ctx.clip();
-        ctx.drawImage(loadedImg, -badgeW / 2, -badgeH / 2, badgeW, badgeH);
-        ctx.restore();
-      } else {
-        ctx.fillStyle = country.color || '#E11D48';
-        ctx.beginPath();
-        ctx.roundRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 4);
-        ctx.fill();
-      }
-
-      // Badge outline border
-      ctx.strokeStyle = isMe ? '#FBBF24' : '#FFFFFF';
-      ctx.lineWidth = isMe ? 2 : 1;
+      // Subtle pill above territory
+      ctx.fillStyle = 'rgba(9, 13, 22, 0.82)';
+      ctx.strokeStyle = isMe ? 'rgba(251, 191, 36, 0.7)' : 'rgba(255, 255, 255, 0.22)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.roundRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 4);
+      ctx.roundRect(centerX - tw / 2, labelY, tw, th, 5);
+      ctx.fill();
       ctx.stroke();
 
-      // Country Name & Troop/Population Label
-      if (scale > 1.2 || isMe) {
-        const nameFontSize = Math.max(9, Math.min(13, 3.2 * scale));
-        ctx.font = `900 ${Math.round(nameFontSize)}px Inter, sans-serif`;
-        const popCount = Math.floor(country.population || 25);
-        const label = `${country.name} • ⚔️${Math.floor(country.troops)} 👥${popCount}`;
-        const tw = ctx.measureText(label).width + 10;
-        const th = nameFontSize + 5;
-
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
-        ctx.strokeStyle = isMe ? '#FBBF24' : 'rgba(255,255,255,0.3)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.roundRect(-tw / 2, badgeH / 2 + 2, tw, th, 4);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.fillStyle = isMe ? '#FEF08A' : '#F8FAFC';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, 0, badgeH / 2 + 2 + th / 2);
-      }
-
+      ctx.fillStyle = isMe ? '#FDE68A' : '#F1F5F9';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, centerX, labelY + th / 2);
       ctx.restore();
+    }
 
-      // 5b. Render WorldBox Settlements (Capital, Ports, Towns) & Living Citizen Dots when zoomed in
-      if (scale >= 2.2) {
-        // Capital Marker
-        const capSx = (country.capitalX + 0.5) * scale;
-        const capSy = (country.capitalY + 0.5) * scale;
+    // 7. Crisp Hover Reticle on Target Pixel
+    if (hoveredMapPos) {
+      const mx = Math.floor(hoveredMapPos.x);
+      const my = Math.floor(hoveredMapPos.y);
+      if (mx >= 0 && mx < MAP_W && my >= 0 && my < MAP_H) {
+        const hx = mx * scale;
+        const hy = my * scale;
+        const hIdx = my * MAP_W + mx;
+        const isLand = this.worldData.isLand[hIdx] === 1;
+        const cellOwner = engine.owners[hIdx];
+
         ctx.save();
-        ctx.font = `${Math.max(10, Math.min(16, Math.round(scale * 2.5)))}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('👑', capSx, capSy - scale * 0.6);
+        if (!myCountry) {
+          if (isLand && cellOwner === 0) {
+            const pulse = 1 + Math.sin(timeSec * 5) * 0.12;
+            ctx.strokeStyle = '#FBBF24';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(hx, hy, Math.max(2, scale), Math.max(2, scale));
 
-        // Settlements (Ports & Towns)
-        if (Array.isArray(country.settlements)) {
-          for (const st of country.settlements) {
-            if (engine.owners[st.y * MAP_W + st.x] !== country.id) continue;
-            const stX = (st.x + 0.5) * scale;
-            const stY = (st.y + 0.5) * scale;
-            ctx.fillText(st.type === 'PORT' ? '⚓' : '🏘️', stX, stY);
+            ctx.beginPath();
+            ctx.arc(hx + scale / 2, hy + scale / 2, Math.max(10, 3 * scale) * pulse, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(251, 191, 36, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
           }
-        }
-
-        // WorldBox Wandering Citizen Micro-Dots around Capital & Territory when zoomed in closely
-        if (scale >= 3.2) {
-          const dotCount = Math.min(24, Math.max(3, Math.floor((country.population || 20) / 15)));
-          for (let i = 0; i < dotCount; i++) {
-            const angle = (timeSec * (0.6 + (i % 5) * 0.2) + i * 2.3);
-            const radius = (1.2 + (i % 6) * 0.85) * scale;
-            const dx = capSx + Math.cos(angle) * radius;
-            const dy = capSy + Math.sin(angle * 1.3) * radius;
-            const tileX = Math.floor(dx / scale);
-            const tileY = Math.floor(dy / scale);
-            if (
-              tileX >= 0 && tileX < MAP_W &&
-              tileY >= 0 && tileY < MAP_H &&
-              engine.owners[tileY * MAP_W + tileX] === country.id
-            ) {
-              ctx.fillStyle = i % 3 === 0 ? '#FBBF24' : '#FFFFFF';
-              ctx.beginPath();
-              ctx.arc(dx, dy, Math.max(1.3, scale * 0.22), 0, Math.PI * 2);
-              ctx.fill();
-            }
+        } else {
+          const check = engine.canExpandToPixel(myCountry.id, mx, my);
+          const cellSz = Math.max(1.5, scale);
+          if (check.valid) {
+            ctx.strokeStyle = check.isEnemy ? '#F43F5E' : '#10B981';
+            ctx.lineWidth = 1.8;
+            ctx.strokeRect(hx, hy, cellSz, cellSz);
+          } else if (isLand) {
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(hx, hy, cellSz, cellSz);
           }
         }
         ctx.restore();
       }
-    }
-
-    // 6. Interactive Hover Cursor & Founding Reticle
-    if (hoveredMapPos) {
-      const hx = Math.floor(hoveredMapPos.x) * scale;
-      const hy = Math.floor(hoveredMapPos.y) * scale;
-      const hIdx = Math.floor(hoveredMapPos.y) * MAP_W + Math.floor(hoveredMapPos.x);
-      const isLand = this.worldData.isLand[hIdx] === 1;
-      const cellOwner = engine.owners[hIdx];
-
-      ctx.save();
-
-      if (!myCountry) {
-        // Player has no nation yet -> Show Founding Cursor
-        if (isLand && cellOwner === 0) {
-          const pulse = 1 + Math.sin(timeSec * 5) * 0.15;
-          ctx.beginPath();
-          ctx.arc(hx + scale / 2, hy + scale / 2, Math.max(12, 6 * scale) * pulse, 0, Math.PI * 2);
-          ctx.strokeStyle = '#FBBF24';
-          ctx.lineWidth = 2.5;
-          ctx.stroke();
-          ctx.fillStyle = 'rgba(251, 191, 36, 0.25)';
-          ctx.fill();
-
-          ctx.font = '900 12px Inter, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillStyle = '#FEF08A';
-          ctx.strokeStyle = '#000000';
-          ctx.lineWidth = 3;
-          ctx.strokeText('★ Tıkla ve Devletini Kur', hx + scale / 2, hy - 14);
-          ctx.fillText('★ Tıkla ve Devletini Kur', hx + scale / 2, hy - 14);
-        }
-      } else {
-        // Player already has a country -> Show Conquest Reticle
-        const check = engine.canExpandToPixel(myCountry.id, Math.floor(hoveredMapPos.x), Math.floor(hoveredMapPos.y));
-        const cellSz = Math.max(2, scale);
-
-        if (check.valid) {
-          ctx.strokeStyle = check.isEnemy ? '#EF4444' : '#10B981';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(hx, hy, cellSz, cellSz);
-
-          if (scale > 2.0) {
-            ctx.font = '800 11px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = check.isEnemy ? '#FCA5A5' : '#86EFAC';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 3;
-            const costStr = check.isEnemy
-              ? `⚔️ Taarruz (${check.cost} Asker)`
-              : `⚔️ Fethet (${check.cost} Asker)`;
-            ctx.strokeText(costStr, hx + cellSz / 2, hy - 8);
-            ctx.fillText(costStr, hx + cellSz / 2, hy - 8);
-          }
-        } else {
-          ctx.strokeStyle = 'rgba(148, 163, 184, 0.5)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(hx, hy, cellSz, cellSz);
-        }
-      }
-
-      ctx.restore();
     }
 
     ctx.restore();
