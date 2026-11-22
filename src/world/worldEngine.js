@@ -212,22 +212,20 @@ export class WorldSimulationEngine {
 
     this._recalculateDerivedStats(c);
 
-    // Calculate offline troops up to capacity!
+    // Calculate offline troops strictly up to capacity (Zero offline gold so economy remains balanced!)
     const availableCapacity = Math.max(0, c.capacity - c.troops);
     const troopsProduced = Math.min(
       availableCapacity,
       c.productionRate * elapsedSec,
     );
-    const goldEarned = c.goldIncome * elapsedSec;
     const popSpace = Math.max(0, c.maxPopulation - c.population);
     const popGrown = Math.min(popSpace, c.popGrowthRate * elapsedSec);
 
-    if (troopsProduced > 0.1 || goldEarned > 1) {
+    if (troopsProduced > 0.5) {
       c.troops = Math.min(
         c.capacity,
         Number((c.troops + troopsProduced).toFixed(1)),
       );
-      c.gold = Math.max(0, Number((c.gold + goldEarned).toFixed(1)));
       c.population = Math.min(
         c.maxPopulation,
         Math.floor(c.population + popGrown),
@@ -241,7 +239,7 @@ export class WorldSimulationEngine {
 
       this.onSound("celebration");
       this.onEvent(
-        `🎖️ Çevrimdışı Gelir (${timeStr}): +${Math.floor(troopsProduced)} asker ve +${Math.floor(goldEarned)} altın toplandı! (Asker: ${Math.floor(c.troops)}/${c.capacity})`,
+        `🎖️ Çevrimdışı Kışla Desteği (${timeStr}): Ordu kışlanda +${Math.floor(troopsProduced)} asker hazırlandı! (Asker: ${Math.floor(c.troops)}/${c.capacity})`,
       );
 
       this.sync.broadcast({
@@ -259,7 +257,6 @@ export class WorldSimulationEngine {
 
       return {
         troops: Math.floor(troopsProduced),
-        gold: Math.floor(goldEarned),
         elapsedSec,
         timeStr,
       };
@@ -457,10 +454,10 @@ export class WorldSimulationEngine {
       (0.12 + 0.03 * Math.log(c.landCount + 1)) *
       (1 + (up.housing || 0) * 0.07);
 
-    const popBonus = 1 + Math.min(0.5, (c.population || 15) / 2500);
+    const popBonus = 1 + Math.min(0.25, (c.population || 15) / 3500);
     c.goldIncome =
-      (0.08 + 0.14 * Math.log(c.landCount + 1)) *
-      (1 + (up.economy || 0) * 0.06) *
+      (0.04 + 0.08 * Math.log(c.landCount + 1)) *
+      (1 + (up.economy || 0) * 0.05) *
       popBonus;
 
     // 4. Saldırı & Savunma Gücü (Tüm topraklarda eşit savunma; Başkent ayrımı yoktur!)
@@ -546,10 +543,9 @@ export class WorldSimulationEngine {
         );
       }
 
-      c.gold += c.goldIncome * deltaTimeSec;
-
       const isMyCountry = c.id === this.myCountryId;
       if (isMyCountry) {
+        c.gold += c.goldIncome * deltaTimeSec;
         c.lastActiveTime = Date.now();
         if (
           !this._lastActivePersist ||
