@@ -559,13 +559,16 @@ export class WorldSimulationEngine {
         if (prevCountry.troops > prevCountry.capacity) {
           prevCountry.troops = prevCountry.capacity;
         }
+        this.dirtyRegions = true;
       }
+    } else {
+      // O(1) incremental bounding box expansion (avoids 500,000-pixel scan on mobile!)
+      this._expandCountryBound(countryId, x, y);
     }
 
     this._recalculateDerivedStats(country);
 
     this.dirtyPixels = true;
-    this.dirtyRegions = true;
     this.onSound('pencil');
 
     this.sync.broadcast({
@@ -576,8 +579,106 @@ export class WorldSimulationEngine {
       cost: check.cost,
     });
 
-    this.saveState();
+    this.scheduleSave();
     return { ok: true, isNaval: false, country };
+  }
+
+  // O(1) incremental bounding box expansion when conquering a pixel
+  _expandCountryBound(countryId, x, y) {
+    if (!this.countryBounds) {
+      this.computeCountryBounds();
+      return;
+    }
+    let b = this.countryBounds.get(countryId);
+    if (!b) {
+      b = { minX: x, maxX: x, minY: y, maxY: y, count: 1, sumX: x, sumY: y };
+      this.countryBounds.set(countryId, b);
+      return;
+    }
+    if (x < b.minX) b.minX = x;
+    if (x > b.maxX) b.maxX = x;
+    if (y < b.minY) b.minY = y;
+    if (y > b.maxY) b.maxY = y;
+    b.count++;
+    b.sumX += x;
+    b.sumY += y;
+  }
+
+  // Smart Mobile Touch-Snap: If finger touches within radius of a valid border pixel, snap to nearest valid border pixel!
+  findSmartExpandTarget(countryId, tapX, tapY, radius = 4) {
+    const exact = this.canExpandToPixel(countryId, tapX, tapY);
+    if (exact.valid) {
+      return { x: tapX, y: tapY, check: exact };
+    }
+
+    let best = null;
+    let bestDist = Infinity;
+
+    for (let dy = -radius; dy <= radius; dy++) {
+      const ny = tapY + dy;
+      if (ny < 0 || ny >= MAP_H) continue;
+      for (let dx = -radius; dx <= radius; dx++) {
+        const nx = tapX + dx;
+        if (nx < 0 || nx >= MAP_W) continue;
+        const d = dx * dx + dy * dy;
+        if (d >= bestDist) continue;
+        const chk = this.canExpandToPixel(countryId, nx, ny);
+        if (chk.valid && !chk.isNaval) {
+          bestDist = d;
+          best = { x: nx, y: ny, check: chk };
+        }
+      }
+    }
+    return best;
+  }
+
+  // One-Tap Mobile Quick Expand: Automatically conquers the closest available adjacent border pixel!
+  conquerNextBorderPixel(countryId) {
+    const country = this.countryMap.get(countryId);
+    if (!country) return { ok: false, reason: 'Devlet bulunamadı.' };
+
+    const bounds = this.countryBounds || this.computeCountryBounds();
+    const b = bounds.get(countryId);
+    if (!b || b.count === 0) return { ok: false, reason: 'Toprak bulunamadı.' };
+
+    const centerX = b.sumX / b.count;
+    const centerY = b.sumY / b.count;
+
+    const minX = Math.max(0, b.minX - 1);
+    const maxX = Math.min(MAP_W - 1, b.maxX + 1);
+    const minY = Math.max(0, b.minY - 1);
+    const maxY = Math.min(MAP_H - 1, b.maxY + 1);
+
+    let bestCandidate = null;
+    let bestScore = Infinity;
+
+    for (let y = minY; y <= maxY; y++) {
+      const row = y * MAP_W;
+      for (let x = minX; x <= maxX; x++) {
+        const idx = row + x;
+        if (!this.worldData.isLand[idx] || this.owners[idx] === countryId) continue;
+        const isAdj =
+          (x > 0 && this.owners[idx - 1] === countryId) ||
+          (x < MAP_W - 1 && this.owners[idx + 1] === countryId) ||
+          (y > 0 && this.owners[idx - MAP_W] === countryId) ||
+          (y < MAP_H - 1 && this.owners[idx + MAP_W] === countryId);
+        if (!isAdj) continue;
+
+        // Prefer neutral pixels closest to center so country grows in a compact, strong shape
+        const isEnemy = this.owners[idx] > 0;
+        const dist = Math.hypot(x - centerX, y - centerY) + (isEnemy ? 25 : 0);
+        if (dist < bestScore) {
+          bestScore = dist;
+          bestCandidate = { x, y };
+        }
+      }
+    }
+
+    if (!bestCandidate) {
+      return { ok: false, reason: 'Komşu kara sınırı kalmadı! Karşı kıyılara gemi gönder.' };
+    }
+
+    return this.conquerPixel(countryId, bestCandidate.x, bestCandidate.y);
   }
 
   async foundCountry({ name, color, flagDataUrl, capitalX, capitalY, creatorIp }) {
@@ -701,9 +802,90 @@ export class WorldSimulationEngine {
 
     this.countries.push(country);
     this.countryMap.set(country.id, country);
+    this._expandCountryBound(country.id, country.capitalX, country.capitalY);
     this.dirtyPixels = true;
-    this.dirtyRegions = true;
-    this.saveState();
+    this.scheduleSave();
+  }
+
+  // Export up to maxPts [x1, y1, x2, y2...] coordinates for a country (used by cloud sync)
+  getCountryPixelCoords(countryId, maxPts = 350) {
+    const b = (this.countryBounds || this.computeCountryBounds()).get(countryId);
+    if (!b || b.count === 0) return [];
+    const pts = [];
+    for (let y = b.minY; y <= b.maxY; y++) {
+      const row = y * MAP_W;
+      for (let x = b.minX; x <= b.maxX; x++) {
+        if (this.owners[row + x] === countryId) {
+          pts.push(x, y);
+          if (pts.length >= maxPts * 2) return pts;
+        }
+      }
+    }
+    return pts;
+  }
+
+  // Handle remote country + territory sync packet from cloud (Phone <-> PC)
+  async handleRemoteCountrySyncPacket(remoteCountry, pts) {
+    if (!remoteCountry || !remoteCountry.id) return;
+
+    let country = this.countryMap.get(remoteCountry.id);
+    if (!country) {
+      let flagRgba = null;
+      if (remoteCountry.flagDataUrl) {
+        try {
+          const decoded = await loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl);
+          flagRgba = decoded.rgba;
+        } catch {}
+      }
+      country = this._normalizeCountry({
+        ...remoteCountry,
+        flagRgba,
+      });
+      this.countries.push(country);
+      this.countryMap.set(country.id, country);
+    } else {
+      if (remoteCountry.color) country.color = remoteCountry.color;
+      if (remoteCountry.upgrades) {
+        country.upgrades = { ...DEFAULT_UPGRADES, ...remoteCountry.upgrades };
+      }
+    }
+
+    const idxCap = country.capitalY * MAP_W + country.capitalX;
+    if (this.worldData.isLand[idxCap] && this.owners[idxCap] === 0) {
+      this.owners[idxCap] = country.id;
+      this._expandCountryBound(country.id, country.capitalX, country.capitalY);
+    }
+
+    if (Array.isArray(pts)) {
+      for (let i = 0; i < pts.length; i += 2) {
+        const px = pts[i];
+        const py = pts[i + 1];
+        if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
+          const idx = py * MAP_W + px;
+          if (this.worldData.isLand[idx] && this.owners[idx] !== country.id) {
+            this.owners[idx] = country.id;
+            this._expandCountryBound(country.id, px, py);
+          }
+        }
+      }
+    }
+
+    // Recount country land inside its bounding box
+    const b = (this.countryBounds || this.computeCountryBounds()).get(country.id);
+    if (b) {
+      let cnt = 0;
+      for (let y = b.minY; y <= b.maxY; y++) {
+        const row = y * MAP_W;
+        for (let x = b.minX; x <= b.maxX; x++) {
+          if (this.owners[row + x] === country.id) cnt++;
+        }
+      }
+      country.landCount = Math.max(1, cnt);
+    }
+
+    this._recalculateDerivedStats(country);
+    this.dirtyPixels = true;
+    this.scheduleSave();
   }
 
   handleRemoteConquerPixel(countryId, x, y, cost = 1) {
@@ -727,10 +909,22 @@ export class WorldSimulationEngine {
         prevC.landCount = Math.max(0, prevC.landCount - 1);
         this._recalculateDerivedStats(prevC);
       }
+      this.dirtyRegions = true;
+    } else {
+      this._expandCountryBound(countryId, x, y);
     }
 
     this.dirtyPixels = true;
-    this.dirtyRegions = true;
+    this.scheduleSave();
+  }
+
+  // Non-blocking debounced save so mobile touch dragging never freezes the main thread!
+  scheduleSave() {
+    if (this._saveDebounceTimer) return;
+    this._saveDebounceTimer = setTimeout(() => {
+      this._saveDebounceTimer = null;
+      this.saveState();
+    }, 1800);
   }
 
   handleRemoteLaunchShip(remoteShip) {

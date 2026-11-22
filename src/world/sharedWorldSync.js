@@ -1,19 +1,9 @@
-// Real-Time Shared World Synchronization Layer (Cross-Device Global WebRTC Mesh + Cross-Tab BroadcastChannel)
-// Connects Phone, PC, and all online players into a single shared World Map automatically via PeerJS
+// Real-Time Cross-Device Shared World Synchronization Layer
+// Uses HTTPS Cloud Pub/Sub + Persistent History (ntfy.sh SSE/REST) + Local BroadcastChannel
+// Works across Phone (4G/5G/Wi-Fi) and PC without NAT blocks, even if devices open at different times!
 
-import PeerPkg from 'peerjs';
-
-const Peer = typeof PeerPkg === 'function' ? PeerPkg : (PeerPkg?.Peer || PeerPkg?.default || PeerPkg);
-
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-];
-
-const GLOBAL_NODE_PREFIX = 'sf-world-mmo-v9-node-';
-const MAX_GLOBAL_NODES = 8;
+const CLOUD_TOPIC = 'sf_world_mmo_v10_global_shared_earth';
+const CLOUD_URL = `https://ntfy.sh/${CLOUD_TOPIC}`;
 
 export class SharedWorldSync {
   constructor(engine, onRemoteUpdate) {
@@ -22,35 +12,30 @@ export class SharedWorldSync {
     this.channel = null;
     this.tabId = 'tab_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
 
-    // WebRTC Global Mesh state
-    this.peer = null;
-    this.mySlotIndex = -1;
-    this.peers = new Map(); // remotePeerId -> DataConnection
+    this.eventSource = null;
+    this.isCloudConnected = false;
     this.seenMsgIds = new Set();
     this._msgSeq = 0;
-    this._meshInterval = null;
     this._destroyed = false;
 
-    // 1. Local BroadcastChannel for instant same-device tab sync
+    // Pending pixel conquest batch buffer so dragging doesn't spam network requests
+    this._pendingPixels = [];
+    this._batchTimer = null;
+
+    // 1. Local BroadcastChannel for instant same-browser tab sync
     if (typeof BroadcastChannel !== 'undefined') {
       try {
-        this.channel = new BroadcastChannel('sf_shared_world_mmo');
+        this.channel = new BroadcastChannel('sf_shared_world_mmo_v10');
         this.channel.onmessage = (e) => {
           this._handleRemoteMessage(e.data);
         };
-      } catch (err) {
-        console.warn('BroadcastChannel error:', err);
-      }
+      } catch {}
     }
 
-    // 2. Listen to storage events from other tabs in the same browser
+    // 2. Listen to localStorage updates across tabs
     if (typeof window !== 'undefined') {
       this._storageListener = (e) => {
-        if (
-          e.key === 'sf_shared_world_v9_clean' ||
-          e.key === 'sf_shared_world_v8_clean' ||
-          e.key === 'sf_my_country_id'
-        ) {
+        if (e.key === 'sf_shared_world_v10_cloud' || e.key === 'sf_my_country_id') {
           this.engine.loadState();
           this.onRemoteUpdate();
         }
@@ -58,199 +43,258 @@ export class SharedWorldSync {
       window.addEventListener('storage', this._storageListener);
     }
 
-    // 3. Join Global Multi-Device WebRTC Mesh (syncs Phone, PC, and other players worldwide)
-    this._initGlobalMesh(0);
+    // 3. Connect to Persistent Cloud Sync (Phone <-> PC over standard HTTPS)
+    this._initCloudSync();
   }
 
   getConnectedPeersCount() {
-    let count = 0;
-    for (const conn of this.peers.values()) {
-      if (conn && conn.open) count++;
-    }
-    return count;
+    return this.isCloudConnected ? Math.max(1, this.engine.countries.length) : 0;
   }
 
-  _initGlobalMesh(trySlot = 0) {
-    if (this._destroyed || typeof window === 'undefined' || !Peer) return;
+  async _initCloudSync() {
+    if (this._destroyed || typeof window === 'undefined') return;
 
-    const slot = trySlot < MAX_GLOBAL_NODES ? trySlot : -1;
-    const desiredId =
-      slot >= 0
-        ? `${GLOBAL_NODE_PREFIX}${slot}`
-        : `${GLOBAL_NODE_PREFIX}guest-${Math.random().toString(36).slice(2, 8)}`;
-
+    // Step A: Fetch 24h persistent cloud history immediately via HTTPS GET
     try {
-      const peer = new Peer(desiredId, {
-        debug: 0,
-        config: { iceServers: ICE_SERVERS },
+      const res = await fetch(`${CLOUD_URL}/json?poll=1&since=all`, {
+        cache: 'no-store',
       });
-
-      peer.on('open', (id) => {
-        if (this._destroyed) {
-          try { peer.destroy(); } catch {}
-          return;
+      if (res.ok) {
+        const text = await res.text();
+        const lines = text.split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const env = JSON.parse(line);
+            if (env && env.event === 'message' && env.message) {
+              const data = JSON.parse(env.message);
+              this._handleRemoteMessage(data, true);
+            }
+          } catch {}
         }
-        this.peer = peer;
-        this.mySlotIndex = slot;
-        this._connectToGlobalNodes();
-
-        if (this._meshInterval) clearInterval(this._meshInterval);
-        this._meshInterval = setInterval(() => {
-          this._connectToGlobalNodes();
-        }, 7000);
-      });
-
-      peer.on('connection', (conn) => {
-        this._setupPeerConnection(conn);
-      });
-
-      peer.on('error', (err) => {
-        if (err && err.type === 'unavailable-id' && slot >= 0 && slot + 1 <= MAX_GLOBAL_NODES) {
-          try { peer.destroy(); } catch {}
-          this._initGlobalMesh(slot + 1);
-        }
-      });
+        this.isCloudConnected = true;
+        this.onRemoteUpdate();
+      }
     } catch (e) {
-      console.warn('Global mesh init error:', e);
+      console.warn('Cloud history fetch warning:', e);
+    }
+
+    // Step B: Open real-time HTTPS Server-Sent Events (EventSource) stream
+    if (typeof EventSource !== 'undefined' && !this._destroyed) {
+      try {
+        const es = new EventSource(`${CLOUD_URL}/sse`);
+        this.eventSource = es;
+
+        es.onopen = () => {
+          this.isCloudConnected = true;
+          this.onRemoteUpdate();
+          // Announce our country to other connected devices if we have one
+          this.publishMyCountrySnapshot();
+        };
+
+        es.onmessage = (ev) => {
+          if (!ev || !ev.data) return;
+          try {
+            const env = JSON.parse(ev.data);
+            if (env && env.event === 'message' && env.message) {
+              const payload = JSON.parse(env.message);
+              this._handleRemoteMessage(payload, false);
+            }
+          } catch {}
+        };
+
+        es.onerror = () => {
+          this.isCloudConnected = false;
+        };
+      } catch (e) {
+        console.warn('EventSource error:', e);
+      }
     }
   }
 
-  _connectToGlobalNodes() {
-    if (!this.peer || this.peer.destroyed || !this.peer.open) return;
+  // Create a compact <= 1400 byte thumbnail dataUrl of a flag so it fits in fast cloud packets
+  createCompactFlagUrl(flagDataUrl) {
+    if (!flagDataUrl || typeof document === 'undefined') return null;
+    try {
+      if (flagDataUrl.length <= 1400) return flagDataUrl;
+      const img = new Image();
+      img.src = flagDataUrl;
+      if (!img.complete || img.naturalWidth === 0) return null;
+      const cv = document.createElement('canvas');
+      cv.width = 36;
+      cv.height = 24;
+      const ctx = cv.getContext('2d');
+      ctx.drawImage(img, 0, 0, 36, 24);
+      return cv.toDataURL('image/jpeg', 0.6);
+    } catch {
+      return null;
+    }
+  }
 
-    for (let i = 0; i < MAX_GLOBAL_NODES; i++) {
-      if (i === this.mySlotIndex) continue;
-      const targetId = `${GLOBAL_NODE_PREFIX}${i}`;
-      const existing = this.peers.get(targetId);
-      if (existing && existing.open) continue;
+  // Publish our country's current state + owned pixels to the cloud so other devices (Phone/PC) see it
+  publishMyCountrySnapshot() {
+    const myC = this.engine.getMyCountry();
+    if (!myC || myC.landCount <= 0) return;
 
+    const pts = this.engine.getCountryPixelCoords(myC.id, 350);
+    const compactFlag = this.createCompactFlagUrl(myC.flagDataUrl);
+
+    this.broadcast({
+      type: 'COUNTRY_SYNC_PACKET',
+      country: {
+        id: myC.id,
+        name: myC.name,
+        color: myC.color,
+        flagDataUrl: compactFlag,
+        capitalX: myC.capitalX,
+        capitalY: myC.capitalY,
+        population: Math.round(myC.population),
+        gold: Math.round(myC.gold),
+        troops: Number(myC.troops.toFixed(1)),
+        upgrades: myC.upgrades,
+        creatorIp: myC.creatorIp,
+        deviceId: myC.deviceId,
+        createdAt: myC.createdAt,
+      },
+      pts,
+    });
+  }
+
+  // Queue a pixel conquest for batched cloud broadcast (instant locally, batched every 450ms to cloud)
+  queuePixelConquest(countryId, x, y, cost) {
+    // 1. Instant local tab broadcast
+    if (this.channel) {
       try {
-        const conn = this.peer.connect(targetId, { reliable: true });
-        if (conn) {
-          this._setupPeerConnection(conn);
-        }
+        this.channel.postMessage({
+          type: 'CONQUER_PIXEL',
+          countryId,
+          x,
+          y,
+          cost,
+          _senderTabId: this.tabId,
+        });
       } catch {}
     }
+
+    // 2. Batch for cloud broadcast so dragging doesn't flood network
+    this._pendingPixels.push(x, y);
+    if (!this._batchTimer) {
+      this._batchTimer = setTimeout(() => {
+        this._flushPixelBatch(countryId);
+      }, 450);
+    }
   }
 
-  _setupPeerConnection(conn) {
-    if (!conn) return;
-
-    conn.on('open', () => {
-      this.peers.set(conn.peer, conn);
-      // Immediately exchange full world snapshot with the newly connected device (Phone <-> PC)
-      const snapshot = this.engine.exportSnapshot();
-      if (snapshot) {
-        try {
-          conn.send({
-            type: 'WORLD_SNAPSHOT',
-            snapshot,
-            _msgId: `snap_${this.tabId}_${Date.now()}`,
-            _senderTabId: this.tabId,
-          });
-        } catch {}
-      }
-      this.onRemoteUpdate();
-    });
-
-    conn.on('data', (data) => {
-      this._handleRemoteMessage(data, conn);
-    });
-
-    conn.on('close', () => {
-      this.peers.delete(conn.peer);
-      this.onRemoteUpdate();
-    });
-
-    conn.on('error', () => {
-      this.peers.delete(conn.peer);
+  _flushPixelBatch(countryId) {
+    this._batchTimer = null;
+    if (this._pendingPixels.length === 0) return;
+    const pts = this._pendingPixels.splice(0, 240);
+    this._sendToCloud({
+      type: 'CONQUER_BATCH',
+      countryId,
+      pts,
     });
   }
 
-  // Broadcast an action to all other tabs AND all remote devices (Phone, PC, other players)
   broadcast(data) {
     const packet = {
       ...data,
       _msgId: data._msgId || `${this.tabId}_${Date.now()}_${++this._msgSeq}`,
-      _timestamp: Date.now(),
       _senderTabId: this.tabId,
       _senderDeviceId: this.engine.myDeviceId,
     };
 
     this.seenMsgIds.add(packet._msgId);
 
-    // 1. Local tabs
+    // 1. Local browser tabs
     if (this.channel) {
       try {
         this.channel.postMessage(packet);
       } catch {}
     }
 
-    // 2. Remote devices over WebRTC mesh
-    for (const conn of this.peers.values()) {
-      if (conn && conn.open) {
-        try {
-          conn.send(packet);
-        } catch {}
-      }
+    // 2. Cloud HTTPS pub/sub for all remote devices (Phone <-> PC)
+    if (data.type === 'CONQUER_PIXEL') {
+      this.queuePixelConquest(data.countryId, data.x, data.y, data.cost);
+      return;
     }
+
+    if (data.type === 'NEW_COUNTRY' && packet.country) {
+      const compactFlag = this.createCompactFlagUrl(packet.country.flagDataUrl);
+      this._sendToCloud({
+        ...packet,
+        country: {
+          ...packet.country,
+          flagDataUrl: compactFlag,
+        },
+      });
+      return;
+    }
+
+    this._sendToCloud(packet);
   }
 
-  _handleRemoteMessage(data, sourceConn = null) {
-    if (!data || data._senderTabId === this.tabId) return;
+  _sendToCloud(packet) {
+    const fullPacket = {
+      ...packet,
+      _msgId: packet._msgId || `${this.tabId}_${Date.now()}_${++this._msgSeq}`,
+      _senderTabId: this.tabId,
+    };
+    this.seenMsgIds.add(fullPacket._msgId);
+
+    fetch(CLOUD_URL, {
+      method: 'POST',
+      body: JSON.stringify(fullPacket),
+    }).catch(() => {});
+  }
+
+  _handleRemoteMessage(data, isHistoryReplay = false) {
+    if (!data) return;
+    if (!isHistoryReplay && data._senderTabId === this.tabId) return;
 
     if (data._msgId) {
       if (this.seenMsgIds.has(data._msgId)) return;
       this.seenMsgIds.add(data._msgId);
-      if (this.seenMsgIds.size > 400) {
+      if (this.seenMsgIds.size > 600) {
         const first = this.seenMsgIds.values().next().value;
         this.seenMsgIds.delete(first);
       }
     }
 
-    if (data.type === 'WORLD_SNAPSHOT' && data.snapshot) {
-      this.engine.mergeRemoteSnapshot(data.snapshot);
-      this.onRemoteUpdate();
-      return;
-    }
-
-    if (data.type === 'NEW_COUNTRY') {
+    if (data.type === 'NEW_COUNTRY' && data.country) {
       this.engine.handleRemoteNewCountry(data.country);
-      if (data.country.deviceId === this.engine.myDeviceId) {
+      if (data.country.deviceId === this.engine.myDeviceId && !this.engine.myCountryId) {
         this.engine.myCountryId = data.country.id;
       }
+      this.onRemoteUpdate();
+    } else if (data.type === 'COUNTRY_SYNC_PACKET' && data.country) {
+      this.engine.handleRemoteCountrySyncPacket(data.country, data.pts);
       this.onRemoteUpdate();
     } else if (data.type === 'CONQUER_PIXEL') {
       this.engine.handleRemoteConquerPixel(data.countryId, data.x, data.y, data.cost);
       this.onRemoteUpdate();
-    } else if (data.type === 'LAUNCH_SHIP') {
+    } else if (data.type === 'CONQUER_BATCH' && Array.isArray(data.pts)) {
+      for (let i = 0; i < data.pts.length; i += 2) {
+        this.engine.handleRemoteConquerPixel(data.countryId, data.pts[i], data.pts[i + 1], 0);
+      }
+      this.onRemoteUpdate();
+    } else if (data.type === 'LAUNCH_SHIP' && data.ship) {
       this.engine.handleRemoteLaunchShip(data.ship);
       this.onRemoteUpdate();
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
       this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
       this.onRemoteUpdate();
     }
-
-    // Relay packet to other connected mesh peers so all devices stay in sync
-    if (sourceConn) {
-      for (const conn of this.peers.values()) {
-        if (conn && conn.open && conn !== sourceConn) {
-          try {
-            conn.send(data);
-          } catch {}
-        }
-      }
-    }
   }
 
   destroy() {
     this._destroyed = true;
-    if (this._meshInterval) clearInterval(this._meshInterval);
+    if (this._batchTimer) clearTimeout(this._batchTimer);
     if (this.channel) {
       try { this.channel.close(); } catch {}
     }
-    if (this.peer) {
-      try { this.peer.destroy(); } catch {}
+    if (this.eventSource) {
+      try { this.eventSource.close(); } catch {}
     }
     if (typeof window !== 'undefined' && this._storageListener) {
       window.removeEventListener('storage', this._storageListener);

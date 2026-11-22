@@ -286,11 +286,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
           return;
         }
 
-        // Player already has country: if touching an adjacent land border pixel, conquer & paint on drag
-        const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
-        if (check.valid && !check.isNaval) {
+        // Player already has country: if touching near an adjacent land border pixel (with 4px mobile touch snap), conquer & paint
+        const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 4);
+        if (smartTarget && !smartTarget.check.isNaval) {
           isPaintingRef.current = true;
-          const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+          const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
           if (!res.ok && res.reason) {
             showToast(res.reason);
           }
@@ -328,9 +328,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
           const eng = engineRef.current;
           const myCountry = eng?.getMyCountry();
           if (myCountry) {
-            const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
-            if (check.valid && !check.isNaval) {
-              eng.conquerPixel(myCountry.id, pos.x, pos.y);
+            const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 3);
+            if (smartTarget && !smartTarget.check.isNaval) {
+              eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
             }
           }
           lastCellRef.current = { x: pos.x, y: pos.y };
@@ -651,12 +651,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
         </button>
       </div>
 
-      {/* CLEAN BOTTOM TOOLBAR */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-xs px-4 pointer-events-none">
+      {/* CLEAN BOTTOM TOOLBAR WITH 1-TAP MOBILE QUICK EXPAND */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-3 pointer-events-none">
         <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/80 backdrop-blur-lg rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
           <button
             onClick={() => setToolMode('CONQUER')}
-            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
+            className={`flex-1 py-2.5 px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
               toolMode === 'CONQUER'
                 ? 'bg-amber-500 text-slate-950 shadow'
                 : 'text-slate-300 hover:bg-slate-800'
@@ -666,9 +666,27 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <span>Fethet / Gemi</span>
           </button>
 
+          {myCountry && (
+            <button
+              onClick={() => {
+                const eng = engineRef.current;
+                if (!eng) return;
+                const res = eng.conquerNextBorderPixel(myCountry.id);
+                if (!res.ok && res.reason) {
+                  showToast(res.reason);
+                }
+              }}
+              className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow transition"
+              title="Sınırındaki en uygun komşu pikseli tek dokunuşla fetheder (Mobil kolay kontrol)"
+            >
+              <LogoTerritory size={16} />
+              <span>+1 Fethet</span>
+            </button>
+          )}
+
           <button
             onClick={() => setToolMode('PAN')}
-            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
+            className={`flex-1 py-2.5 px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
               toolMode === 'PAN'
                 ? 'bg-indigo-500 text-white shadow'
                 : 'text-slate-300 hover:bg-slate-800'
