@@ -271,6 +271,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     hasCenteredOnMyCountryRef.current = true;
     const center = eng.getCountryCenter(hud.myCountry.id);
     centerOnCoords(center.x, center.y, 16.0);
+    eng.processOfflineProgress();
   }, [hud.myCountry, centerOnCoords]);
 
   // Handle Custom Flag Upload

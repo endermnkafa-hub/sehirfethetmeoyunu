@@ -84,6 +84,7 @@ export class SharedWorldSync {
             population: Math.floor(myC.population),
             color: myC.color,
             upgrades: myC.upgrades,
+            lastActiveTime: Date.now(),
           },
         });
       }

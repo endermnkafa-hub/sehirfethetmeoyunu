@@ -162,10 +162,11 @@ export class WorldSimulationEngine {
     if (devCountry) {
       this.myCountryId = devCountry.id;
       saveMyCountryId(devCountry.id);
+      this.processOfflineProgress();
       return;
     }
     // Auto-recovery via IP address (if friend opened Chrome on mobile and cookies/localStorage were wiped)
-    if (clientIp && clientIp !== '127.0.0.1' && clientIp !== 'unknown') {
+    if (clientIp && clientIp !== "127.0.0.1" && clientIp !== "unknown") {
       const ipCountry = this.countries.find(
         (c) => c.creatorIp === clientIp && c.landCount > 0,
       );
@@ -173,9 +174,97 @@ export class WorldSimulationEngine {
         this.myCountryId = ipCountry.id;
         ipCountry.deviceId = this.myDeviceId;
         saveMyCountryId(ipCountry.id);
-        this.onEvent(`${ipCountry.name} devletinin yönetimi IP üzerinden Chrome'a otomatik bağlandı!`);
+        this.onEvent(
+          `${ipCountry.name} devletinin yönetimi IP üzerinden Chrome'a otomatik bağlandı!`,
+        );
+        this.processOfflineProgress();
       }
     }
+  }
+
+  // Process continuous offline troop, gold & population earnings up to capacity!
+  processOfflineProgress() {
+    const c = this.getMyCountry();
+    if (!c || c.landCount <= 0) return null;
+
+    const now = Date.now();
+    let lastTime = 0;
+    try {
+      const stored = localStorage.getItem(`sf_last_active_${c.id}`);
+      if (stored) lastTime = parseInt(stored, 10);
+    } catch {}
+
+    if (!lastTime || Number.isNaN(lastTime)) {
+      lastTime = c.lastActiveTime || c._lastStatsTime || c._lastSyncTime || now;
+    }
+
+    // Cap offline time calculation to 7 days
+    const elapsedSec = Math.max(
+      0,
+      Math.min(3600 * 24 * 7, (now - lastTime) / 1000),
+    );
+    c.lastActiveTime = now;
+    try {
+      localStorage.setItem(`sf_last_active_${c.id}`, String(now));
+    } catch {}
+
+    if (elapsedSec < 15) return null; // Ignore brief page reloads under 15 seconds
+
+    this._recalculateDerivedStats(c);
+
+    // Calculate offline troops up to capacity!
+    const availableCapacity = Math.max(0, c.capacity - c.troops);
+    const troopsProduced = Math.min(
+      availableCapacity,
+      c.productionRate * elapsedSec,
+    );
+    const goldEarned = c.goldIncome * elapsedSec;
+    const popSpace = Math.max(0, c.maxPopulation - c.population);
+    const popGrown = Math.min(popSpace, c.popGrowthRate * elapsedSec);
+
+    if (troopsProduced > 0.1 || goldEarned > 1) {
+      c.troops = Math.min(
+        c.capacity,
+        Number((c.troops + troopsProduced).toFixed(1)),
+      );
+      c.gold = Math.max(0, Number((c.gold + goldEarned).toFixed(1)));
+      c.population = Math.min(
+        c.maxPopulation,
+        Math.floor(c.population + popGrown),
+      );
+
+      const elapsedMin = Math.floor(elapsedSec / 60);
+      const timeStr =
+        elapsedMin >= 60
+          ? `${Math.floor(elapsedMin / 60)} saat ${elapsedMin % 60} dk`
+          : `${elapsedMin} dakika`;
+
+      this.onSound("celebration");
+      this.onEvent(
+        `🎖️ Çevrimdışı Gelir (${timeStr}): +${Math.floor(troopsProduced)} asker ve +${Math.floor(goldEarned)} altın toplandı! (Asker: ${Math.floor(c.troops)}/${c.capacity})`,
+      );
+
+      this.sync.broadcast({
+        type: "SYNC_COUNTRY_STATS",
+        countryId: c.id,
+        stats: {
+          troops: Number(c.troops.toFixed(1)),
+          gold: Math.floor(c.gold),
+          population: Math.floor(c.population),
+          color: c.color,
+          upgrades: c.upgrades,
+          lastActiveTime: now,
+        },
+      });
+
+      return {
+        troops: Math.floor(troopsProduced),
+        gold: Math.floor(goldEarned),
+        elapsedSec,
+        timeStr,
+      };
+    }
+    return null;
   }
 
   loadChatMessages() {}
@@ -271,6 +360,7 @@ export class WorldSimulationEngine {
     saveMyCountryId(c.id);
     this.scheduleSave();
     this.onEvent(`${c.name} devletinin yönetimi bu cihaza bağlandı!`);
+    this.processOfflineProgress();
     return { ok: true, country: c };
   }
 
@@ -441,25 +531,35 @@ export class WorldSimulationEngine {
 
       this._recalculateDerivedStats(c);
 
+      // Continuous troop production runs for both active and offline countries up to their capacity limit!
+      if (c.troops < c.capacity) {
+        c.troops = Math.min(
+          c.capacity,
+          c.troops + c.productionRate * deltaTimeSec,
+        );
+      }
+
+      if (c.population < c.maxPopulation) {
+        c.population = Math.min(
+          c.maxPopulation,
+          c.population + c.popGrowthRate * deltaTimeSec,
+        );
+      }
+
+      c.gold += c.goldIncome * deltaTimeSec;
+
       const isMyCountry = c.id === this.myCountryId;
-      // Continuous local troop production runs for the player's own country.
-      // Other players' true troop counts arrive in real-time via SYNC_COUNTRY_STATS so numbers never desync.
       if (isMyCountry) {
-        if (c.troops < c.capacity) {
-          c.troops = Math.min(
-            c.capacity,
-            c.troops + c.productionRate * deltaTimeSec,
-          );
+        c.lastActiveTime = Date.now();
+        if (
+          !this._lastActivePersist ||
+          Date.now() - this._lastActivePersist > 8000
+        ) {
+          this._lastActivePersist = Date.now();
+          try {
+            localStorage.setItem(`sf_last_active_${c.id}`, String(Date.now()));
+          } catch {}
         }
-
-        if (c.population < c.maxPopulation) {
-          c.population = Math.min(
-            c.maxPopulation,
-            c.population + c.popGrowthRate * deltaTimeSec,
-          );
-        }
-
-        c.gold += c.goldIncome * deltaTimeSec;
       }
     }
 
