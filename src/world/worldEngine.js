@@ -198,6 +198,30 @@ export class WorldSimulationEngine {
     return this.countryMap.get(this.myCountryId) || null;
   }
 
+  // Cleanly abandon current country so the player can found a new one without auto-reattaching
+  abandonMyCountry() {
+    const c = this.getMyCountry();
+    if (c) {
+      c.deviceId = null;
+      this.sync.broadcast({
+        type: 'SYNC_COUNTRY_STATS',
+        countryId: c.id,
+        stats: {
+          troops: Number(c.troops.toFixed(1)),
+          gold: Math.floor(c.gold),
+          population: Math.floor(c.population),
+          color: c.color,
+          upgrades: c.upgrades,
+        },
+      });
+    }
+    this.myCountryId = null;
+    try {
+      localStorage.removeItem('sf_my_country_id');
+    } catch {}
+    this.saveState();
+  }
+
   // Link this app/browser instance to an existing country created by the player (e.g. Web -> Android App)
   claimExistingCountry(countryId) {
     const c = this.countryMap.get(countryId);
@@ -247,7 +271,10 @@ export class WorldSimulationEngine {
 
   // Find nearest owned coastal pixel (port) to launch a ship toward (targetX, targetY)
   findNearestOwnedPort(countryId, targetX, targetY) {
-    const b = (this.countryBounds || this.computeCountryBounds()).get(countryId);
+    if (this.dirtyRegions || !this.countryBounds) {
+      this.computeCountryBounds();
+    }
+    const b = this.countryBounds?.get(countryId);
     if (!b || b.count === 0) return null;
 
     let bestPort = null;
@@ -419,20 +446,20 @@ export class WorldSimulationEngine {
     this._recalculateDerivedStats(country);
     this.dirtyPixels = true;
     this.dirtyRegions = true;
-    this.onSound('celebration');
+
     if (ship.countryId === this.myCountryId) {
+      this.onSound('celebration');
       this.onEvent(`Donanman karşı kıyıya çıkarma yaptı! (${ship.toX}, ${ship.toY})`);
+      this.sync.broadcast({
+        type: 'CONQUER_PIXEL',
+        countryId: ship.countryId,
+        x: ship.toX,
+        y: ship.toY,
+        cost: 0,
+      });
     }
 
-    this.sync.broadcast({
-      type: 'CONQUER_PIXEL',
-      countryId: ship.countryId,
-      x: ship.toX,
-      y: ship.toY,
-      cost: 0,
-    });
-
-    this.saveState();
+    this.scheduleSave();
   }
 
   buyUpgrade(countryId, upgradeKey) {
@@ -685,20 +712,6 @@ export class WorldSimulationEngine {
     country.landCount++;
     country.population += 5;
 
-    // Record for 5-Second Undo if this was our own country
-    if (countryId === this.myCountryId) {
-      this.undoStack.push({
-        countryId,
-        x,
-        y,
-        prevOwner,
-        cost: check.cost,
-        time: Date.now(),
-      });
-      const cutoff = Date.now() - 5000;
-      this.undoStack = this.undoStack.filter((u) => u.time >= cutoff);
-    }
-
     if (prevOwner > 0) {
       const prevCountry = this.countryMap.get(prevOwner);
       if (prevCountry) {
@@ -709,13 +722,26 @@ export class WorldSimulationEngine {
         }
         this.dirtyRegions = true;
       }
-    } else {
-      // O(1) incremental bounding box expansion (avoids 500,000-pixel scan on mobile!)
-      this._expandCountryBound(countryId, x, y);
     }
+    this._expandCountryBound(countryId, x, y);
 
     // Automatically detect and absorb any small enclosed neutral holes left inside territory
-    this.fillEnclosedCavities(countryId, x, y);
+    const filledCavities = this.fillEnclosedCavities(countryId, x, y);
+
+    // Record for 5-Second Undo if this was our own country (including any auto-filled cavities)
+    if (countryId === this.myCountryId) {
+      this.undoStack.push({
+        countryId,
+        x,
+        y,
+        prevOwner,
+        cost: check.cost,
+        cavities: filledCavities,
+        time: Date.now(),
+      });
+      const cutoff = Date.now() - 5000;
+      this.undoStack = this.undoStack.filter((u) => u.time >= cutoff);
+    }
 
     this._recalculateDerivedStats(country);
 
@@ -737,7 +763,7 @@ export class WorldSimulationEngine {
   // Automatically fills neutral land pockets (cavities) completely enclosed by the country
   fillEnclosedCavities(countryId, targetX, targetY) {
     const country = this.countryMap.get(countryId);
-    if (!country) return 0;
+    if (!country) return [];
 
     const candidates = [];
     for (let dy = -2; dy <= 2; dy++) {
@@ -753,9 +779,9 @@ export class WorldSimulationEngine {
       }
     }
 
-    if (candidates.length === 0) return 0;
+    if (candidates.length === 0) return [];
 
-    let totalFilled = 0;
+    const filledCoords = [];
     const visitedGlobal = new Set();
 
     for (const startIdx of candidates) {
@@ -817,7 +843,7 @@ export class WorldSimulationEngine {
           const px = idx % MAP_W;
           const py = (idx / MAP_W) | 0;
           this._expandCountryBound(countryId, px, py);
-          totalFilled++;
+          filledCoords.push({ x: px, y: py });
 
           this.sync.broadcast({
             type: 'CONQUER_PIXEL',
@@ -832,14 +858,14 @@ export class WorldSimulationEngine {
       }
     }
 
-    if (totalFilled > 0) {
+    if (filledCoords.length > 0) {
       this._recalculateDerivedStats(country);
       this.dirtyPixels = true;
       this.dirtyRegions = true;
-      this.onEvent(`${totalFilled} adet iç boşluk pikseli otomatik dolduruldu!`);
+      this.onEvent(`${filledCoords.length} adet iç boşluk pikseli otomatik dolduruldu!`);
     }
 
-    return totalFilled;
+    return filledCoords;
   }
 
   // 5-Second Undo for mistakenly conquered pixels
@@ -860,9 +886,31 @@ export class WorldSimulationEngine {
     }
 
     this.owners[idx] = item.prevOwner;
-    country.landCount = Math.max(1, country.landCount - 1);
+    let removedCount = 1;
+
+    // Also revert any enclosed cavity pixels that were auto-filled by this conquest
+    if (Array.isArray(item.cavities) && item.cavities.length > 0) {
+      for (const cav of item.cavities) {
+        const cIdx = cav.y * MAP_W + cav.x;
+        if (this.owners[cIdx] === item.countryId) {
+          this.owners[cIdx] = 0;
+          removedCount++;
+          this.sync.broadcast({
+            type: 'UNDO_PIXEL',
+            countryId: item.countryId,
+            x: cav.x,
+            y: cav.y,
+            prevOwner: 0,
+            cost: 0,
+          });
+        }
+      }
+    }
+
+    country.landCount = Math.max(1, country.landCount - removedCount);
+    country.population = Math.max(15, country.population - 5 - (removedCount - 1) * 3);
+    this._recalculateDerivedStats(country);
     country.troops = Math.min(country.capacity, Number((country.troops + item.cost).toFixed(1)));
-    country.population = Math.max(15, country.population - 5);
 
     if (item.prevOwner > 0) {
       const prevC = this.countryMap.get(item.prevOwner);
@@ -872,9 +920,9 @@ export class WorldSimulationEngine {
       }
     }
 
+    this.computeCountryBounds();
     this.dirtyPixels = true;
-    this.dirtyRegions = true;
-    this._recalculateDerivedStats(country);
+    this.dirtyRegions = false;
     this.saveState();
 
     this.sync.broadcast({
@@ -885,6 +933,7 @@ export class WorldSimulationEngine {
       prevOwner: item.prevOwner,
       cost: item.cost,
     });
+    this.sync.publishMyCountrySnapshot();
 
     this.onEvent('Son fethedilen piksel geri alındı ve askerin iade edildi!');
     return { ok: true, x: item.x, y: item.y, remainingUndos: this.undoStack.length };
@@ -906,8 +955,10 @@ export class WorldSimulationEngine {
         this._recalculateDerivedStats(pc);
       }
     }
+    this.computeCountryBounds();
     this.dirtyPixels = true;
-    this.dirtyRegions = true;
+    this.dirtyRegions = false;
+    this.scheduleSave();
   }
 
   // O(1) incremental bounding box expansion when conquering a pixel
@@ -964,8 +1015,10 @@ export class WorldSimulationEngine {
     const country = this.countryMap.get(countryId);
     if (!country) return { ok: false, reason: 'Devlet bulunamadı.' };
 
-    const bounds = this.countryBounds || this.computeCountryBounds();
-    const b = bounds.get(countryId);
+    if (this.dirtyRegions || !this.countryBounds) {
+      this.computeCountryBounds();
+    }
+    const b = this.countryBounds.get(countryId);
     if (!b || b.count === 0) return { ok: false, reason: 'Toprak bulunamadı.' };
 
     const centerX = b.sumX / b.count;
@@ -990,6 +1043,7 @@ export class WorldSimulationEngine {
           (y > 0 && this.owners[idx - MAP_W] === countryId) ||
           (y < MAP_H - 1 && this.owners[idx + MAP_W] === countryId);
         if (!isAdj) continue;
+        if (this.isSnakingConquest(countryId, x, y)) continue;
 
         // Prefer neutral pixels closest to center so country grows in a compact, strong shape
         const isEnemy = this.owners[idx] > 0;
@@ -1033,7 +1087,7 @@ export class WorldSimulationEngine {
       };
     }
 
-    if (creatorIp) {
+    if (creatorIp && creatorIp !== 'unknown' && creatorIp !== '127.0.0.1') {
       const countForIp = this.countries.filter((c) => c.creatorIp === creatorIp && c.landCount > 0).length;
       if (countForIp >= 2) {
         return { ok: false, reason: 'Bu IP adresinden en fazla 2 ülke oluşturulabilir!' };
@@ -1126,22 +1180,14 @@ export class WorldSimulationEngine {
     }
   }
 
-  async handleRemoteNewCountry(remoteData) {
-    if (this.countryMap.has(remoteData.id)) return;
+  handleRemoteNewCountry(remoteData) {
+    if (!remoteData || !remoteData.id || this.countryMap.has(remoteData.id)) return;
 
     const flagUrl = remoteData.flagDataUrl || this._generateFallbackFlagUrl(remoteData.name, remoteData.color);
-    let flagRgba = null;
-    if (flagUrl) {
-      try {
-        const decoded = await loadDataUrlToFlagBuffer(flagUrl);
-        flagRgba = decoded.rgba;
-      } catch {}
-    }
-
     const country = this._normalizeCountry({
       ...remoteData,
       flagDataUrl: flagUrl,
-      flagRgba,
+      flagRgba: null,
       landCount: 1,
     });
 
@@ -1155,6 +1201,15 @@ export class WorldSimulationEngine {
     this._expandCountryBound(country.id, country.capitalX, country.capitalY);
     this.dirtyPixels = true;
     this.scheduleSave();
+
+    if (flagUrl) {
+      loadDataUrlToFlagBuffer(flagUrl)
+        .then((decoded) => {
+          country.flagRgba = decoded.rgba;
+          this.dirtyPixels = true;
+        })
+        .catch(() => {});
+    }
   }
 
   // Export up to maxPts [x1, y1, x2, y2...] coordinates for a country (used by cloud sync)
@@ -1177,30 +1232,38 @@ export class WorldSimulationEngine {
     return pts;
   }
 
-  // Handle remote country + territory sync packet from cloud (Phone <-> PC)
-  async handleRemoteCountrySyncPacket(remoteCountry, pts) {
+  // Handle remote country + territory sync packet from cloud (Phone <-> PC) — 100% SYNCHRONOUS to avoid async race overwrites!
+  handleRemoteCountrySyncPacket(remoteCountry, pts, packetTime = 0) {
     if (!remoteCountry || !remoteCountry.id) return;
 
     let country = this.countryMap.get(remoteCountry.id);
+    if (country && packetTime > 0 && country._lastSyncTime && packetTime < country._lastSyncTime) {
+      // Ignore stale out-of-order history packet older than what we already applied!
+      return;
+    }
+
     if (!country) {
       const flagUrl = remoteCountry.flagDataUrl || this._generateFallbackFlagUrl(remoteCountry.name, remoteCountry.color);
-      let flagRgba = null;
-      if (flagUrl) {
-        try {
-          const decoded = await loadDataUrlToFlagBuffer(flagUrl);
-          flagRgba = decoded.rgba;
-        } catch {}
-      }
       country = this._normalizeCountry({
         ...remoteCountry,
         flagDataUrl: flagUrl,
-        flagRgba,
+        flagRgba: null,
       });
+      country._lastSyncTime = packetTime || Date.now();
       if (!this.countries.some((c) => c.id === country.id)) {
         this.countries.push(country);
       }
       this.countryMap.set(country.id, country);
+      if (flagUrl) {
+        loadDataUrlToFlagBuffer(flagUrl)
+          .then((decoded) => {
+            country.flagRgba = decoded.rgba;
+            this.dirtyPixels = true;
+          })
+          .catch(() => {});
+      }
     } else {
+      if (packetTime > 0) country._lastSyncTime = packetTime;
       if (remoteCountry.color) country.color = remoteCountry.color;
       if (remoteCountry.flagDataUrl && !country.flagRgba) {
         country.flagDataUrl = remoteCountry.flagDataUrl;
@@ -1293,9 +1356,8 @@ export class WorldSimulationEngine {
         this._recalculateDerivedStats(prevC);
       }
       this.dirtyRegions = true;
-    } else {
-      this._expandCountryBound(countryId, x, y);
     }
+    this._expandCountryBound(countryId, x, y);
 
     this.dirtyPixels = true;
     this.scheduleSave();
@@ -1316,10 +1378,12 @@ export class WorldSimulationEngine {
     this.ships.push({ ...remoteShip });
   }
 
-  handleRemoteSyncCountryStats(countryId, stats) {
+  handleRemoteSyncCountryStats(countryId, stats, packetTime = 0) {
     if (countryId === this.myCountryId) return;
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
+    if (packetTime > 0 && country._lastStatsTime && packetTime < country._lastStatsTime) return;
+    if (packetTime > 0) country._lastStatsTime = packetTime;
     if (stats.color) {
       country.color = stats.color;
       this.dirtyPixels = true;

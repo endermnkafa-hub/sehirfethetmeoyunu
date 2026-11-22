@@ -121,7 +121,31 @@ export class SharedWorldSync {
             }
           } catch {}
         };
+        es.onerror = () => {
+          this.isCloudConnected = false;
+          this.onRemoteUpdate();
+        };
       } catch {}
+    }
+  }
+
+  destroy() {
+    if (this._pollInterval) clearInterval(this._pollInterval);
+    if (this._announceInterval) clearInterval(this._announceInterval);
+    if (this._statsInterval) clearInterval(this._statsInterval);
+    if (this._batchTimer) clearTimeout(this._batchTimer);
+    if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
+    if (this.eventSource) {
+      try { this.eventSource.close(); } catch {}
+      this.eventSource = null;
+    }
+    if (this.channel) {
+      try { this.channel.close(); } catch {}
+      this.channel = null;
+    }
+    if (typeof window !== 'undefined' && this._storageListener) {
+      window.removeEventListener('storage', this._storageListener);
+      this._storageListener = null;
     }
   }
 
@@ -251,6 +275,12 @@ export class SharedWorldSync {
       countryId,
       pts,
     });
+    // If more pixels remain queued, schedule the next batch flush
+    if (this._pendingPixels.length > 0) {
+      this._batchTimer = setTimeout(() => {
+        this._flushPixelBatch(countryId);
+      }, 300);
+    }
     // Send full authoritative country snapshot 1.2s after conquest stops so all remote devices match 100%
     if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
     this._authoritativeSnapshotTimer = setTimeout(() => {
@@ -306,6 +336,7 @@ export class SharedWorldSync {
       ...packet,
       _msgId: packet._msgId || `${this.tabId}_${Date.now()}_${++this._msgSeq}`,
       _senderTabId: this.tabId,
+      _sentAt: packet._sentAt || Date.now(),
     };
     this.seenMsgIds.add(fullPacket._msgId);
 
@@ -335,7 +366,7 @@ export class SharedWorldSync {
       }
       this.onRemoteUpdate();
     } else if (data.type === 'COUNTRY_SYNC_PACKET' && data.country) {
-      this.engine.handleRemoteCountrySyncPacket(data.country, data.pts);
+      this.engine.handleRemoteCountrySyncPacket(data.country, data.pts, data._sentAt || 0);
       if (data.country.deviceId === this.engine.myDeviceId && !this.engine.myCountryId) {
         this.engine.myCountryId = data.country.id;
       }
@@ -354,7 +385,7 @@ export class SharedWorldSync {
       this.engine.handleRemoteLaunchShip(data.ship);
       this.onRemoteUpdate();
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
-      this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
+      this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats, data._sentAt || 0);
       this.onRemoteUpdate();
     } else if (data.type === 'UNDO_PIXEL') {
       this.engine.handleRemoteUndoPixel(data.countryId, data.x, data.y, data.prevOwner);

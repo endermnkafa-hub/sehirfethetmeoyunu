@@ -174,12 +174,14 @@ export class WorldMapRenderer {
           engine.dirtyPixels = true;
         });
 
-        if (img && b.count === (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1)) {
-          ctx.drawImage(img, sx, sy, sw, sh);
+        if (b.count === (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1)) {
+          if (img) {
+            ctx.drawImage(img, sx, sy, sw, sh);
+          }
+          ctx.strokeStyle = country.color || '#FBBF24';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(sx, sy, sw, sh);
         }
-        ctx.strokeStyle = country.color || '#FBBF24';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(sx, sy, sw, sh);
       }
     }
 
@@ -294,7 +296,11 @@ export class WorldMapRenderer {
       ctx.strokeStyle = pillBorderColor;
       ctx.lineWidth = isMe ? 1.8 : 1.3;
       ctx.beginPath();
-      ctx.roundRect(pillX, labelY, tw, th, 6);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(pillX, labelY, tw, th, 6);
+      } else {
+        ctx.rect(pillX, labelY, tw, th);
+      }
       ctx.fill();
       ctx.stroke();
 

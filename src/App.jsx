@@ -107,7 +107,7 @@ export default function App() {
   const [savedWorldGame, setSavedWorldGame] = useState(() => {
     try {
       const myCountryId = localStorage.getItem('sf_my_country_id');
-      const raw = localStorage.getItem('sf_shared_world_v4_data');
+      const raw = localStorage.getItem('sf_shared_world_v9_clean');
       const parsed = raw ? JSON.parse(raw) : null;
       return myCountryId && parsed ? parsed : null;
     } catch {

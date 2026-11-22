@@ -80,29 +80,43 @@ export default function WorldGame({ onReturnToModeSelect }) {
     myCountry: null,
     totalCountriesCount: 0,
     connectedPeers: 0,
+    isCloudConnected: false,
     time: 0,
   });
 
-  // Global Chat State
+  // Global Chat State (minimized by default on mobile phones so it doesn't cover the map)
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
-  const [chatMinimized, setChatMinimized] = useState(false);
+  const [chatMinimized, setChatMinimized] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 640 : false
+  );
   const chatBottomRef = useRef(null);
 
   // Mouse & Touch interaction tracking
   const hoveredPosRef = useRef(null);
   const isMouseDownRef = useRef(false);
   const isPaintingRef = useRef(false);
+  const conqueredOnDownRef = useRef(false);
   const lastCellRef = useRef(null);
   const tapOriginRef = useRef({ x: 0, y: 0, moved: false, pointerCount: 0 });
   const pointersRef = useRef(new Map());
   const lastPinchDistRef = useRef(0);
   const lastPinchEndTimeRef = useRef(0);
   const lastTickTimeRef = useRef(performance.now());
+  const soundEnabledRef = useRef(soundEnabled);
+  const toastTimerRef = useRef(null);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
 
   const showToast = useCallback((msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3400);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      toastTimerRef.current = null;
+      setToastMessage(null);
+    }, 3400);
   }, []);
 
   // Initialize Engine & Renderer singleton
@@ -114,7 +128,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
       onEvent: (msg) => showToast(msg),
       onChat: (msgs) => setChatMessages([...msgs]),
       onSound: (sound) => {
-        if (!soundEnabled) return;
+        if (!soundEnabledRef.current) return;
         if (sound === 'pencil') soundManager.playPencil();
         else if (sound === 'celebration') {
           soundManager.playCelebration();
@@ -123,6 +137,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
       },
     });
   }
+
+  // Clean up cloud sync intervals & EventSource on unmount
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      engineRef.current?.sync?.destroy?.();
+    };
+  }, []);
 
   // Load initial chat messages on mount
   useEffect(() => {
@@ -333,10 +355,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
       const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 6);
       if (smartTarget && !smartTarget.check.isNaval && myCountry.troops >= smartTarget.check.cost) {
         isPaintingRef.current = true;
+        conqueredOnDownRef.current = true;
         eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
       } else {
         // If player doesn't have enough troops or touched outside border, allow smooth camera panning!
         isPaintingRef.current = false;
+        conqueredOnDownRef.current = false;
       }
     }
   }, [getMapCoords, toolMode]);
@@ -426,9 +450,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
       lastPinchEndTimeRef.current = performance.now();
     }
 
+    const alreadyConqueredOnDown = conqueredOnDownRef.current;
+
     if (pointersRef.current.size === 0) {
       isMouseDownRef.current = false;
       isPaintingRef.current = false;
+      conqueredOnDownRef.current = false;
       lastCellRef.current = null;
     }
 
@@ -471,7 +498,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
         } else {
           showToast('Deniz veya okyanusa ülke kurulamaz! Gri bir kara pikseline dokun.');
         }
-      } else {
+      } else if (!alreadyConqueredOnDown) {
         const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 6);
         if (smartTarget) {
           const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
@@ -566,10 +593,16 @@ export default function WorldGame({ onReturnToModeSelect }) {
           const latestUndo = undos.length > 0 ? undos[undos.length - 1] : null;
           const undoSec = latestUndo ? Math.max(0, Math.ceil((5000 - (Date.now() - latestUndo.time)) / 1000)) : 0;
 
+          const activeCountryIds = new Set();
+          for (const c of eng.countries) {
+            if (c.landCount > 0) activeCountryIds.add(c.id);
+          }
+
           setHud({
             myCountry: myC ? { ...myC } : null,
-            totalCountriesCount: eng.countries.filter((c) => c.landCount > 0).length,
+            totalCountriesCount: activeCountryIds.size,
             connectedPeers: eng.sync?.getConnectedPeersCount() || 0,
+            isCloudConnected: Boolean(eng.sync?.isCloudConnected),
             canUndo: undos.length > 0,
             undoSeconds: undoSec,
             time: now,
@@ -725,14 +758,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
       </div>
 
       {/* GLOBAL CHAT (SOL ÜST TARAF) */}
-      <div className="absolute top-14 sm:top-16 left-2 sm:left-4 z-20 flex flex-col pointer-events-none max-w-[270px] sm:max-w-xs w-full">
+      <div className="absolute top-24 sm:top-16 left-2 sm:left-4 z-20 flex flex-col pointer-events-none max-w-[260px] sm:max-w-xs w-full">
         <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-2xl p-2 sm:p-2.5 shadow-2xl transition">
           {/* Header */}
           <div className="flex items-center justify-between pb-1.5 border-b border-slate-700/60 mb-1.5">
             <div className="flex items-center gap-1.5 text-xs font-black text-amber-400">
               <MessageSquare size={14} className="text-amber-400" />
               <span>Global Sohbet</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" title="Canlı Bulut Senkronizasyonu" />
+              <span
+                className={`w-2 h-2 rounded-full ml-0.5 ${
+                  hud.isCloudConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
+                }`}
+                title={hud.isCloudConnected ? 'Canlı Bulut Bağlı' : 'Buluta Bağlanıyor...'}
+              />
             </div>
             <button
               onClick={() => setChatMinimized((prev) => !prev)}
@@ -1344,10 +1382,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       `"${myCountry.name}" devletinin yönetimini bu cihazdan bırakmak ve haritada sıfırdan yeni bir devlet kurmak istiyor musun?`
                     )
                   ) {
-                    localStorage.removeItem('sf_my_country_id');
-                    if (engineRef.current) {
-                      engineRef.current.myCountryId = null;
-                    }
+                    engineRef.current?.abandonMyCountry();
                     setShowRules(false);
                     showToast('Devlet yönetimi bırakıldı. Sahipsiz gri bir piksele dokunarak yeni devletini kurabilirsin!');
                   }
