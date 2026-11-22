@@ -15,12 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-pages:
-    name: 7/24 Web Sitesi (GitHub Pages)
+  build-site:
+    name: Web Sitesi Derle
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Kodu Cek
         uses: actions/checkout@v4
@@ -45,6 +42,14 @@ jobs:
         with:
           path: './dist'
 
+  deploy-pages:
+    name: 7/24 Web Sitesi (GitHub Pages)
+    runs-on: ubuntu-latest
+    needs: build-site
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: GitHub Pages Yayinla
         id: deployment
         uses: actions/deploy-pages@v4
