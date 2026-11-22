@@ -320,7 +320,20 @@ export class WorldSimulationEngine {
         }
       }
     }
-    return this.countryMap.get(this.myCountryId) || null;
+    const country = this.countryMap.get(this.myCountryId) || null;
+    if (country && typeof localStorage !== 'undefined') {
+      const localFlag = localStorage.getItem('sf_my_country_flag');
+      if (localFlag && (!country.flagRgba || !country.flagDataUrl || country.flagDataUrl.length < 500)) {
+        country.flagDataUrl = localFlag;
+        loadDataUrlToFlagBuffer(localFlag)
+          .then((decoded) => {
+            country.flagRgba = decoded.rgba;
+            this.dirtyPixels = true;
+          })
+          .catch(() => {});
+      }
+    }
+    return country;
   }
 
   // Cleanly abandon current country so the player can found a new one without auto-reattaching
@@ -1489,6 +1502,11 @@ export class WorldSimulationEngine {
 
     this.myCountryId = newId;
     saveMyCountryId(newId);
+    if ((finalFlagDataUrl || flagDataUrl) && typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem('sf_my_country_flag', finalFlagDataUrl || flagDataUrl);
+      } catch {}
+    }
 
     this.dirtyPixels = true;
     this.dirtyRegions = true;
@@ -1643,9 +1661,13 @@ export class WorldSimulationEngine {
     }
 
     if (!country) {
-      const flagUrl =
-        remoteCountry.flagDataUrl ||
-        this._generateFallbackFlagUrl(remoteCountry.name, remoteCountry.color);
+      let flagUrl = remoteCountry.flagDataUrl;
+      if (!flagUrl && remoteCountry.id === this.myCountryId && typeof localStorage !== 'undefined') {
+        flagUrl = localStorage.getItem('sf_my_country_flag');
+      }
+      if (!flagUrl) {
+        flagUrl = this._generateFallbackFlagUrl(remoteCountry.name, remoteCountry.color);
+      }
       country = this._normalizeCountry({
         ...remoteCountry,
         flagDataUrl: flagUrl,
@@ -1667,14 +1689,21 @@ export class WorldSimulationEngine {
     } else {
       if (packetTime > 0) country._lastSyncTime = packetTime;
       if (remoteCountry.color) country.color = remoteCountry.color;
-      if (remoteCountry.flagDataUrl && !country.flagRgba) {
-        country.flagDataUrl = remoteCountry.flagDataUrl;
-        loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl)
-          .then((res) => {
-            country.flagRgba = res.rgba;
-            this.dirtyPixels = true;
-          })
-          .catch(() => {});
+
+      // Never overwrite an existing custom flag with an empty/fallback flag!
+      if (remoteCountry.flagDataUrl && remoteCountry.flagDataUrl !== country.flagDataUrl) {
+        // If this is my country and I have a local HD flag, protect it
+        const isMyCountry = country.id === this.myCountryId;
+        const localFlag = isMyCountry && typeof localStorage !== 'undefined' ? localStorage.getItem('sf_my_country_flag') : null;
+        if (!localFlag) {
+          country.flagDataUrl = remoteCountry.flagDataUrl;
+          loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl)
+            .then((res) => {
+              country.flagRgba = res.rgba;
+              this.dirtyPixels = true;
+            })
+            .catch(() => {});
+        }
       }
       if (remoteCountry.upgrades) {
         country.upgrades = { ...DEFAULT_UPGRADES, ...remoteCountry.upgrades };
@@ -1825,6 +1854,58 @@ export class WorldSimulationEngine {
     if (stats.upgrades)
       country.upgrades = { ...DEFAULT_UPGRADES, ...stats.upgrades };
     this._recalculateDerivedStats(country);
+  }
+
+  // Update country flag / custom image dynamically in real-time
+  async updateCountryFlag(countryId, dataUrl) {
+    const c = this.countryMap.get(countryId);
+    if (!c || !dataUrl) return false;
+
+    try {
+      const decoded = await loadDataUrlToFlagBuffer(dataUrl);
+      const finalFlag = decoded.dataUrl || dataUrl;
+      c.flagDataUrl = finalFlag;
+      c.flagRgba = decoded.rgba;
+
+      if (countryId === this.myCountryId && typeof localStorage !== 'undefined') {
+        localStorage.setItem('sf_my_country_flag', finalFlag);
+      }
+
+      this.dirtyPixels = true;
+      this.dirtyRegions = true;
+
+      const compactFlag = this.sync.getCompactFlagFromCountry(c);
+      this.sync.broadcast({
+        type: 'UPDATE_COUNTRY_FLAG',
+        countryId,
+        flagDataUrl: compactFlag || finalFlag,
+      });
+
+      return true;
+    } catch (err) {
+      console.error('[Engine] updateCountryFlag error:', err);
+      return false;
+    }
+  }
+
+  handleRemoteUpdateFlag(countryId, flagDataUrl) {
+    if (!countryId || !flagDataUrl) return;
+    const c = this.countryMap.get(countryId);
+    if (!c) return;
+
+    // Protect local player's HD flag from lower-res remote broadcast
+    if (countryId === this.myCountryId && typeof localStorage !== 'undefined') {
+      const localFlag = localStorage.getItem('sf_my_country_flag');
+      if (localFlag) return;
+    }
+
+    c.flagDataUrl = flagDataUrl;
+    loadDataUrlToFlagBuffer(flagDataUrl)
+      .then((decoded) => {
+        c.flagRgba = decoded.rgba;
+        this.dirtyPixels = true;
+      })
+      .catch(() => {});
   }
 
   // ===== ADMIN POWERS (AUTHORIZED BY ADMIN IP ONLY) =====

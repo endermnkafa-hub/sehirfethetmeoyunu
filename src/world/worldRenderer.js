@@ -128,8 +128,8 @@ export class WorldMapRenderer {
               // Each pattern tile is 24x15 map pixels (perfect 1.6:1 flag aspect ratio)
               const TILE_W = 24;
               const TILE_H = 15;
-              const tx = (((x - minX) % TILE_W) + TILE_W) % TILE_W;
-              const ty = (((y - minY) % TILE_H) + TILE_H) % TILE_H;
+              const tx = ((x % TILE_W) + TILE_W) % TILE_W;
+              const ty = ((y % TILE_H) + TILE_H) % TILE_H;
               fx = Math.min(FLAG_W - 1, ((tx / TILE_W) * FLAG_W) | 0);
               fy = Math.min(FLAG_H - 1, ((ty / TILE_H) * FLAG_H) | 0);
             }
@@ -210,17 +210,19 @@ export class WorldMapRenderer {
         const b = bounds.get(country.id);
         if (!b || b.count === 0) continue;
 
+        // For large countries (>50 px), center the crest squarely in the heart of their territory
+        // For small countries, place it at the capital
         let crestX = country.capitalX;
         let crestY = country.capitalY;
         const capIdx = crestY * MAP_W + crestX;
-
-        // If capital is invalid or no longer owned by this country, use owned pixel nearest to centroid
-        if (
+        const needsCentroid =
+          country.landCount > 50 ||
           crestX == null ||
           crestY == null ||
           engine.owners[capIdx] !== country.id ||
-          !this.worldData.isLand[capIdx]
-        ) {
+          !this.worldData.isLand[capIdx];
+
+        if (needsCentroid) {
           const targetX = Math.round(b.sumX / b.count);
           const targetY = Math.round(b.sumY / b.count);
           let bestDist = Infinity;
@@ -304,8 +306,20 @@ export class WorldMapRenderer {
           ctx.imageSmoothingQuality = "high";
           ctx.drawImage(img, -halfW, -halfH, screenW, screenH);
         } else {
-          ctx.fillStyle = country.color || "#E11D48";
+          // Stylish fallback emblem so it's NEVER an invisible flat color box!
+          const grad = ctx.createLinearGradient(-halfW, -halfH, halfW, halfH);
+          grad.addColorStop(0, "#1e293b");
+          grad.addColorStop(1, "#0f172a");
+          ctx.fillStyle = grad;
           ctx.fillRect(-halfW, -halfH, screenW, screenH);
+
+          // Country Initials
+          ctx.fillStyle = country.color || "#FBBF24";
+          ctx.font = `900 ${Math.max(9, Math.min(18, Math.round(screenH * 0.52)))}px Inter, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const initials = (country.name || "D").slice(0, 3).toUpperCase();
+          ctx.fillText(initials, 0, 1);
         }
         ctx.restore();
 

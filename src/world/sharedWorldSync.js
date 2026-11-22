@@ -210,6 +210,7 @@ export class SharedWorldSync {
     const latestSnapshot = new Map(); // countryId -> { idx, data }
     const latestStats = new Map(); // countryId -> { idx, data }
     const newCountries = new Map(); // countryId -> { idx, data }
+    const updateFlags = new Map(); // countryId -> { idx, flagDataUrl }
     const pixelOps = []; // { idx, data }
     const chats = [];
 
@@ -221,6 +222,8 @@ export class SharedWorldSync {
         deletedCountries.set(p.countryId, i);
       } else if (p.type === 'NEW_COUNTRY' && p.country?.id) {
         newCountries.set(p.country.id, { idx: i, data: p });
+      } else if (p.type === 'UPDATE_COUNTRY_FLAG' && p.countryId && p.flagDataUrl) {
+        updateFlags.set(p.countryId, { idx: i, flagDataUrl: p.flagDataUrl });
       } else if (p.type === 'COUNTRY_SYNC_PACKET' && p.country?.id) {
         latestSnapshot.set(p.country.id, { idx: i, data: p });
       } else if (p.type === 'SYNC_COUNTRY_STATS' && p.countryId) {
@@ -251,6 +254,18 @@ export class SharedWorldSync {
     for (const [cid, entry] of latestSnapshot.entries()) {
       const delIdx = deletedCountries.get(cid);
       if (delIdx !== undefined && delIdx > entry.idx) continue;
+
+      // Restore flag from newCountries or updateFlags if snapshot was stripped due to payload size!
+      if (!entry.data.country?.flagDataUrl) {
+        const flagFromUpdate = updateFlags.get(cid)?.flagDataUrl;
+        const flagFromNew = newCountries.get(cid)?.data?.country?.flagDataUrl;
+        if (flagFromUpdate) {
+          entry.data.country.flagDataUrl = flagFromUpdate;
+        } else if (flagFromNew) {
+          entry.data.country.flagDataUrl = flagFromNew;
+        }
+      }
+
       this.engine.handleRemoteCountrySyncPacket(
         entry.data.country,
         entry.data.pts,
@@ -531,6 +546,9 @@ export class SharedWorldSync {
       if (data.country.deviceId === this.engine.myDeviceId && !this.engine.myCountryId) {
         this.engine.myCountryId = data.country.id;
       }
+      this.onRemoteUpdate();
+    } else if (data.type === 'UPDATE_COUNTRY_FLAG' && data.countryId && data.flagDataUrl) {
+      this.engine.handleRemoteUpdateFlag(data.countryId, data.flagDataUrl);
       this.onRemoteUpdate();
     } else if (data.type === 'COUNTRY_SYNC_PACKET' && data.country) {
       this.engine.handleRemoteCountrySyncPacket(

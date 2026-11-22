@@ -61,6 +61,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const engineRef = useRef(null);
   const rendererRef = useRef(null);
   const fileInputRef = useRef(null);
+  const updateFlagInputRef = useRef(null);
 
   // Camera Ref: panX, panY, zoom
   const cameraRef = useRef({ zoom: 1.0, panX: 0, panY: 0 });
@@ -286,6 +287,34 @@ export default function WorldGame({ onReturnToModeSelect }) {
         showToast("Resim seçildi!");
       };
       reader.readAsDataURL(file);
+    },
+    [showToast],
+  );
+
+  // Handle Dynamic Custom Flag/Image Update for Existing Country
+  const handleUpdateFlagFile = useCallback(
+    (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const rawDataUrl = ev.target?.result;
+        if (!rawDataUrl) return;
+        const myC = engineRef.current?.getMyCountry();
+        if (!myC) {
+          showToast("Önce bir devletin olmalı!");
+          return;
+        }
+        const ok = await engineRef.current?.updateCountryFlag(myC.id, rawDataUrl);
+        if (ok) {
+          showToast("Devlet resmi / bayrağı başarıyla güncellendi!");
+        } else {
+          showToast("Resim güncellenirken bir hata oluştu.");
+        }
+      };
+      reader.readAsDataURL(file);
+      e.target.value = "";
     },
     [showToast],
   );
@@ -788,6 +817,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
         onChange={handleFileUpload}
         className="hidden"
       />
+      {/* Hidden File Input for Dynamic Flag Update */}
+      <input
+        ref={updateFlagInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleUpdateFlagFile}
+        className="hidden"
+      />
 
       {/* SLEEK COMPACT TOP BAR (ERGONOMIC FOR MOBILE PORTRAIT, LANDSCAPE & DESKTOP) */}
       <div
@@ -809,14 +846,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
               {/* Flag & Country Name */}
               <div className="flex items-center gap-1.5 pr-1.5 sm:pr-2 border-r border-slate-700/80">
                 <div
-                  className="w-6 h-4 sm:w-7 sm:h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
+                  onClick={() => updateFlagInputRef.current?.click()}
+                  className="w-6 h-4 sm:w-7 sm:h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950 cursor-pointer hover:scale-110 active:scale-95 transition"
                   style={{ borderColor: myCountry.color || "#FBBF24" }}
+                  title="Resmi / Bayrağı Değiştir (Tıkla)"
                 >
-                  {myCountry.flagDataUrl && (
+                  {myCountry.flagDataUrl ? (
                     <img
                       src={myCountry.flagDataUrl}
                       alt="Bayrak"
                       className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="w-full h-full"
+                      style={{ backgroundColor: myCountry.color || "#38BDF8" }}
                     />
                   )}
                 </div>
@@ -1358,6 +1402,38 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </button>
             </div>
 
+            {/* Live Flag / Custom Image Changer */}
+            <div className="mb-2.5 p-2.5 rounded-2xl bg-slate-800/70 border border-slate-700/80 flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <Upload size={16} className="text-amber-400" />
+                <span>Devlet Resmi / Bayrağı:</span>
+              </span>
+              <div className="flex items-center gap-2">
+                <div
+                  className="w-10 h-6 rounded-lg overflow-hidden border border-slate-600 bg-slate-950 flex items-center justify-center shrink-0 shadow"
+                  style={{ borderColor: myCountry.color || "#FBBF24" }}
+                >
+                  {myCountry.flagDataUrl ? (
+                    <img
+                      src={myCountry.flagDataUrl}
+                      alt="Bayrak"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-[9px] text-slate-500 font-bold">Yok</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => updateFlagInputRef.current?.click()}
+                  className="py-1.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xs transition shadow flex items-center gap-1"
+                >
+                  <Upload size={13} />
+                  <span>Resim Değiştir</span>
+                </button>
+              </div>
+            </div>
+
             {/* Live Border Color Picker */}
             <div className="mb-3 p-2.5 rounded-2xl bg-slate-800/70 border border-slate-700/80 flex items-center justify-between gap-2">
               <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
@@ -1769,6 +1845,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
                     >
                       Tüm Geliştirmeler Sv.25
+                    </button>
+                    <button
+                      onClick={() => updateFlagInputRef.current?.click()}
+                      className="col-span-2 py-2 px-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] transition shadow flex items-center justify-center gap-1.5"
+                    >
+                      <Upload size={13} />
+                      <span>Resim / Bayrak Değiştir</span>
                     </button>
                   </div>
                 </div>
