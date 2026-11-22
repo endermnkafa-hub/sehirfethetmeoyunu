@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { App as CapApp } from '@capacitor/app';
+import ModeSelection from './components/ModeSelection';
+import WorldGame from './components/WorldGame/WorldGame';
 import GameSetup from './components/GameSetup';
 import GameBoard from './components/GameBoard';
 import TurnControls from './components/TurnControls';
@@ -31,6 +33,7 @@ import { Volume2, VolumeX, BookOpen, RotateCcw, Trophy, Users, Shield, AlertTria
 const DEBUG_ENABLED = false;
 
 export default function App() {
+  const [mainView, setMainView] = useState('MODE_SELECT'); // 'MODE_SELECT' | 'WORLD_GAME' | 'FLAT_GAME'
   const [gameState, setGameState] = useState('SETUP'); // 'SETUP' | 'PLAYING' | 'GAMEOVER'
   const [gameMode, setGameMode] = useState('KLASIK'); // 'KLASIK' | 'MODERN'
   const [players, setPlayers] = useState([]);
@@ -94,6 +97,15 @@ export default function App() {
   const [savedGame, setSavedGame] = useState(() => {
     try {
       const raw = localStorage.getItem('sf_saved_game');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [savedWorldGame, setSavedWorldGame] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sf_world_empire_state');
       return raw ? JSON.parse(raw) : null;
     } catch {
       return null;
@@ -222,7 +234,7 @@ export default function App() {
     return hasAnyValidPlacingMove(grid, activePlayer.id, pendingCells, pendingWalls, walls, alliances, gameMode);
   }, [turnPhase, isMyTurn, grid, activePlayer.id, pendingCells, pendingWalls, walls, alliances, gameMode, totalToPlace]);
 
-  const returnToSetup = (broadcastReset = false) => {
+  const returnToSetup = (broadcastReset = false, backToModeSelect = true) => {
     try {
       localStorage.removeItem('sf_saved_game');
       setSavedGame(null);
@@ -248,6 +260,9 @@ export default function App() {
     setTotalToPlace(0);
     setWinner(null);
     setGameState('SETUP');
+    if (backToModeSelect) {
+      setMainView('MODE_SELECT');
+    }
   };
 
   // Update modalRefs on each render cleanly after returnToSetup is initialized
@@ -1603,6 +1618,48 @@ export default function App() {
     }
   };
 
+  if (mainView === 'MODE_SELECT') {
+    return (
+      <ModeSelection
+        onSelectMode={(mode) => {
+          soundManager.playClick();
+          if (mode === 'WORLD') {
+            setMainView('WORLD_GAME');
+          } else {
+            setMainView('FLAT_GAME');
+            setGameState('SETUP');
+          }
+        }}
+        savedWorldGame={savedWorldGame}
+        savedFlatGame={savedGame}
+        onResumeFlatGame={() => {
+          soundManager.playClick();
+          setMainView('FLAT_GAME');
+          handleResumeSavedGame();
+        }}
+        onResumeWorldGame={() => {
+          soundManager.playClick();
+          setMainView('WORLD_GAME');
+        }}
+      />
+    );
+  }
+
+  if (mainView === 'WORLD_GAME') {
+    return (
+      <WorldGame
+        onReturnToModeSelect={() => {
+          soundManager.playClick();
+          try {
+            const raw = localStorage.getItem('sf_world_empire_state');
+            setSavedWorldGame(raw ? JSON.parse(raw) : null);
+          } catch {}
+          setMainView('MODE_SELECT');
+        }}
+      />
+    );
+  }
+
   if (gameState === 'SETUP') {
     return (
       <>
@@ -1612,6 +1669,10 @@ export default function App() {
           onOpenOnline={() => setIsOnlineModalOpen(true)}
           savedGame={savedGame}
           onResumeSavedGame={handleResumeSavedGame}
+          onReturnToModeSelect={() => {
+            soundManager.playClick();
+            setMainView('MODE_SELECT');
+          }}
         />
         <RulesModal
           isOpen={isRulesOpen}

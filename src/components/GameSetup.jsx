@@ -8,6 +8,7 @@ export default function GameSetup({
   onOpenOnline,
   savedGame = null,
   onResumeSavedGame = null,
+  onReturnToModeSelect = null,
 }) {
   const [gameMode, setGameMode] = useState('KLASIK'); // 'KLASIK' | 'MODERN'
   const [playerCount, setPlayerCount] = useState(4);
@@ -65,6 +66,19 @@ export default function GameSetup({
     <div className="h-screen w-screen overflow-y-auto touch-pan-y bg-stone-100 notebook-grid flex flex-col items-center justify-start sm:justify-center p-4">
       <div className="bg-white/95 backdrop-blur-md rounded-3xl p-5 sm:p-8 shadow-2xl max-w-md w-full border-4 border-amber-300 animate-in fade-in zoom-in-95 duration-200 my-auto">
         
+        {/* Return to Mode Selection */}
+        {onReturnToModeSelect && (
+          <div className="flex justify-start mb-2">
+            <button
+              type="button"
+              onClick={onReturnToModeSelect}
+              className="px-2.5 py-1 text-xs font-bold text-stone-600 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 rounded-lg transition flex items-center gap-1 active:scale-95"
+            >
+              <span>⬅️ Mod Seçimine Dön</span>
+            </button>
+          </div>
+        )}
+
         {/* Title & Brand */}
         <div className="text-center mb-5">
           <div className="inline-block p-3 bg-amber-100 text-amber-800 rounded-2xl mb-2 shadow-inner">
