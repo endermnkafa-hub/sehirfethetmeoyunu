@@ -149,6 +149,53 @@ class SoundManager {
       // Audio play error handled
     }
   }
+
+  playClick() {
+    this.playTick();
+  }
+
+  playHit() {
+    if (!this.enabled) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(140, this.ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start();
+      osc.stop(this.ctx.currentTime + 0.12);
+    } catch {}
+  }
+
+  playCelebration() {
+    this.playWin();
+  }
+
+  playSpin() {
+    this.playTick();
+  }
 }
 
-export const soundManager = new SoundManager();
+// Wrap soundManager in Proxy so any unknown playX method fails gracefully without throwing
+const rawSoundManager = new SoundManager();
+export const soundManager = new Proxy(rawSoundManager, {
+  get(target, prop) {
+    if (prop in target) {
+      const val = target[prop];
+      return typeof val === 'function' ? val.bind(target) : val;
+    }
+    // Return safe no-op if undefined method is called
+    if (typeof prop === 'string' && prop.startsWith('play')) {
+      return () => {};
+    }
+    return undefined;
+  },
+});

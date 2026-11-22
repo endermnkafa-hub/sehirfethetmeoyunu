@@ -111,7 +111,11 @@ export default function ModeSelection({
             )}
             <button
               type="button"
-              className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-orange-600 group-hover:from-amber-400 group-hover:to-orange-500 text-stone-950 font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectMode('WORLD');
+              }}
+              className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-orange-600 group-hover:from-amber-400 group-hover:to-orange-500 text-stone-950 font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer active:scale-95"
             >
               <span>Dünya Savaşına Katıl</span>
               <ArrowRight size={18} className="group-hover:translate-x-1 transition" />
@@ -203,7 +207,11 @@ export default function ModeSelection({
             )}
             <button
               type="button"
-              className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 group-hover:from-blue-500 group-hover:to-indigo-500 text-white font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectMode('FLAT');
+              }}
+              className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 group-hover:from-blue-500 group-hover:to-indigo-500 text-white font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer active:scale-95"
             >
               <span>Düz Haritada Oyna</span>
               <ArrowRight size={18} className="group-hover:translate-x-1 transition" />
