@@ -140,6 +140,18 @@ export class WorldSimulationEngine {
     return this.countryMap.get(this.myCountryId) || null;
   }
 
+  // Link this app/browser instance to an existing country created by the player (e.g. Web -> Android App)
+  claimExistingCountry(countryId) {
+    const c = this.countryMap.get(countryId);
+    if (!c || c.landCount <= 0) return { ok: false, reason: 'Devlet bulunamadı.' };
+    this.myCountryId = c.id;
+    c.deviceId = this.myDeviceId;
+    saveMyCountryId(c.id);
+    this.scheduleSave();
+    this.onEvent(`${c.name} devletinin yönetimi bu cihaza bağlandı!`);
+    return { ok: true, country: c };
+  }
+
   // Check if a land pixel (x, y) borders sea/ocean
   isCoastalPixel(x, y) {
     if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return false;

@@ -82,12 +82,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const isMouseDownRef = useRef(false);
   const isPaintingRef = useRef(false);
   const lastCellRef = useRef(null);
-  const dragStartRef = useRef({ x: 0, y: 0 });
   const tapOriginRef = useRef({ x: 0, y: 0, moved: false, pointerCount: 0 });
   const pointersRef = useRef(new Map());
-  const pinchStartDistRef = useRef(0);
-  const pinchStartZoomRef = useRef(1);
-  const hoveredPosRef = useRef(null);
+  const lastPinchDistRef = useRef(0);
+  const lastPinchEndTimeRef = useRef(0);
   const lastTickTimeRef = useRef(performance.now());
 
   const showToast = useCallback((msg) => {
@@ -107,7 +105,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
         if (sound === 'pencil') soundManager.playPencil();
         else if (sound === 'celebration') {
           soundManager.playCelebration();
-          try { confetti({ particleCount: 65, spread: 75, origin: { y: 0.6 } }); } catch {}
+          try { confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } }); } catch {}
         }
       },
     });
@@ -123,13 +121,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
     });
   }, []);
 
+  const getBaseScale = useCallback((viewW, viewH) => {
+    return Math.max(viewW / MAP_W, (viewH * 0.68) / MAP_H);
+  }, []);
+
   // Center camera on coordinates without drift
-  const centerOnCoords = useCallback((cx, cy, targetZoom = 3.6) => {
+  const centerOnCoords = useCallback((cx, cy, targetZoom = 14.0) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const viewW = canvas.clientWidth || window.innerWidth;
     const viewH = canvas.clientHeight || window.innerHeight;
-    const baseScale = Math.min(viewW / MAP_W, viewH / MAP_H);
+    const baseScale = getBaseScale(viewW, viewH);
     const scale = baseScale * targetZoom;
 
     cameraRef.current = {
@@ -137,26 +139,28 @@ export default function WorldGame({ onReturnToModeSelect }) {
       panX: (MAP_W / 2 - cx) * scale,
       panY: (MAP_H / 2 - cy) * scale,
     };
-  }, []);
+  }, [getBaseScale]);
 
-  // Zoom relative to viewport center without drift
+  // Zoom relative to viewport center without drift (up to 85x so individual pixels are large on mobile!)
   const handleZoom = useCallback((factor) => {
     const oldZoom = cameraRef.current.zoom;
-    const newZoom = Math.max(0.6, Math.min(32.0, oldZoom * factor));
+    const newZoom = Math.max(0.8, Math.min(85.0, oldZoom * factor));
     const ratio = newZoom / oldZoom;
     cameraRef.current.zoom = newZoom;
     cameraRef.current.panX *= ratio;
     cameraRef.current.panY *= ratio;
   }, []);
 
-  // Initial center on player's country if exists
+  // Initial center on player's country if exists (or Europe/Mediterranean at 2.8x on mobile so map isn't tiny)
   useEffect(() => {
     const eng = engineRef.current;
     if (!eng) return;
     const myC = eng.getMyCountry();
     if (myC) {
       const center = eng.getCountryCenter(myC.id);
-      centerOnCoords(center.x, center.y, 3.8);
+      centerOnCoords(center.x, center.y, 16.0);
+    } else {
+      centerOnCoords(550, 175, 2.8);
     }
   }, [centerOnCoords]);
 
@@ -187,7 +191,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
     let flagUrl = foundFlagDataUrl;
     if (!flagUrl) {
-      // Auto-generate clean vector flag with country's initial and chosen color if no image uploaded
       const cv = document.createElement('canvas');
       cv.width = 128;
       cv.height = 80;
@@ -217,7 +220,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
     if (res.ok) {
       setFoundingModal(null);
-      centerOnCoords(res.country.capitalX, res.country.capitalY, 7.5);
+      centerOnCoords(res.country.capitalX, res.country.capitalY, 18.0);
     } else {
       showToast(res.reason || 'Devlet kurulamadı.');
     }
@@ -233,7 +236,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
     const viewW = canvas.clientWidth || rect.width;
     const viewH = canvas.clientHeight || rect.height;
-    const baseScale = Math.min(viewW / MAP_W, viewH / MAP_H);
+    const baseScale = getBaseScale(viewW, viewH);
     const scale = baseScale * cameraRef.current.zoom;
     const mapScreenW = MAP_W * scale;
     const mapScreenH = MAP_H * scale;
@@ -247,13 +250,16 @@ export default function WorldGame({ onReturnToModeSelect }) {
       x: Math.floor(mapX),
       y: Math.floor(mapY),
     };
-  }, []);
+  }, [getBaseScale]);
 
-  // Pointer interactions (drag conquest, smooth mobile pan, pinch zoom & tap-to-found)
+  // Pointer interactions (Zero-teleport per-pointer tracking, smooth pan, incremental pinch zoom & tap-to-found)
   const handlePointerDown = useCallback((e) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     isMouseDownRef.current = true;
-    dragStartRef.current = { x: e.clientX, y: e.clientY };
 
     if (pointersRef.current.size === 1) {
       tapOriginRef.current = {
@@ -262,105 +268,109 @@ export default function WorldGame({ onReturnToModeSelect }) {
         moved: false,
         pointerCount: 1,
       };
-    } else {
-      tapOriginRef.current.pointerCount = Math.max(tapOriginRef.current.pointerCount, pointersRef.current.size);
+    } else if (pointersRef.current.size >= 2) {
+      tapOriginRef.current.pointerCount = pointersRef.current.size;
       tapOriginRef.current.moved = true;
+      isPaintingRef.current = false;
+      const pts = Array.from(pointersRef.current.values());
+      lastPinchDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      return;
     }
 
-    // Right-click or middle-click or PAN mode -> pure camera pan
     if (e.button === 2 || e.button === 1 || toolMode === 'PAN') {
       isPaintingRef.current = false;
       return;
     }
 
-    if (pointersRef.current.size === 1) {
-      const pos = getMapCoords(e.clientX, e.clientY);
-      if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
-        lastCellRef.current = { x: pos.x, y: pos.y };
+    const pos = getMapCoords(e.clientX, e.clientY);
+    if (pos && pos.x >= 0 && pos.x < MAP_W && pos.y >= 0 && pos.y < MAP_H) {
+      lastCellRef.current = { x: pos.x, y: pos.y };
 
-        const eng = engineRef.current;
-        const myCountry = eng?.getMyCountry();
+      const eng = engineRef.current;
+      const myCountry = eng?.getMyCountry();
 
-        if (!myCountry) {
-          // Allow smooth 1-finger pan and 2-finger pinch before founding; founding triggers on clean tap (pointerUp)
-          isPaintingRef.current = false;
-          return;
-        }
-
-        // Player already has country: if touching near an adjacent land border pixel (with 4px mobile touch snap), conquer & paint
-        const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 4);
-        if (smartTarget && !smartTarget.check.isNaval) {
-          isPaintingRef.current = true;
-          const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
-          if (!res.ok && res.reason) {
-            showToast(res.reason);
-          }
-        } else {
-          // Touching outside adjacent border allows smooth panning; naval ships launch on clean tap (pointerUp)
-          isPaintingRef.current = false;
-        }
+      if (!myCountry) {
+        isPaintingRef.current = false;
+        return;
       }
-    } else if (pointersRef.current.size === 2) {
-      isPaintingRef.current = false;
-      const pts = Array.from(pointersRef.current.values());
-      pinchStartDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      pinchStartZoomRef.current = cameraRef.current.zoom;
+
+      // 6px touch-snap radius so mobile thumb taps easily hit adjacent border cells
+      const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 6);
+      if (smartTarget && !smartTarget.check.isNaval && myCountry.troops >= smartTarget.check.cost) {
+        isPaintingRef.current = true;
+        eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
+      } else {
+        // If player doesn't have enough troops or touched outside border, allow smooth camera panning!
+        isPaintingRef.current = false;
+      }
     }
-  }, [getMapCoords, toolMode, showToast]);
+  }, [getMapCoords, toolMode]);
 
   const handlePointerMove = useCallback((e) => {
-    if (!pointersRef.current.has(e.pointerId)) return;
+    const prevPt = pointersRef.current.get(e.pointerId);
+    if (!prevPt) return;
+
+    const dx = e.clientX - prevPt.x;
+    const dy = e.clientY - prevPt.y;
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     const distFromTap = Math.hypot(
       e.clientX - tapOriginRef.current.x,
       e.clientY - tapOriginRef.current.y
     );
-    if (distFromTap > 9) {
+    if (distFromTap > 10) {
       tapOriginRef.current.moved = true;
     }
 
-    const pos = getMapCoords(e.clientX, e.clientY);
-    hoveredPosRef.current = pos;
+    if (pointersRef.current.size === 2) {
+      // Incremental 2-finger pinch zoom (never jumps or teleports!)
+      const pts = Array.from(pointersRef.current.values());
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (lastPinchDistRef.current > 12 && dist > 12) {
+        const stepFactor = dist / lastPinchDistRef.current;
+        if (stepFactor > 0.75 && stepFactor < 1.35) {
+          handleZoom(stepFactor);
+        }
+      }
+      lastPinchDistRef.current = dist;
+      lastPinchEndTimeRef.current = performance.now();
+      return;
+    }
 
     if (pointersRef.current.size === 1) {
-      if (isPaintingRef.current && pos && lastCellRef.current) {
-        if (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y) {
+      // Ignore single-finger pan for 140ms right after lifting a 2nd pinch finger to prevent any jump
+      if (performance.now() - lastPinchEndTimeRef.current < 140) {
+        return;
+      }
+
+      if (isPaintingRef.current) {
+        const pos = getMapCoords(e.clientX, e.clientY);
+        if (pos && lastCellRef.current && (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y)) {
           const eng = engineRef.current;
           const myCountry = eng?.getMyCountry();
           if (myCountry) {
-            const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 3);
+            const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 5);
             if (smartTarget && !smartTarget.check.isNaval) {
               eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
             }
           }
           lastCellRef.current = { x: pos.x, y: pos.y };
         }
-      } else if (isMouseDownRef.current && !isPaintingRef.current) {
-        // Pan camera smoothly with 1 finger or mouse drag
-        const dx = e.clientX - dragStartRef.current.x;
-        const dy = e.clientY - dragStartRef.current.y;
-        cameraRef.current.panX += dx;
-        cameraRef.current.panY += dy;
-        dragStartRef.current = { x: e.clientX, y: e.clientY };
-      }
-    } else if (pointersRef.current.size === 2) {
-      // Pinch to zoom without center drift
-      const pts = Array.from(pointersRef.current.values());
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      if (pinchStartDistRef.current > 0) {
-        const oldZoom = cameraRef.current.zoom;
-        const ratio = dist / pinchStartDistRef.current;
-        const newZoom = Math.max(0.6, Math.min(32.0, pinchStartZoomRef.current * ratio));
-        const zoomStepRatio = newZoom / oldZoom;
-        cameraRef.current.zoom = newZoom;
-        cameraRef.current.panX *= zoomStepRatio;
-        cameraRef.current.panY *= zoomStepRatio;
+      } else if (isMouseDownRef.current) {
+        // Clamp per-frame delta to prevent any browser pointer spike from teleporting the camera
+        if (Math.abs(dx) < 120 && Math.abs(dy) < 120) {
+          cameraRef.current.panX += dx;
+          cameraRef.current.panY += dy;
+        }
       }
     }
-  }, [getMapCoords]);
+  }, [getMapCoords, handleZoom]);
 
   const handlePointerUp = useCallback((e) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+
     const wasCleanSingleTap =
       !tapOriginRef.current.moved &&
       tapOriginRef.current.pointerCount === 1 &&
@@ -368,7 +378,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
       e.button !== 1 &&
       toolMode !== 'PAN';
 
+    const hadMultiplePointers = pointersRef.current.size >= 2;
     pointersRef.current.delete(e.pointerId);
+
+    if (hadMultiplePointers) {
+      lastPinchDistRef.current = 0;
+      lastPinchEndTimeRef.current = performance.now();
+    }
+
     if (pointersRef.current.size === 0) {
       isMouseDownRef.current = false;
       isPaintingRef.current = false;
@@ -384,34 +401,54 @@ export default function WorldGame({ onReturnToModeSelect }) {
       const myCountry = eng.getMyCountry();
 
       if (!myCountry) {
-        // Clean tap when player has no country -> Open Founding Modal!
         const idx = pos.y * MAP_W + pos.x;
-        if (worldData.isLand[idx] && eng.owners[idx] === 0) {
+        const tappedOwnerId = eng.owners[idx];
+
+        // If player taps an existing country on the map when they don't have one in this app/browser yet,
+        // let them link to it if it was created from their IP!
+        if (tappedOwnerId > 0) {
+          const tappedCountry = eng.countryMap.get(tappedOwnerId);
+          if (tappedCountry && (!networkInfo.clientIp || tappedCountry.creatorIp === networkInfo.clientIp || tappedCountry.creatorIp === 'unknown')) {
+            eng.claimExistingCountry(tappedCountry.id);
+            const center = eng.getCountryCenter(tappedCountry.id);
+            centerOnCoords(center.x, center.y, 16.0);
+            return;
+          }
+          showToast('Bu piksel zaten başka bir devlete ait!');
+          return;
+        }
+
+        if (worldData.isLand[idx] && tappedOwnerId === 0) {
           if (networkInfo.isVpnOrProxy) {
             setVpnBlocked(true);
             return;
           }
           const existing = eng.countries.find((c) => c.deviceId === eng.myDeviceId && c.landCount > 0);
           if (existing) {
-            showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş! (1 Cihaz = 1 Ülke)`);
+            showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş!`);
             eng.myCountryId = existing.id;
             const center = eng.getCountryCenter(existing.id);
-            centerOnCoords(center.x, center.y, 4.5);
+            centerOnCoords(center.x, center.y, 16.0);
             return;
           }
           setFoundingModal({ x: pos.x, y: pos.y });
-        } else if (worldData.isLand[idx]) {
-          showToast('Bu piksel zaten başka bir devlete ait!');
         } else {
           showToast('Deniz veya okyanusa ülke kurulamaz! Gri bir kara pikseline dokun.');
         }
       } else {
-        // Clean tap when player has a country -> Launch Naval Ship if target is a valid coastal pixel across sea!
-        const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
-        if (check.valid && check.isNaval) {
-          const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+        const smartTarget = eng.findSmartExpandTarget(myCountry.id, pos.x, pos.y, 6);
+        if (smartTarget) {
+          const res = eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
           if (!res.ok && res.reason) {
             showToast(res.reason);
+          }
+        } else {
+          const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
+          if (check.valid && check.isNaval) {
+            const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+            if (!res.ok && res.reason) {
+              showToast(res.reason);
+            }
           }
         }
       }
@@ -457,14 +494,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
         engineRef.current.update(dt);
       }
 
-      // 2. Render frame onto high-DPI viewport
+      // 2. Render frame onto viewport (cap DPR on mobile screens for smooth 60 FPS)
       const viewW = canvas.clientWidth || window.innerWidth;
       const viewH = canvas.clientHeight || window.innerHeight;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const isMobileScreen = viewW < 900 || viewH < 550;
+      const dpr = isMobileScreen ? Math.min(window.devicePixelRatio || 1, 1.15) : Math.min(window.devicePixelRatio || 1, 2);
 
-      if (canvas.width !== viewW * dpr || canvas.height !== viewH * dpr) {
-        canvas.width = viewW * dpr;
-        canvas.height = viewH * dpr;
+      const targetW = Math.floor(viewW * dpr);
+      const targetH = Math.floor(viewH * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
       }
 
       ctx.save();
@@ -479,8 +519,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
       ctx.restore();
 
-      // 3. Throttle HUD state update to React (every ~180ms)
-      if (now - lastHudSync > 180) {
+      // 3. Throttle HUD state update to React (every ~220ms)
+      if (now - lastHudSync > 220) {
         lastHudSync = now;
         const eng = engineRef.current;
         if (eng) {
@@ -505,6 +545,21 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   const myCountry = hud.myCountry;
 
+  // Auto-link player's country across Web <-> Android App if created from the same IP
+  useEffect(() => {
+    const eng = engineRef.current;
+    if (!eng || myCountry) return;
+    if (!networkInfo.clientIp || networkInfo.clientIp === 'unknown') return;
+    const ipCountry = eng.countries.find(
+      (c) => c.landCount > 0 && c.creatorIp === networkInfo.clientIp
+    );
+    if (ipCountry) {
+      eng.claimExistingCountry(ipCountry.id);
+      const center = eng.getCountryCenter(ipCountry.id);
+      centerOnCoords(center.x, center.y, 16.0);
+    }
+  }, [myCountry, hud.totalCountriesCount, networkInfo.clientIp, centerOnCoords]);
+
   const handleBuyUpgrade = useCallback((key) => {
     const eng = engineRef.current;
     const myC = eng?.getMyCountry();
@@ -516,7 +571,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
   }, [showToast]);
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-slate-950 text-white select-none">
+    <div
+      className="fixed inset-0 w-full h-full overflow-hidden bg-slate-950 text-white select-none touch-none"
+      style={{ height: '100dvh', width: '100vw' }}
+    >
       {/* Hidden File Input for Image Upload */}
       <input
         ref={fileInputRef}
@@ -526,121 +584,129 @@ export default function WorldGame({ onReturnToModeSelect }) {
         className="hidden"
       />
 
-      {/* SLEEK MINIMALIST TOP BAR (ZERO EMOJIS — BESPOKE VECTOR LOGOS) */}
-      <div className="absolute top-3 left-3 right-3 sm:left-5 sm:right-5 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
-        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2.5 py-2 shadow-2xl flex items-center gap-2.5 max-w-full">
+      {/* SLEEK MINIMALIST TOP BAR (COMPACT FOR PORTRAIT & LANDSCAPE MOBILE) */}
+      <div className="absolute top-1.5 sm:top-3 left-2 right-2 sm:left-4 sm:right-4 flex flex-wrap items-center justify-between gap-1.5 pointer-events-none z-10">
+        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2 py-1.5 shadow-2xl flex items-center gap-2 max-w-full overflow-x-auto">
           <button
             onClick={onReturnToModeSelect}
-            className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+            className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition shrink-0"
             title="Menüye Dön"
           >
-            <ArrowLeft size={16} />
+            <ArrowLeft size={15} />
           </button>
 
           {myCountry ? (
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               {/* Flag & Country Name */}
-              <div className="flex items-center gap-2 pr-2.5 border-r border-slate-700/80">
+              <div className="flex items-center gap-1.5 pr-2 border-r border-slate-700/80">
                 <div
-                  className="w-8 h-6 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
+                  className="w-7 h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
                   style={{ borderColor: myCountry.color || '#FBBF24' }}
                 >
                   {myCountry.flagDataUrl && (
                     <img src={myCountry.flagDataUrl} alt="Bayrak" className="w-full h-full object-cover" />
                   )}
                 </div>
-                <span className="text-xs sm:text-sm font-black text-white tracking-tight">
+                <span className="text-xs sm:text-sm font-black text-white tracking-tight truncate max-w-[110px] sm:max-w-none">
                   {myCountry.name}
                 </span>
               </div>
 
               {/* Clean Metrics with Vector Logos */}
-              <div className="flex flex-wrap items-center gap-3.5 text-xs font-bold">
-                <span className="text-amber-400 flex items-center gap-1.5" title="Mevcut Asker / Maksimum Kapasite">
-                  <LogoSwords size={16} />
+              <div className="flex flex-wrap items-center gap-2.5 sm:gap-3.5 text-[11px] sm:text-xs font-bold">
+                <span className="text-amber-400 flex items-center gap-1" title="Mevcut Asker / Maksimum Kapasite">
+                  <LogoSwords size={15} />
                   <span>
-                    {myCountry.troops.toFixed(1)} / {myCountry.capacity}
+                    {myCountry.troops.toFixed(1)}/{myCountry.capacity}
                   </span>
-                  <span className="text-emerald-400 text-[11px]">
-                    (+{(myCountry.productionRate || 0).toFixed(3)}/sn)
+                  <span className="text-emerald-400 text-[10px] hidden sm:inline">
+                    (+{(myCountry.productionRate || 0).toFixed(2)}/sn)
                   </span>
                 </span>
 
-                <span className="text-slate-200 flex items-center gap-1.5" title="Toplam Toprak (Piksel)">
-                  <LogoTerritory size={16} />
-                  <span>{myCountry.landCount} Piksel</span>
+                <span className="text-slate-200 flex items-center gap-1" title="Toplam Toprak (Piksel)">
+                  <LogoTerritory size={15} />
+                  <span>{myCountry.landCount}px</span>
                 </span>
 
-                <span className="text-sky-300 hidden sm:flex items-center gap-1.5" title="Ülkende Yaşayan Halk Nüfusu">
-                  <LogoPopulation size={16} />
+                <span className="text-sky-300 hidden md:flex items-center gap-1" title="Ülkende Yaşayan Halk Nüfusu">
+                  <LogoPopulation size={15} />
                   <span>{Math.floor(myCountry.population || 15)} Halk</span>
                 </span>
 
-                <span className="text-amber-300 flex items-center gap-1.5" title="Vergi Hazinesi (Geliştirmeler için kullanılır)">
-                  <LogoGold size={16} />
-                  <span>{Math.floor(myCountry.gold || 0)} Altın</span>
+                <span className="text-amber-300 flex items-center gap-1" title="Vergi Hazinesi (Geliştirmeler için kullanılır)">
+                  <LogoGold size={15} />
+                  <span>{Math.floor(myCountry.gold || 0)}</span>
                 </span>
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2 text-xs font-bold text-amber-400 pr-2">
-              <Sparkles size={15} />
-              <span>Devletin Yok • Sahipsiz bir gri piksele tıkla ve kur!</span>
+            <div className="flex items-center gap-2 text-[11px] sm:text-xs font-bold text-amber-400 pr-1.5">
+              <Sparkles size={14} className="shrink-0" />
+              <span>Gri piksele dokunup devlet kur veya mevcut devletini seç!</span>
+              {hud.totalCountriesCount > 0 && (
+                <button
+                  onClick={() => setShowCountriesList(true)}
+                  className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 font-black text-[10px] shrink-0"
+                >
+                  Devletimi Seç
+                </button>
+              )}
             </div>
           )}
         </div>
 
         {/* Right Controls */}
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-1.5">
           <button
             onClick={() => setShowCountriesList(true)}
-            className="px-3 h-9 rounded-xl bg-slate-900/90 border border-emerald-500/40 text-emerald-300 hover:bg-slate-800 font-black text-xs flex items-center gap-1.5 shadow-xl transition"
-            title="Haritadaki tüm devletleri gör ve odaklan"
+            className="px-2.5 h-8 sm:h-9 rounded-xl bg-slate-900/90 border border-emerald-500/40 text-emerald-300 hover:bg-slate-800 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
+            title="Haritadaki tüm devletleri gör, odaklan veya kendi devletini bağla"
           >
-            <Globe size={15} />
+            <Globe size={14} />
             <span>Ülkeler ({hud.totalCountriesCount})</span>
           </button>
 
           {myCountry && (
             <button
               onClick={() => setShowUpgrades(true)}
-              className="px-3.5 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-xl transition"
+              className="px-2.5 sm:px-3 h-8 sm:h-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
             >
-              <LogoCitadel size={16} />
+              <LogoCitadel size={15} />
               <span>Geliştir</span>
             </button>
           )}
 
           <button
             onClick={() => setSoundEnabled((prev) => !prev)}
-            className="w-9 h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
             title={soundEnabled ? 'Sesi Kapat' : 'Sesi Aç'}
           >
-            {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+            {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </button>
 
           <button
             onClick={() => setShowRules(true)}
-            className="w-9 h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-slate-900/85 border border-slate-700 text-slate-300 flex items-center justify-center hover:bg-slate-800 transition shadow"
             title="Kurallar"
           >
-            <HelpCircle size={16} />
+            <HelpCircle size={15} />
           </button>
         </div>
       </div>
 
       {/* FLOATING CAMERA CONTROLS */}
-      <div className="absolute right-3 sm:right-5 bottom-20 flex flex-col gap-2 z-10">
+      <div className="absolute right-2.5 sm:right-4 bottom-16 sm:bottom-20 flex flex-col gap-1.5 z-10">
         <button
-          onClick={() => handleZoom(1.35)}
-          className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
+          onClick={() => handleZoom(1.45)}
+          className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 active:scale-95 shadow-xl transition"
           title="Yakınlaştır"
         >
           <ZoomIn size={18} />
         </button>
         <button
-          onClick={() => handleZoom(0.75)}
-          className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
+          onClick={() => handleZoom(0.7)}
+          className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-slate-200 flex items-center justify-center hover:bg-slate-800 active:scale-95 shadow-xl transition"
           title="Uzaklaştır"
         >
           <ZoomOut size={18} />
@@ -650,58 +716,83 @@ export default function WorldGame({ onReturnToModeSelect }) {
             const eng = engineRef.current;
             if (myCountry && eng) {
               const center = eng.getCountryCenter(myCountry.id);
-              centerOnCoords(center.x, center.y, 6.0);
+              centerOnCoords(center.x, center.y, 16.0);
             }
           }}
-          className="w-10 h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-amber-400 flex items-center justify-center hover:bg-slate-800 shadow-xl transition"
-          title="Ülkeme Odaklan"
+          className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900/90 border border-slate-700 text-amber-400 flex items-center justify-center hover:bg-slate-800 active:scale-95 shadow-xl transition"
+          title="Ülkeme Yakından Odaklan (16x)"
         >
           <Compass size={18} />
         </button>
       </div>
 
-      {/* CLEAN BOTTOM TOOLBAR WITH 1-TAP MOBILE QUICK EXPAND */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-3 pointer-events-none">
-        <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/80 backdrop-blur-lg rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
+      {/* CLEAN BOTTOM TOOLBAR — LOCKED INSIDE SAFE MOBILE VIEWPORT */}
+      <div
+        className="absolute bottom-2 sm:bottom-3.5 left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-2.5 pointer-events-none"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
+        <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/85 backdrop-blur-lg rounded-2xl p-1.5 shadow-2xl flex items-center justify-between gap-1.5">
           <button
             onClick={() => setToolMode('CONQUER')}
-            className={`flex-1 py-2.5 px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
+            className={`flex-1 py-2 px-2 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition ${
               toolMode === 'CONQUER'
                 ? 'bg-amber-500 text-slate-950 shadow'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <LogoSwords size={16} />
-            <span>Fethet / Gemi</span>
+            <LogoSwords size={15} />
+            <span>Fethet</span>
           </button>
 
           {myCountry && (
-            <button
-              onClick={() => {
-                const eng = engineRef.current;
-                if (!eng) return;
-                const res = eng.conquerNextBorderPixel(myCountry.id);
-                if (!res.ok && res.reason) {
-                  showToast(res.reason);
-                }
-              }}
-              className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow transition"
-              title="Sınırındaki en uygun komşu pikseli tek dokunuşla fetheder (Mobil kolay kontrol)"
-            >
-              <LogoTerritory size={16} />
-              <span>+1 Fethet</span>
-            </button>
+            <>
+              <button
+                onClick={() => {
+                  const eng = engineRef.current;
+                  if (!eng) return;
+                  const res = eng.conquerNextBorderPixel(myCountry.id);
+                  if (!res.ok && res.reason) {
+                    showToast(res.reason);
+                  }
+                }}
+                className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow transition"
+                title="Sınırındaki en uygun komşu pikseli tek dokunuşla fetheder"
+              >
+                <LogoTerritory size={15} />
+                <span>+1 Piksel</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const eng = engineRef.current;
+                  if (!eng) return;
+                  let count = 0;
+                  for (let i = 0; i < 5; i++) {
+                    const res = eng.conquerNextBorderPixel(myCountry.id);
+                    if (res.ok) count++;
+                    else {
+                      if (count === 0 && res.reason) showToast(res.reason);
+                      break;
+                    }
+                  }
+                }}
+                className="py-2 px-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow transition"
+                title="Sınırındaki 5 komşu pikseli tek dokunuşla hızlıca fetheder"
+              >
+                <span>+5</span>
+              </button>
+            </>
           )}
 
           <button
             onClick={() => setToolMode('PAN')}
-            className={`flex-1 py-2.5 px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition ${
+            className={`flex-1 py-2 px-2 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition ${
               toolMode === 'PAN'
                 ? 'bg-indigo-500 text-white shadow'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <LogoPan size={16} />
+            <LogoPan size={15} />
             <span>Kaydır</span>
           </button>
         </div>
@@ -717,18 +808,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
         className="w-full h-full cursor-crosshair touch-none"
       />
 
-      {/* COUNTRIES LIST & JUMP-TO-MAP MODAL */}
+      {/* COUNTRIES LIST & JUMP-TO-MAP / CLAIM COUNTRY MODAL */}
       {showCountriesList && (
-        <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-5 shadow-2xl text-left">
+        <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-4 sm:p-5 shadow-2xl text-left">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="text-base font-black text-white flex items-center gap-2">
+                <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
                   <Globe size={18} className="text-emerald-400" />
                   <span>Haritadaki Devletler ({engineRef.current?.countries?.length || 0})</span>
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Bir devlete tıklayarak kamerayı doğrudan o devletin topraklarına odaklayabilirsin.
+                  Sitede kurduğun devleti uygulamada yönetmek için <b>"Devletim Yap"</b> butonuna dokunabilirsin.
                 </p>
               </div>
               <button
@@ -739,22 +830,29 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </button>
             </div>
 
-            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
               {(engineRef.current?.countries || [])
                 .filter((c) => c.landCount > 0)
                 .sort((a, b) => b.landCount - a.landCount)
                 .map((c) => {
                   const isMine = myCountry && c.id === myCountry.id;
+                  const sameIp =
+                    c.creatorIp &&
+                    networkInfo.clientIp &&
+                    c.creatorIp !== 'unknown' &&
+                    c.creatorIp === networkInfo.clientIp;
+                  const canClaim = !isMine && (!myCountry || sameIp);
+
                   return (
                     <div
                       key={c.id}
-                      className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
+                      className={`p-2.5 sm:p-3 rounded-2xl border flex items-center justify-between gap-2 ${
                         isMine
                           ? 'bg-amber-500/10 border-amber-500/50'
                           : 'bg-slate-800/80 border-slate-700/80'
                       }`}
                     >
-                      <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
                         <div
                           className="w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950"
                           style={{ borderColor: c.color || '#FBBF24' }}
@@ -763,11 +861,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                             <img src={c.flagDataUrl} alt={c.name} className="w-full h-full object-cover" />
                           )}
                         </div>
-                        <div>
-                          <div className="font-black text-xs text-white flex items-center gap-1.5">
-                            <span>{c.name}</span>
+                        <div className="min-w-0">
+                          <div className="font-black text-xs text-white flex items-center gap-1.5 truncate">
+                            <span className="truncate">{c.name}</span>
                             {isMine && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black">
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black shrink-0">
                                 SEN
                               </span>
                             )}
@@ -778,19 +876,41 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => {
-                          const eng = engineRef.current;
-                          if (eng) {
-                            const center = eng.getCountryCenter(c.id);
-                            centerOnCoords(center.x, center.y, 7.0);
-                            setShowCountriesList(false);
-                          }
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition shadow"
-                      >
-                        Haritada Git
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {canClaim && (
+                          <button
+                            onClick={() => {
+                              const eng = engineRef.current;
+                              if (eng) {
+                                const res = eng.claimExistingCountry(c.id);
+                                if (res.ok) {
+                                  const center = eng.getCountryCenter(c.id);
+                                  centerOnCoords(center.x, center.y, 16.0);
+                                  setShowCountriesList(false);
+                                  showToast(`${c.name} artık bu cihazda senin kontrolünde!`);
+                                }
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                          >
+                            Devletim Yap
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => {
+                            const eng = engineRef.current;
+                            if (eng) {
+                              const center = eng.getCountryCenter(c.id);
+                              centerOnCoords(center.x, center.y, 16.0);
+                              setShowCountriesList(false);
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
+                        >
+                          Yaklaş
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
