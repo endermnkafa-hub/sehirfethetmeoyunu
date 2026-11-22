@@ -239,7 +239,11 @@ export class SharedWorldSync {
         p.type === 'TREATY_ACCEPT' ||
         p.type === 'TREATY_REJECT' ||
         p.type === 'TREATY_BREAK' ||
-        p.type === 'TREATY_PAYMENT'
+        p.type === 'TREATY_PAYMENT' ||
+        p.type === 'TREATY_TERMINATION_REQUEST' ||
+        p.type === 'TREATY_TERMINATION_CANCEL_REQUEST' ||
+        p.type === 'TREATY_TERMINATION_ACCEPT' ||
+        p.type === 'TREATY_TERMINATION_REJECT'
       ) {
         treatyOps.push(p);
       }
@@ -335,6 +339,14 @@ export class SharedWorldSync {
         this.engine.handleRemoteTreatyBreak(p.treatyId, p.breakerId, p.penalty, p.reason, true);
       } else if (p.type === 'TREATY_PAYMENT' && p.treatyId) {
         this.engine.handleRemoteTreatyPayment(p.treatyId, p.amount, p.time, true);
+      } else if (p.type === 'TREATY_TERMINATION_REQUEST' && p.treatyId) {
+        this.engine.handleRemoteTreatyTerminationRequest(p.treatyId, p.requesterId);
+      } else if (p.type === 'TREATY_TERMINATION_CANCEL_REQUEST' && p.treatyId) {
+        this.engine.handleRemoteTreatyTerminationCancel(p.treatyId);
+      } else if (p.type === 'TREATY_TERMINATION_ACCEPT' && p.treatyId) {
+        this.engine.handleRemoteTreatyTerminationAccept(p.treatyId);
+      } else if (p.type === 'TREATY_TERMINATION_REJECT' && p.treatyId) {
+        this.engine.handleRemoteTreatyTerminationReject(p.treatyId);
       }
     }
 
@@ -627,6 +639,18 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'TREATY_PAYMENT' && data.treatyId) {
       this.engine.handleRemoteTreatyPayment(data.treatyId, data.amount, data.time, false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_TERMINATION_REQUEST' && data.treatyId) {
+      this.engine.handleRemoteTreatyTerminationRequest(data.treatyId, data.requesterId);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_TERMINATION_CANCEL_REQUEST' && data.treatyId) {
+      this.engine.handleRemoteTreatyTerminationCancel(data.treatyId);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_TERMINATION_ACCEPT' && data.treatyId) {
+      this.engine.handleRemoteTreatyTerminationAccept(data.treatyId);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_TERMINATION_REJECT' && data.treatyId) {
+      this.engine.handleRemoteTreatyTerminationReject(data.treatyId);
       this.onRemoteUpdate();
     } else if (data.type === 'NUCLEAR_STRIKE' && data.strike) {
       this.engine.handleRemoteNuclearStrike(data.strike, false);

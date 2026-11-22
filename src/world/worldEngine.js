@@ -448,6 +448,8 @@ export class WorldSimulationEngine {
       typeof c.population === "number" ? Math.max(10, c.population) : 10;
     c.gold = typeof c.gold === "number" ? Math.max(0, c.gold) : 0;
     c.troops = typeof c.troops === "number" ? Math.max(0, c.troops) : 1.0;
+    c.inventory = c.inventory || { nukes: 0 };
+    if (typeof c.inventory.nukes !== "number") c.inventory.nukes = 0;
     this._recalculateDerivedStats(c);
     return c;
   }
@@ -734,15 +736,56 @@ export class WorldSimulationEngine {
     return best;
   }
 
-  // Launch Nuclear Strike: costs 35,000 Gold, scorches a 22-pixel radius into uninhabitable wasteland
-  launchNuclearStrike(countryId, targetX, targetY) {
+  // Buy and Stockpile Nuclear Warhead: costs 35,000 Gold, safely stores in country inventory
+  buyNuclear(countryId) {
     const c = this.countryMap.get(countryId);
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
     const COST = 35000;
     if (c.gold < COST) {
-      return { ok: false, reason: `Yetersiz altın! Taktik Nükleer Silah için ${COST.toLocaleString()} Altın gereklidir.` };
+      return {
+        ok: false,
+        reason: `Yetersiz altın! Taktik Nükleer Silah için ${COST.toLocaleString()} Altın gereklidir.`,
+      };
     }
     c.gold -= COST;
+    c.inventory = c.inventory || { nukes: 0 };
+    c.inventory.nukes = (c.inventory.nukes || 0) + 1;
+    this.dirtyPixels = true;
+    this.onSound("celebration");
+    this.onEvent(
+      `☢️ 1 Adet Taktik Nükleer Başlık satın alındı ve depolandı! (Toplam Depoda: ${c.inventory.nukes} Adet)`,
+    );
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        gold: Math.round(c.gold),
+        population: Math.round(c.population),
+        troops: Number(c.troops.toFixed(1)),
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+      },
+    });
+
+    return { ok: true, nukes: c.inventory.nukes, cost: COST };
+  }
+
+  // Launch Stored Nuclear Strike: consumes 1 nuclear warhead from inventory
+  launchNuclearStrike(countryId, targetX, targetY) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+
+    c.inventory = c.inventory || { nukes: 0 };
+    if (!c.inventory.nukes || c.inventory.nukes <= 0) {
+      return {
+        ok: false,
+        reason:
+          "Deponda hazır nükleer başlık yok! Önce Market'ten satın alıp depolamalısın.",
+      };
+    }
+
+    c.inventory.nukes -= 1;
     const strike = {
       id: "nuke_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
       attackerId: countryId,
@@ -768,6 +811,7 @@ export class WorldSimulationEngine {
         population: Math.round(c.population),
         troops: Number(c.troops.toFixed(1)),
         upgrades: c.upgrades,
+        inventory: c.inventory,
       },
     });
 
@@ -776,7 +820,7 @@ export class WorldSimulationEngine {
       true,
     );
 
-    return { ok: true, strike };
+    return { ok: true, strike, remainingNukes: c.inventory.nukes };
   }
 
   handleRemoteNuclearStrike(strike, isLocal = false) {
@@ -1619,7 +1663,8 @@ export class WorldSimulationEngine {
   }
 
   // One-Tap Mobile Quick Expand: Automatically conquers the closest available adjacent border pixel!
-  conquerNextBorderPixel(countryId) {
+  // If onlyNeutral is true (default), strictly targets unoccupied neutral territory (owners[idx] === 0) and NEVER attacks other nations.
+  conquerNextBorderPixel(countryId, onlyNeutral = true) {
     const country = this.countryMap.get(countryId);
     if (!country) return { ok: false, reason: "Devlet bulunamadı." };
 
@@ -1646,6 +1691,13 @@ export class WorldSimulationEngine {
         const idx = row + x;
         if (!this.worldData.isLand[idx] || this.owners[idx] === countryId)
           continue;
+
+        // Radioactive wasteland can never be conquered
+        if (this.isWasteland && this.isWasteland[idx]) continue;
+
+        // If onlyNeutral requested, strictly skip any land owned by other countries/states
+        if (onlyNeutral && this.owners[idx] !== 0) continue;
+
         const ownedNeighbors =
           (x > 0 && this.owners[idx - 1] === countryId ? 1 : 0) +
           (x < MAP_W - 1 && this.owners[idx + 1] === countryId ? 1 : 0) +
@@ -1672,7 +1724,9 @@ export class WorldSimulationEngine {
     if (!bestCandidate) {
       return {
         ok: false,
-        reason: "Komşu kara sınırı kalmadı! Karşı kıyılara gemi gönder.",
+        reason: onlyNeutral
+          ? "Sınırında fethedilecek boş (tarafsız) toprak kalmadı!"
+          : "Komşu kara sınırı kalmadı! Karşı kıyılara gemi gönder.",
       };
     }
 
@@ -2116,6 +2170,8 @@ export class WorldSimulationEngine {
     if (typeof stats.troops === "number") country.troops = stats.troops;
     if (stats.upgrades)
       country.upgrades = { ...DEFAULT_UPGRADES, ...stats.upgrades };
+    if (stats.inventory)
+      country.inventory = { ...stats.inventory };
     this._recalculateDerivedStats(country);
   }
 
@@ -2505,6 +2561,135 @@ export class WorldSimulationEngine {
     );
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     return { ok: true, deducted, treaty };
+  }
+
+  // Request mutual termination of an active treaty without penalty
+  requestTreatyTermination(treatyId, requesterCountryId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty || treaty.status !== "ACTIVE") {
+      return { ok: false, reason: "Aktif bir anlaşma bulunamadı." };
+    }
+    const requester = this.countryMap.get(requesterCountryId);
+    const otherId = requesterCountryId === treaty.fromId ? treaty.toId : treaty.fromId;
+    const other = this.countryMap.get(otherId);
+
+    treaty.terminationRequestedBy = requesterCountryId;
+    treaty.terminationRequestedAt = Date.now();
+
+    this.sync.broadcast({
+      type: "TREATY_TERMINATION_REQUEST",
+      treatyId,
+      requesterId: requesterCountryId,
+    });
+
+    this.onSound("pencil");
+    this.onEvent(
+      `📜 ${requester ? requester.name : "Devlet"}, ${other ? other.name : "karşı devlete"} anlaşmayı cezasız feshetme teklifi gönderdi.`,
+    );
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true, treaty };
+  }
+
+  cancelTreatyTerminationRequest(treatyId, requesterCountryId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty || treaty.terminationRequestedBy !== requesterCountryId) return { ok: false };
+    treaty.terminationRequestedBy = null;
+    treaty.terminationRequestedAt = null;
+
+    this.sync.broadcast({
+      type: "TREATY_TERMINATION_CANCEL_REQUEST",
+      treatyId,
+    });
+
+    this.onEvent("Fesih isteği geri çekildi.");
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true };
+  }
+
+  acceptTreatyTermination(treatyId, accepterCountryId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty || treaty.status !== "ACTIVE") {
+      return { ok: false, reason: "Anlaşma aktif değil veya bulunamadı." };
+    }
+
+    // Terminated mutually with ZERO penalty from both sides!
+    treaty.status = "TERMINATED";
+    treaty.terminatedAt = Date.now();
+    treaty.terminationRequestedBy = null;
+
+    this.sync.broadcast({
+      type: "TREATY_TERMINATION_ACCEPT",
+      treatyId,
+    });
+
+    this.sync.sendChatMessage(
+      `🕊️ ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması karşılıklı rıza ile cezasız olarak feshedildi!`,
+      true,
+    );
+
+    this.onSound("celebration");
+    this.onEvent(`🕊️ Anlaşma karşılıklı kabul ile cezasız feshedildi.`);
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true, treaty };
+  }
+
+  rejectTreatyTermination(treatyId, rejecterCountryId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return { ok: false };
+    treaty.terminationRequestedBy = null;
+    treaty.terminationRequestedAt = null;
+
+    this.sync.broadcast({
+      type: "TREATY_TERMINATION_REJECT",
+      treatyId,
+    });
+
+    this.onSound("pencil");
+    this.onEvent(`Anlaşma fesih teklifi reddedildi. Anlaşma geçerliliğini koruyor.`);
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+    return { ok: true };
+  }
+
+  handleRemoteTreatyTerminationRequest(treatyId, requesterId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.terminationRequestedBy = requesterId;
+    treaty.terminationRequestedAt = Date.now();
+    const otherId = requesterId === treaty.fromId ? treaty.toId : treaty.fromId;
+    if (otherId === this.myCountryId) {
+      this.onSound("notification");
+      const reqName = requesterId === treaty.fromId ? treaty.fromName : treaty.toName;
+      this.onEvent(`⚠️ ${reqName} anlaşmayı cezasız feshetmek istiyor. Anlaşmalar menüsünden yanıtlayabilirsiniz.`);
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyTerminationCancel(treatyId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.terminationRequestedBy = null;
+    treaty.terminationRequestedAt = null;
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyTerminationAccept(treatyId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.status = "TERMINATED";
+    treaty.terminatedAt = Date.now();
+    treaty.terminationRequestedBy = null;
+    this.onSound("celebration");
+    this.onEvent(`🕊️ ${treaty.fromName} ve ${treaty.toName} arasındaki anlaşma cezasız olarak feshedildi.`);
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyTerminationReject(treatyId) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.terminationRequestedBy = null;
+    treaty.terminationRequestedAt = null;
+    this.onEvent("Anlaşma fesih teklifi reddedildi. Anlaşma devam ediyor.");
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
 
   handleRemoteTreatyProposal(remoteTreaty, isReplay = false) {

@@ -55,6 +55,8 @@ import {
   Check,
   FileText,
   XCircle,
+  ShoppingBag,
+  Package,
 } from "lucide-react";
 import { checkAppVersion } from "../../utils/versionCheck";
 
@@ -117,6 +119,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [landPixelCount, setLandPixelCount] = useState(25);
   const [landPricePerPixel, setLandPricePerPixel] = useState(50);
 
+  // Market & Inventory State (Paralı Asker & Nükleer Silah)
+  const [showMarket, setShowMarket] = useState(false);
+  const [marketTab, setMarketTab] = useState("STORE"); // 'STORE' | 'OWNED'
+
   // Nuclear Strike Weapon State
   const [isTargetingNuke, setIsTargetingNuke] = useState(false);
   const [nukeConfirmModal, setNukeConfirmModal] = useState(null); // { x, y }
@@ -144,6 +150,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const isPaintingRef = useRef(false);
   const conqueredOnDownRef = useRef(false);
   const lastCellRef = useRef(null);
+  const lastConquerTimeRef = useRef(0);
   const tapOriginRef = useRef({ x: 0, y: 0, moved: false, pointerCount: 0 });
   const pointersRef = useRef(new Map());
   const lastPinchDistRef = useRef(0);
@@ -508,9 +515,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
           !smartTarget.check.isNaval &&
           myCountry.troops >= smartTarget.check.cost
         ) {
-          // Strictly conquer 1 single pixel per tap! (Never drag-conquers clusters)
-          isPaintingRef.current = false;
+          // Strictly conquer 1 single pixel on initial tap, and start paced drag
+          isPaintingRef.current = true;
           conqueredOnDownRef.current = true;
+          lastCellRef.current = { x: smartTarget.x, y: smartTarget.y };
+          lastConquerTimeRef.current = performance.now();
           eng.conquerPixel(myCountry.id, smartTarget.x, smartTarget.y);
         } else {
           isPaintingRef.current = false;
@@ -573,11 +582,47 @@ export default function WorldGame({ onReturnToModeSelect }) {
         }
 
         // IN PAN MODE: Smooth 1:1 camera drag panning
-        // IN CONQUER MODE: Map stays steady so player can accurately tap border pixels!
+        // IN CONQUER MODE: Allows smooth controlled drag-to-conquer (1 pixel per 80ms max, 1 tap never multi-conquers)
         if (toolMode === "PAN" && isMouseDownRef.current) {
           if (Math.abs(dx) < 120 && Math.abs(dy) < 120) {
             cameraRef.current.panX += dx;
             cameraRef.current.panY += dy;
+          }
+        } else if (toolMode === "CONQUER" && isPaintingRef.current && isMouseDownRef.current) {
+          const now = performance.now();
+          if (now - lastConquerTimeRef.current >= 80) {
+            if (
+              pos &&
+              lastCellRef.current &&
+              (pos.x !== lastCellRef.current.x || pos.y !== lastCellRef.current.y)
+            ) {
+              const eng = engineRef.current;
+              const myCountry = eng?.getMyCountry();
+              if (myCountry) {
+                const smartTarget = eng.findSmartExpandTarget(
+                  myCountry.id,
+                  pos.x,
+                  pos.y,
+                  3,
+                );
+                if (
+                  smartTarget &&
+                  !smartTarget.check.isNaval &&
+                  !smartTarget.check.isTreatyViolation &&
+                  myCountry.troops >= smartTarget.check.cost
+                ) {
+                  const res = eng.conquerPixel(
+                    myCountry.id,
+                    smartTarget.x,
+                    smartTarget.y,
+                  );
+                  if (res.ok) {
+                    lastCellRef.current = { x: smartTarget.x, y: smartTarget.y };
+                    lastConquerTimeRef.current = now;
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -830,9 +875,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   const pendingIncomingCount = useMemo(() => {
     if (!myCountry) return 0;
-    return treatiesList.filter(
+    const pendingTreaties = treatiesList.filter(
       (t) => t.toId === myCountry.id && t.status === "PENDING",
     ).length;
+    const pendingTerminations = treatiesList.filter(
+      (t) =>
+        t.status === "ACTIVE" &&
+        (t.fromId === myCountry.id || t.toId === myCountry.id) &&
+        t.terminationRequestedBy &&
+        t.terminationRequestedBy !== myCountry.id,
+    ).length;
+    return pendingTreaties + pendingTerminations;
   }, [treatiesList, myCountry]);
 
   // Diplomacy Treaty Handlers
@@ -871,6 +924,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
     }
   }, [myCountry, showToast]);
 
+  const handleBuyNuclear = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const res = eng.buyNuclear(myCountry.id);
+    if (res.ok) {
+      showToast(`☢️ 1 Adet Taktik Nükleer Silah depolandı! (Envanterinde: ${res.nukes} Adet)`);
+    } else {
+      showToast(res.reason || "Nükleer silah satın alınamadı.");
+    }
+  }, [myCountry, showToast]);
+
   const handleConfirmNukeStrike = useCallback(() => {
     if (!nukeConfirmModal) return;
     const eng = engineRef.current;
@@ -878,7 +942,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
     const { x, y } = nukeConfirmModal;
     const res = eng.launchNuclearStrike(myCountry.id, x, y);
     if (res.ok) {
-      showToast("☢️ TAKTİK NÜKLEER BAŞLIK FIRLATILDI! BÖLGE YOK EDİLDİ!");
+      showToast(
+        `☢️ TAKTİK NÜKLEER BAŞLIK FIRLATILDI! BÖLGE YOK EDİLDİ! (Kalan Nükleer: ${res.remainingNukes})`,
+      );
     } else {
       showToast(res.reason || "Nükleer silah fırlatılamadı.");
     }
@@ -902,6 +968,42 @@ export default function WorldGame({ onReturnToModeSelect }) {
     eng.rejectTreaty(treatyId);
     showToast("Anlaşma teklifi reddedildi.");
   }, [showToast]);
+
+  const handleRequestTreatyTermination = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const res = eng.requestTreatyTermination(treatyId, myCountry.id);
+    if (res.ok) {
+      showToast("Karşı devlete anlaşmayı cezasız feshetme isteği gönderildi.");
+    } else {
+      showToast(res.reason || "İstek gönderilemedi.");
+    }
+  }, [myCountry, showToast]);
+
+  const handleCancelTerminationRequest = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    eng.cancelTreatyTerminationRequest(treatyId, myCountry.id);
+    showToast("Fesih isteği geri çekildi.");
+  }, [myCountry, showToast]);
+
+  const handleAcceptTreatyTermination = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const res = eng.acceptTreatyTermination(treatyId, myCountry.id);
+    if (res.ok) {
+      showToast("🕊️ Anlaşma karşılıklı rıza ile cezasız olarak feshedildi!");
+    } else {
+      showToast(res.reason || "Hata oluştu.");
+    }
+  }, [myCountry, showToast]);
+
+  const handleRejectTreatyTermination = useCallback((treatyId) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    eng.rejectTreatyTermination(treatyId, myCountry.id);
+    showToast("Fesih isteği reddedildi. Anlaşma geçerliliğini koruyor.");
+  }, [myCountry, showToast]);
 
   const handleCancelTreaty = useCallback((treatyId) => {
     const eng = engineRef.current;
@@ -1115,7 +1217,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <button
               onClick={() => setShowUpgrades(true)}
               className="px-2.5 sm:px-3 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
-              title="Devlet Geliştirmeleri & Paralı Asker"
+              title="Devlet Geliştirmeleri & Araştırma"
             >
               <LogoCitadel size={15} />
               <span className="hidden xs:inline sm:inline">Geliştir</span>
@@ -1124,27 +1226,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
           {myCountry && (
             <button
-              onClick={() => {
-                if (myCountry.gold < 35000) {
-                  showToast("Yetersiz Altın! Taktik Nükleer Silah için 35.000 Altın gereklidir.");
-                  return;
-                }
-                setIsTargetingNuke((prev) => !prev);
-                if (!isTargetingNuke) {
-                  showToast("☢️ Hedef Seçimi: Haritada vurmak istediğin koordinata dokun!");
-                }
-              }}
-              className={`px-2 sm:px-2.5 h-9 rounded-xl font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition active:scale-95 ${
-                isTargetingNuke
-                  ? "bg-rose-600 text-white animate-pulse shadow-rose-600/50"
-                  : myCountry.gold >= 35000
-                    ? "bg-gradient-to-r from-emerald-600 to-lime-600 hover:from-emerald-500 hover:to-lime-500 text-white shadow-emerald-600/30"
-                    : "bg-slate-800/80 text-slate-400 border border-slate-700/60"
-              }`}
-              title="Taktik Nükleer Silah (35.000 Altın)"
+              onClick={() => setShowMarket(true)}
+              className="relative px-2.5 sm:px-3 h-9 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 text-white font-black text-[11px] sm:text-xs flex items-center gap-1.5 shadow-xl transition"
+              title="Market: Paralı Asker Kiralama & Nükleer Cephanelik"
             >
-              <span>☢️</span>
-              <span className="hidden xs:inline sm:inline">Nükleer</span>
+              <ShoppingBag size={15} />
+              <span className="hidden xs:inline sm:inline">Market</span>
+              {(myCountry.inventory?.nukes || 0) > 0 && (
+                <span className="absolute -top-1 -right-1 px-1.5 py-0.2 bg-rose-600 text-white text-[9px] font-black rounded-full border border-slate-900 shadow animate-pulse">
+                  ☢️{myCountry.inventory.nukes}
+                </span>
+              )}
             </button>
           )}
 
@@ -1373,13 +1465,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 onClick={() => {
                   const eng = engineRef.current;
                   if (!eng) return;
-                  const res = eng.conquerNextBorderPixel(myCountry.id);
+                  const res = eng.conquerNextBorderPixel(myCountry.id, true);
                   if (!res.ok && res.reason) {
                     showToast(res.reason);
                   }
                 }}
                 className="min-h-[44px] px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg transition shrink-0"
-                title="Sınırındaki en uygun komşu pikseli tek dokunuşla fetheder"
+                title="Sınırındaki boş (tarafsız) toprağı tek dokunuşla fetheder (Devletlere saldırmaz)"
               >
                 <LogoTerritory size={15} />
                 <span>+1</span>
@@ -1391,7 +1483,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   if (!eng) return;
                   let count = 0;
                   for (let i = 0; i < 5; i++) {
-                    const res = eng.conquerNextBorderPixel(myCountry.id);
+                    const res = eng.conquerNextBorderPixel(myCountry.id, true);
                     if (res.ok) count++;
                     else {
                       if (count === 0 && res.reason) showToast(res.reason);
@@ -1400,7 +1492,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   }
                 }}
                 className="min-h-[44px] px-3 rounded-xl bg-teal-400 hover:bg-teal-300 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow-lg transition shrink-0"
-                title="Sınırındaki 5 komşu pikseli tek dokunuşla hızlıca fetheder"
+                title="Sınırındaki 5 boş (tarafsız) toprağı hızlıca fetheder (Devletlere saldırmaz)"
               >
                 <span>+5</span>
               </button>
@@ -1686,52 +1778,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
             </div>
 
             <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
-              {/* PARALI ASKER SATIN ALMA (1 ASKER = 1.000 ALTIN) */}
-              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/15 to-yellow-500/10 border border-amber-500/30 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm">⚔️</span>
-                    <span className="text-xs font-black text-amber-300">
-                      Paralı Asker Kiralama
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-bold text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full">
-                    1 Asker = 1.000 🪙
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-300 leading-tight">
-                  Altınını anında askere çevir. Maksimum ordu sınırını aşmayacak şekilde orduna katılır.
-                </p>
-                <div className="grid grid-cols-4 gap-1.5 pt-1">
-                  {[
-                    { count: 1, cost: 1000 },
-                    { count: 5, cost: 5000 },
-                    { count: 10, cost: 10000 },
-                    { count: 50, cost: 50000 },
-                  ].map(({ count, cost }) => {
-                    const canAfford = myCountry.gold >= cost;
-                    return (
-                      <button
-                        key={count}
-                        type="button"
-                        disabled={!canAfford}
-                        onClick={() => handleBuyMercenaries(count)}
-                        className={`py-2 px-1 rounded-xl text-center flex flex-col items-center justify-center transition ${
-                          canAfford
-                            ? "bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow active:scale-95 cursor-pointer"
-                            : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
-                        }`}
-                      >
-                        <span className="text-xs font-black">+{count} Asker</span>
-                        <span className="text-[10px] font-bold opacity-80">
-                          {cost >= 1000 ? `${cost / 1000}K` : cost} 🪙
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               {UPGRADE_DEFINITIONS.map((def) => {
                 const lvl = myCountry.upgrades?.[def.key] || 0;
                 const isMax = lvl >= def.maxLevel;
@@ -2427,13 +2473,52 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => handleCancelTreaty(tr.id)}
-                        className="w-full py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold text-xs transition flex items-center justify-center gap-1.5"
-                      >
-                        <XCircle size={14} />
-                        <span>Anlaşmayı Feshet ({tr.penalty} Altın Ceza)</span>
-                      </button>
+                      {tr.terminationRequestedBy === myCountry.id ? (
+                        <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 font-bold">
+                            <RefreshCw size={13} className="animate-spin text-amber-400 shrink-0" />
+                            <span>Fesih isteği gönderildi, karşı tarafın onayı bekleniyor...</span>
+                          </div>
+                          <button
+                            onClick={() => handleCancelTerminationRequest(tr.id)}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-black shrink-0 transition"
+                          >
+                            İptal Et
+                          </button>
+                        </div>
+                      ) : tr.terminationRequestedBy && tr.terminationRequestedBy !== myCountry.id ? (
+                        <div className="p-2.5 rounded-xl bg-rose-500/20 border border-rose-500/40 text-xs space-y-2">
+                          <div className="text-rose-200 font-bold flex items-center gap-1.5">
+                            <AlertTriangle size={15} className="text-rose-400 shrink-0" />
+                            <span>Karşı taraf anlaşmayı karşılıklı feshetmek istiyor. Kabul ederseniz iki taraftan da hiçbir ceza kesilmeden anlaşma bozulacaktır.</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              onClick={() => handleAcceptTreatyTermination(tr.id)}
+                              className="py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black text-xs flex items-center justify-center gap-1 transition"
+                            >
+                              <Check size={14} />
+                              <span>Feshi Onayla (Cezasız)</span>
+                            </button>
+                            <button
+                              onClick={() => handleRejectTreatyTermination(tr.id)}
+                              className="py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-bold text-xs flex items-center justify-center gap-1 transition"
+                            >
+                              <X size={14} />
+                              <span>Reddet</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleRequestTreatyTermination(tr.id)}
+                          className="w-full py-2 rounded-xl bg-gradient-to-r from-rose-500/15 to-amber-500/15 hover:from-rose-500/25 hover:to-amber-500/25 border border-rose-500/30 text-amber-200 font-bold text-xs transition flex items-center justify-center gap-1.5 active:scale-95"
+                          title="Karşı tarafa fesih isteği gönderir, kabul edilirse cezasız bozulur"
+                        >
+                          <Handshake size={14} className="text-amber-400" />
+                          <span>Anlaşmayı Feshet (İstek Gönder - Cezasız)</span>
+                        </button>
+                      )}
                     </div>
                   );
                 });
@@ -2444,97 +2529,150 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 const incomingList = treatiesList.filter(
                   (t) => t.status === "PENDING" && t.toId === myCountry.id
                 );
+                const incomingTerminations = treatiesList.filter(
+                  (t) =>
+                    t.status === "ACTIVE" &&
+                    (t.fromId === myCountry.id || t.toId === myCountry.id) &&
+                    t.terminationRequestedBy &&
+                    t.terminationRequestedBy !== myCountry.id
+                );
 
-                if (incomingList.length === 0) {
+                if (incomingList.length === 0 && incomingTerminations.length === 0) {
                   return (
                     <div className="text-center py-8 px-4 rounded-2xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-400">
                       <FileText size={32} className="mx-auto mb-2 text-slate-600" />
                       <div className="text-xs font-bold text-slate-300">
-                        Gelen bir anlaşma teklifi yok
+                        Gelen bir anlaşma veya fesih teklifi yok
                       </div>
                       <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto">
-                        Diğer oyuncular sana bir ittifak veya haraç teklif ettiğinde burada görünecektir.
+                        Diğer oyuncular sana bir anlaşma veya cezasız fesih teklif ettiğinde burada görünecektir.
                       </p>
                     </div>
                   );
                 }
 
-                return incomingList.map((tr) => {
-                  const sender = engineRef.current?.countryMap.get(tr.fromId);
-                  const isAlliance = tr.type === "ALLIANCE";
-                  const iWouldPay = tr.tributePayerId === myCountry.id;
-
-                  return (
-                    <div
-                      key={tr.id}
-                      className="p-3 sm:p-3.5 rounded-2xl bg-slate-800/80 border border-indigo-500/40 flex flex-col gap-2.5 shadow-lg shadow-indigo-950/40"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/40 shadow-sm"
-                            style={{ backgroundColor: sender?.color || "#94A3B8" }}
-                          />
-                          <span className="font-black text-sm text-white">
-                            {sender?.name || "Bilinmeyen Devlet"}
-                          </span>
+                return (
+                  <div className="space-y-3">
+                    {/* INCOMING TERMINATION REQUESTS */}
+                    {incomingTerminations.map((tr) => {
+                      const partnerId = tr.fromId === myCountry.id ? tr.toId : tr.fromId;
+                      const partner = engineRef.current?.countryMap.get(partnerId);
+                      return (
+                        <div
+                          key={`term_${tr.id}`}
+                          className="p-3.5 rounded-2xl bg-rose-950/60 border border-rose-500/50 shadow-lg space-y-2.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-black text-xs text-rose-300 flex items-center gap-1.5">
+                              <AlertTriangle size={15} className="text-rose-400" />
+                              <span>Fesih Teklifi: {partner?.name || "Müttefik"}</span>
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                              Cezasız Fesih
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-200">
+                            <strong>{partner?.name || "Karşı devlet"}</strong>, aranızdaki {tr.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşmasını karşılıklı olarak feshetmek istiyor. Onaylarsanız hiçbir ceza kesilmeden anlaşma barışçıl şekilde bozulacaktır.
+                          </p>
+                          <div className="grid grid-cols-2 gap-2 pt-1">
+                            <button
+                              onClick={() => handleRejectTreatyTermination(tr.id)}
+                              className="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-black text-xs flex items-center justify-center gap-1.5 transition"
+                            >
+                              <XCircle size={14} />
+                              <span>Reddet</span>
+                            </button>
+                            <button
+                              onClick={() => handleAcceptTreatyTermination(tr.id)}
+                              className="py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/30 transition"
+                            >
+                              <Check size={14} />
+                              <span>Feshi Onayla (Cezasız)</span>
+                            </button>
+                          </div>
                         </div>
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full font-black text-[10px] tracking-wide uppercase ${
-                            isAlliance
-                              ? "bg-blue-500/20 text-blue-300 border border-blue-500/40"
-                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                          }`}
-                        >
-                          {isAlliance ? "🛡️ İttifak Teklifi" : "💰 Haraç Teklifi"}
-                        </span>
-                      </div>
+                      );
+                    })}
 
-                      <div className="text-[11px] text-slate-200 bg-slate-900/70 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
-                        {tr.type === "LAND_PURCHASE" ? (
-                          <div className="text-amber-200">
-                            💰 Bu devlet sizden <strong className="text-amber-400">{tr.landPixelCount} piksel</strong> sınır toprağınızı toplam <strong className="text-amber-400">{tr.landTotalPrice?.toLocaleString()} Altın</strong> karşılığında satın almak istiyor.
+                    {/* INCOMING PROPOSALS */}
+                    {incomingList.map((tr) => {
+                      const sender = engineRef.current?.countryMap.get(tr.fromId);
+                      const isAlliance = tr.type === "ALLIANCE";
+                      const iWouldPay = tr.tributePayerId === myCountry.id;
+
+                      return (
+                        <div
+                          key={tr.id}
+                          className="p-3 sm:p-3.5 rounded-2xl bg-slate-800/80 border border-indigo-500/40 flex flex-col gap-2.5 shadow-lg shadow-indigo-950/40"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/40 shadow-sm"
+                                style={{ backgroundColor: sender?.color || "#94A3B8" }}
+                              />
+                              <span className="font-black text-sm text-white">
+                                {sender?.name || "Bilinmeyen Devlet"}
+                              </span>
+                            </div>
+                            <span
+                              className={`px-2.5 py-0.5 rounded-full font-black text-[10px] tracking-wide uppercase ${
+                                isAlliance
+                                  ? "bg-blue-500/20 text-blue-300 border border-blue-500/40"
+                                  : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                              }`}
+                            >
+                              {isAlliance ? "🛡️ İttifak Teklifi" : "💰 Haraç Teklifi"}
+                            </span>
                           </div>
-                        ) : isAlliance ? (
-                          <div>
-                            Bu devlet seninle <strong>saldırmazlık paktı</strong> imzalamak istiyor. Anlaşma süresince birbirinize saldıramazsınız.
+
+                          <div className="text-[11px] text-slate-200 bg-slate-900/70 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
+                            {tr.type === "LAND_PURCHASE" ? (
+                              <div className="text-amber-200">
+                                💰 Bu devlet sizden <strong className="text-amber-400">{tr.landPixelCount} piksel</strong> sınır toprağınızı toplam <strong className="text-amber-400">{tr.landTotalPrice?.toLocaleString()} Altın</strong> karşılığında satın almak istiyor.
+                              </div>
+                            ) : isAlliance ? (
+                              <div>
+                                Bu devlet seninle <strong>saldırmazlık paktı</strong> imzalamak istiyor. Anlaşma süresince birbirinize saldıramazsınız.
+                              </div>
+                            ) : iWouldPay ? (
+                              <div className="text-amber-200">
+                                ⚠️ Bu devlet sana saldırmama karşılığında dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> haraç talep ediyor.
+                              </div>
+                            ) : (
+                              <div className="text-emerald-300">
+                                🎁 Bu devlet ona saldırmaman karşılığında sana dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> ödemeyi teklif ediyor.
+                              </div>
+                            )}
+                            <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 flex items-center justify-between">
+                              <span>{tr.type === "LAND_PURCHASE" ? "Satış Türü:" : "Anlaşmayı bozana ceza tazminatı:"}</span>
+                              <span className="font-black text-amber-400">
+                                {tr.type === "LAND_PURCHASE" ? "Peşin Altın Ödemesi" : `${tr.penalty} Altın`}
+                              </span>
+                            </div>
                           </div>
-                        ) : iWouldPay ? (
-                          <div className="text-amber-200">
-                            ⚠️ Bu devlet sana saldırmama karşılığında dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> haraç talep ediyor.
+
+                          <div className="grid grid-cols-2 gap-2 pt-1">
+                            <button
+                              onClick={() => handleRejectTreaty(tr.id)}
+                              className="py-2 rounded-xl bg-slate-700/80 hover:bg-slate-700 text-slate-300 font-black text-xs transition flex items-center justify-center gap-1.5"
+                            >
+                              <XCircle size={14} />
+                              <span>Reddet</span>
+                            </button>
+                            <button
+                              onClick={() => handleAcceptTreaty(tr.id)}
+                              className="py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5"
+                            >
+                              <Check size={14} />
+                              <span>{tr.type === "LAND_PURCHASE" ? "Satışı Onayla (Altını Al)" : "Kabul Et"}</span>
+                            </button>
                           </div>
-                        ) : (
-                          <div className="text-emerald-300">
-                            🎁 Bu devlet ona saldırmaman karşılığında sana dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> ödemeyi teklif ediyor.
-                          </div>
-                        )}
-                        <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 flex items-center justify-between">
-                          <span>{tr.type === "LAND_PURCHASE" ? "Satış Türü:" : "Anlaşmayı bozana ceza tazminatı:"}</span>
-                          <span className="font-black text-amber-400">
-                            {tr.type === "LAND_PURCHASE" ? "Peşin Altın Ödemesi" : `${tr.penalty} Altın`}
-                          </span>
                         </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 pt-1">
-                        <button
-                          onClick={() => handleRejectTreaty(tr.id)}
-                          className="py-2 rounded-xl bg-slate-700/80 hover:bg-slate-700 text-slate-300 font-black text-xs transition flex items-center justify-center gap-1.5"
-                        >
-                          <XCircle size={14} />
-                          <span>Reddet</span>
-                        </button>
-                        <button
-                          onClick={() => handleAcceptTreaty(tr.id)}
-                          className="py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5"
-                        >
-                          <Check size={14} />
-                          <span>{tr.type === "LAND_PURCHASE" ? "Satışı Onayla (Altını Al)" : "Kabul Et"}</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                });
+                      );
+                    })}
+                  </div>
+                );
               })()}
 
               {/* TAB 3: NEW TREATY PROPOSAL FORM */}
@@ -2888,8 +3026,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
             <div className="p-3 rounded-2xl bg-rose-950/50 border border-rose-500/40 text-left text-xs space-y-1.5 text-slate-200">
               <div className="flex items-center justify-between text-amber-400 font-black">
-                <span>Fırlatma Maliyeti:</span>
-                <span>35.000 Altın</span>
+                <span>Harcanacak Cephane:</span>
+                <span>Depodan 1 Adet Taktik Nükleer</span>
               </div>
               <p className="text-[11px] text-rose-200">
                 22 piksel yarıçapındaki tüm topraklar ve ordular yok edilecek. Bölge kalıcı olarak radyoaktif, yaşanamaz ve fethedilemez alana dönüşecektir!
@@ -2911,6 +3049,250 @@ export default function WorldGame({ onReturnToModeSelect }) {
               >
                 Fırlat & Ateşle! 🚀
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MARKET & ENVANTER MODAL */}
+      {showMarket && myCountry && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 select-none">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700/80 rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                  <ShoppingBag size={20} />
+                </div>
+                <div>
+                  <h2 className="text-base font-black text-white flex items-center gap-2">
+                    Market & Envanter
+                  </h2>
+                  <span className="text-[11px] text-slate-400">
+                    Paralı asker kiralayın, nükleer silah depolayın ve cephaneliğinizi yönetin
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMarket(false)}
+                className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Current Resources Bar */}
+            <div className="my-3 p-2.5 rounded-2xl bg-slate-950/70 border border-slate-800/80 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5 font-bold text-slate-300">
+                <LogoGold size={15} />
+                <span>Kasa: <strong className="text-amber-400">{Math.floor(myCountry.gold).toLocaleString()} 🪙</strong></span>
+              </div>
+              <div className="flex items-center gap-1.5 font-bold text-slate-300">
+                <LogoSwords size={15} />
+                <span>Ordu: <strong className="text-emerald-400">{myCountry.troops.toFixed(1)} / {Math.floor(myCountry.capacity)}</strong></span>
+              </div>
+              <div className="flex items-center gap-1.5 font-bold text-slate-300">
+                <span>☢️</span>
+                <span>Nükleer: <strong className="text-rose-400">{myCountry.inventory?.nukes || 0} Adet</strong></span>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div className="grid grid-cols-2 gap-2 mb-3 bg-slate-950/60 p-1 rounded-2xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setMarketTab("STORE")}
+                className={`py-2 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition ${
+                  marketTab === "STORE"
+                    ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/30"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <ShoppingBag size={14} />
+                <span>Market (Satın Al)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMarketTab("OWNED")}
+                className={`py-2 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition relative ${
+                  marketTab === "OWNED"
+                    ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Package size={14} />
+                <span>Sahip Oldukların</span>
+                {(myCountry.inventory?.nukes || 0) > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black">
+                    {myCountry.inventory.nukes}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* TAB CONTENT */}
+            <div className="flex-1 overflow-y-auto space-y-3 pr-0.5 custom-scrollbar">
+              {marketTab === "STORE" ? (
+                <>
+                  {/* MERCENARIES (PARALI ASKER) */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 to-yellow-500/5 border border-amber-500/30 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">⚔️</span>
+                        <div>
+                          <div className="text-xs font-black text-amber-300">
+                            Paralı Asker Birliği
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            Altın ödeyerek anında profesyonel asker transfer et
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-black text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                        1 Asker = 1.000 🪙
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 pt-1">
+                      {[
+                        { count: 5, cost: 5000 },
+                        { count: 10, cost: 10000 },
+                        { count: 25, cost: 25000 },
+                        { count: 50, cost: 50000 },
+                      ].map(({ count, cost }) => {
+                        const canAfford = myCountry.gold >= cost;
+                        return (
+                          <button
+                            key={count}
+                            type="button"
+                            disabled={!canAfford}
+                            onClick={() => handleBuyMercenaries(count)}
+                            className={`py-2 px-1 rounded-xl text-center flex flex-col items-center justify-center transition active:scale-95 ${
+                              canAfford
+                                ? "bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-md cursor-pointer"
+                                : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
+                            }`}
+                          >
+                            <span className="text-xs font-black">+{count} Asker</span>
+                            <span className="text-[10px] font-bold opacity-90">
+                              {(cost / 1000).toFixed(0)}K 🪙
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* NUCLEAR WEAPON (TAKTIK NUKLEER) */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-rose-950/60 to-red-950/30 border border-rose-500/40 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center text-lg">
+                          ☢️
+                        </div>
+                        <div>
+                          <div className="text-xs font-black text-rose-300">
+                            Taktik Nükleer Silah
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            Kitle İmha Başlığı (22 Piksel Etki Yarıçapı)
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-black text-rose-400 bg-rose-500/20 px-2 py-0.5 rounded-full border border-rose-500/30">
+                        35.000 🪙
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Satın alındığında <strong className="text-amber-400">envanterinizde depolanır</strong>. Dilediğiniz zaman "Sahip Oldukların" sekmesine gelip haritadaki herhangi bir noktaya fırlatabilirsiniz. Vurulan bölge tamamen yok edilir ve kalıcı radyasyon alanına dönüşür.
+                    </p>
+
+                    <button
+                      type="button"
+                      disabled={myCountry.gold < 35000}
+                      onClick={handleBuyNuclear}
+                      className={`w-full py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition shadow-lg active:scale-95 ${
+                        myCountry.gold >= 35000
+                          ? "bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white shadow-rose-600/30 cursor-pointer"
+                          : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
+                      }`}
+                    >
+                      <span>☢️</span>
+                      <span>Satın Al ve Depola (-35.000 Altın)</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* TAB: OWNED / INVENTORY (SAHİP OLDUKLARIN) */
+                <div className="space-y-3">
+                  {/* NUKES INVENTORY */}
+                  <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700/80 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-10 h-10 rounded-2xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center text-xl shadow">
+                          ☢️
+                        </div>
+                        <div>
+                          <div className="text-xs font-black text-white">
+                            Taktik Nükleer Silah
+                          </div>
+                          <span className="text-[11px] text-slate-400">
+                            Depodaki Miktar: <strong className="text-amber-400 font-black">{myCountry.inventory?.nukes || 0} Adet</strong>
+                          </span>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                        (myCountry.inventory?.nukes || 0) > 0
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                          : "bg-slate-700/50 text-slate-400"
+                      }`}>
+                        {(myCountry.inventory?.nukes || 0) > 0 ? "Fırlatmaya Hazır 🚀" : "Depoda Yok"}
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300">
+                      "Kullan" butonuna dokunduktan sonra haritada patlatmak istediğiniz koordinata dokunun. Depodan 1 adet harcanır ve ilave altın kesilmez.
+                    </p>
+
+                    <button
+                      type="button"
+                      disabled={!(myCountry.inventory?.nukes > 0)}
+                      onClick={() => {
+                        setShowMarket(false);
+                        setIsTargetingNuke(true);
+                        showToast("☢️ HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!");
+                      }}
+                      className={`w-full py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition active:scale-95 ${
+                        myCountry.inventory?.nukes > 0
+                          ? "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer"
+                          : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
+                      }`}
+                    >
+                      <Zap size={14} />
+                      <span>Kullan (1 Tane Fırlat) 🚀</span>
+                    </button>
+                  </div>
+
+                  {/* SUMMARY STATS CARD */}
+                  <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-2 text-xs text-slate-300">
+                    <div className="font-bold text-white flex items-center gap-1.5">
+                      <Shield size={14} className="text-indigo-400" />
+                      <span>Mülk & Savunma Durumu</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                      <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
+                        <span className="text-slate-400 block text-[10px]">Toplam Toprak:</span>
+                        <span className="font-black text-white">{myCountry.landCount} Piksel</span>
+                      </div>
+                      <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
+                        <span className="text-slate-400 block text-[10px]">Ordu Kuvveti:</span>
+                        <span className="font-black text-emerald-400">🎖️ {Math.floor(myCountry.troops)} Asker</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

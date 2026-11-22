@@ -59,6 +59,7 @@ export class WorldMapRenderer {
     const base = this.worldData.baseMapRgba;
     const owners = engine.owners;
     const bounds = engine.countryBounds || engine.computeCountryBounds();
+    const total = MAP_W * MAP_H;
 
     // Reset base grey map
     dst.set(base);
@@ -137,7 +138,7 @@ export class WorldMapRenderer {
     }
 
     // Render radioactive wasteland zones (scorched toxic soil)
-    if (engine.isWasteland) {
+    if (engine.isWasteland && engine.nuclearStrikes && engine.nuclearStrikes.length > 0) {
       for (let i = 0; i < total; i++) {
         if (engine.isWasteland[i]) {
           const p4 = i * 4;
