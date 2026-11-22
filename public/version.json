@@ -1,8 +1,8 @@
 {
-  "versionCode": 5,
-  "versionName": "1.4",
-  "minVersionCode": 5,
+  "versionCode": 6,
+  "versionName": "1.5",
+  "minVersionCode": 6,
   "apkUrl": "https://github.com/endermnkafa-hub/sehirfethetmeoyunu/releases/download/v1.0-latest/sehir-fethetme-oyunu.apk",
-  "releaseNotes": "Siyah ekran düzeltildi; Market & Envanter menüsü eklendi, nükleer başlık depolama ve envanterden fırlatma sağlandı; +1 ve +5 tuşları sadece sahipsiz boş topraklara saldırması sağlandı; cezasız karşılıklı anlaşma feshi getirildi; kontrollü akıcı sürükleyerek fethetme eklendi.",
+  "releaseNotes": "Devletin içinde boşluk hatası tamamen kaldırıldı; yukarıya Otomatik Fetih (⚡ Oto Fethet) tuşu eklendi.",
   "updatedAt": "2026-11-23"
 }

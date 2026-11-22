@@ -123,6 +123,28 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [showMarket, setShowMarket] = useState(false);
   const [marketTab, setMarketTab] = useState("STORE"); // 'STORE' | 'OWNED'
 
+  // Auto Conquer State (Yukarıdaki Oto Fethet)
+  const [autoConquer, setAutoConquer] = useState(false);
+  const autoConquerRef = useRef(false);
+
+  useEffect(() => {
+    autoConquerRef.current = autoConquer;
+  }, [autoConquer]);
+
+  useEffect(() => {
+    if (!autoConquer) return;
+    const timer = setInterval(() => {
+      const eng = engineRef.current;
+      const myC = eng?.getMyCountry();
+      if (!myC || !autoConquerRef.current) return;
+      if (myC.troops >= 0.8) {
+        eng.conquerNextBorderPixel(myC.id, true);
+      }
+    }, 320);
+
+    return () => clearInterval(timer);
+  }, [autoConquer]);
+
   // Nuclear Strike Weapon State
   const [isTargetingNuke, setIsTargetingNuke] = useState(false);
   const [nukeConfirmModal, setNukeConfirmModal] = useState(null); // { x, y }
@@ -1237,6 +1259,40 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   ☢️{myCountry.inventory.nukes}
                 </span>
               )}
+            </button>
+          )}
+
+          {myCountry && (
+            <button
+              onClick={() => {
+                setAutoConquer((prev) => {
+                  const next = !prev;
+                  showToast(
+                    next
+                      ? "⚡ Otomatik Fetih Açıldı! (Boş topraklar otomatik fethediliyor)"
+                      : "⏸️ Otomatik Fetih Durduruldu.",
+                  );
+                  return next;
+                });
+              }}
+              className={`px-2.5 sm:px-3 h-9 rounded-xl font-black text-[11px] sm:text-xs flex items-center gap-1.5 shadow-xl transition active:scale-95 ${
+                autoConquer
+                  ? "bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-amber-400/50 border border-yellow-300 ring-2 ring-yellow-400/50"
+                  : "bg-slate-900/92 border border-amber-500/35 text-amber-300 hover:bg-slate-800 hover:text-white"
+              }`}
+              title={
+                autoConquer
+                  ? "Otomatik Fetih Açık (Durdurmak için dokun)"
+                  : "Otomatik Fetih (Sürekli boş toprakları fetheder)"
+              }
+            >
+              <Zap size={14} className={autoConquer ? "text-slate-950 animate-bounce" : "text-amber-400"} />
+              <span className="hidden xs:inline sm:inline">Oto Fethet</span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  autoConquer ? "bg-red-600 animate-ping" : "bg-slate-600"
+                }`}
+              />
             </button>
           )}
 

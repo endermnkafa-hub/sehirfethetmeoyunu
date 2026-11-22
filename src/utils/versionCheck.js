@@ -3,8 +3,8 @@ import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 
 export const CURRENT_CLIENT_INFO = {
-  versionCode: 5,
-  versionName: '1.4',
+  versionCode: 6,
+  versionName: '1.5',
   platform: typeof window !== 'undefined' && Capacitor.isNativePlatform() ? 'android' : 'web',
 };
 

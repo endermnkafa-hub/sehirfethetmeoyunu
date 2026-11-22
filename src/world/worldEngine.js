@@ -1056,23 +1056,6 @@ export class WorldSimulationEngine {
     }
 
     if (isAdjacent) {
-      // Check if country has internal holes/cavities inside its territory
-      // If (x, y) has < 3 owned neighbors (an outer border pixel), but the country has internal hollow holes with 3+ owned neighbors,
-      // force the player to conquer their internal holes first so the country never has empty holes!
-      const ownedNeighborsCount =
-        (x > 0 && this.owners[idx - 1] === countryId ? 1 : 0) +
-        (x < MAP_W - 1 && this.owners[idx + 1] === countryId ? 1 : 0) +
-        (y > 0 && this.owners[idx - MAP_W] === countryId ? 1 : 0) +
-        (y < MAP_H - 1 && this.owners[idx + MAP_W] === countryId ? 1 : 0);
-
-      if (ownedNeighborsCount < 3 && this.hasInternalCavities(countryId)) {
-        return {
-          valid: false,
-          reason:
-            "Devletinin içinde boşluk varken dışarıya büyüyemezsin! Önce içteki boşluk piksellerini fethet.",
-        };
-      }
-
       if (this.isSnakingConquest(countryId, x, y)) {
         return {
           valid: false,
@@ -1320,28 +1303,16 @@ export class WorldSimulationEngine {
       0.5,
       Number((1.0 - siegeLevel * 0.02).toFixed(2)),
     );
-    const cavityTotalCost = Number(
-      (enclosed.length * costPerCavityPixel).toFixed(2),
-    );
-    const totalCost = Number((check.cost + cavityTotalCost).toFixed(2));
 
-    // Never auto-grant free pixels: ensure sufficient troops for every single pixel!
-    // Prevent creating hollow gaps: if player doesn't have enough troops for the cavity, block the encirclement!
-    if (country.troops < totalCost) {
-      if (enclosed.length > 0) {
-        return {
-          ok: false,
-          reason: `Devletinin içinde boşluk bırakamazsın! Çevrelenen ${enclosed.length} iç pikseli fethetmek için toplam ${totalCost.toFixed(1)} asker gerekiyor (Sende: ${country.troops.toFixed(1)} asker var).`,
-        };
-      }
+    if (country.troops < check.cost) {
       return {
         ok: false,
         reason: `Yetersiz asker! (${check.cost} asker gerekli, sende ${country.troops.toFixed(1)} var)`,
       };
     }
 
-    // Deduct exact total troops for both the clicked border pixel + all enclosed cavity pixels
-    country.troops = Math.max(0, country.troops - totalCost);
+    // Deduct cost for the clicked border pixel
+    country.troops = Math.max(0, country.troops - check.cost);
     this.owners[idx] = countryId;
     country.landCount++;
     country.population += 5;
@@ -1361,21 +1332,23 @@ export class WorldSimulationEngine {
 
     const filledCavities = [];
     for (const cIdx of enclosed) {
-      this.owners[cIdx] = countryId;
-      const px = cIdx % MAP_W;
-      const py = (cIdx / MAP_W) | 0;
-      this._expandCountryBound(countryId, px, py);
-      filledCavities.push({ x: px, y: py });
-      country.landCount++;
-      country.population += 3;
+      if (country.troops >= costPerCavityPixel) {
+        country.troops = Math.max(0, country.troops - costPerCavityPixel);
+        this.owners[cIdx] = countryId;
+        const px = cIdx % MAP_W;
+        const py = (cIdx / MAP_W) | 0;
+        this._expandCountryBound(countryId, px, py);
+        filledCavities.push({ x: px, y: py });
+        country.landCount++;
+        country.population += 3;
 
-      this.sync.broadcast({
-        type: "CONQUER_PIXEL",
-        countryId,
-        x: px,
-        y: py,
-        cost: costPerCavityPixel,
-      });
+        this.sync.broadcast({
+          type: "CONQUER_PIXEL",
+          countryId,
+          x: px,
+          y: py,
+        });
+      }
     }
 
     // Record for 5-Second Undo if this was our own country (including any filled cavities)
