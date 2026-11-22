@@ -67,6 +67,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [showRules, setShowRules] = useState(false);
   const [showUpgrades, setShowUpgrades] = useState(false);
+  const [showCountriesList, setShowCountriesList] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
   // Real-time HUD state
@@ -499,7 +500,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
     animId = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(animId);
-      engineRef.current?.sync?.destroy();
     };
   }, []);
 
@@ -592,6 +592,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
         {/* Right Controls */}
         <div className="pointer-events-auto flex items-center gap-2">
+          <button
+            onClick={() => setShowCountriesList(true)}
+            className="px-3 h-9 rounded-xl bg-slate-900/90 border border-emerald-500/40 text-emerald-300 hover:bg-slate-800 font-black text-xs flex items-center gap-1.5 shadow-xl transition"
+            title="Haritadaki tüm devletleri gör ve odaklan"
+          >
+            <Globe size={15} />
+            <span>Ülkeler ({hud.totalCountriesCount})</span>
+          </button>
+
           {myCountry && (
             <button
               onClick={() => setShowUpgrades(true)}
@@ -707,6 +716,94 @@ export default function WorldGame({ onReturnToModeSelect }) {
         onPointerCancel={handlePointerUp}
         className="w-full h-full cursor-crosshair touch-none"
       />
+
+      {/* COUNTRIES LIST & JUMP-TO-MAP MODAL */}
+      {showCountriesList && (
+        <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-5 shadow-2xl text-left">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-base font-black text-white flex items-center gap-2">
+                  <Globe size={18} className="text-emerald-400" />
+                  <span>Haritadaki Devletler ({engineRef.current?.countries?.length || 0})</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Bir devlete tıklayarak kamerayı doğrudan o devletin topraklarına odaklayabilirsin.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowCountriesList(false)}
+                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+              {(engineRef.current?.countries || [])
+                .filter((c) => c.landCount > 0)
+                .sort((a, b) => b.landCount - a.landCount)
+                .map((c) => {
+                  const isMine = myCountry && c.id === myCountry.id;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
+                        isMine
+                          ? 'bg-amber-500/10 border-amber-500/50'
+                          : 'bg-slate-800/80 border-slate-700/80'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className="w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950"
+                          style={{ borderColor: c.color || '#FBBF24' }}
+                        >
+                          {c.flagDataUrl && (
+                            <img src={c.flagDataUrl} alt={c.name} className="w-full h-full object-cover" />
+                          )}
+                        </div>
+                        <div>
+                          <div className="font-black text-xs text-white flex items-center gap-1.5">
+                            <span>{c.name}</span>
+                            {isMine && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black">
+                                SEN
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-bold">
+                            {c.landCount} Piksel • {Math.floor(c.troops)}/{c.capacity} Asker
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          const eng = engineRef.current;
+                          if (eng) {
+                            const center = eng.getCountryCenter(c.id);
+                            centerOnCoords(center.x, center.y, 7.0);
+                            setShowCountriesList(false);
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition shadow"
+                      >
+                        Haritada Git
+                      </button>
+                    </div>
+                  );
+                })}
+
+              {(!engineRef.current?.countries || engineRef.current.countries.filter((c) => c.landCount > 0).length === 0) && (
+                <div className="p-6 text-center text-xs text-slate-400">
+                  Henüz haritada kurulmuş bir devlet yok. Gri bir piksele dokunarak ilk devleti kur!
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* UPGRADES MODAL */}
       {showUpgrades && myCountry && (

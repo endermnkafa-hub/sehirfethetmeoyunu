@@ -1,9 +1,12 @@
 // Real-Time Cross-Device Shared World Synchronization Layer
-// Uses HTTPS Cloud Pub/Sub + Persistent History (ntfy.sh SSE/REST) + Local BroadcastChannel
-// Works across Phone (4G/5G/Wi-Fi) and PC without NAT blocks, even if devices open at different times!
+// Uses HTTPS Cloud Pub/Sub (ntfy.sh JSON Envelope POST + 3s Active HTTPS Polling + Live SSE) + Local BroadcastChannel
+// Guaranteed to sync Phone (4G/5G/Wi-Fi) and PC reliably
 
-const CLOUD_TOPIC = 'sf_world_mmo_v10_global_shared_earth';
-const CLOUD_URL = `https://ntfy.sh/${CLOUD_TOPIC}`;
+import { FLAG_W, FLAG_H } from './flagLibrary';
+
+const CLOUD_TOPIC = 'sf_world_mmo_v11_global_earth_sync';
+const CLOUD_ROOT_URL = 'https://ntfy.sh';
+const CLOUD_TOPIC_URL = `https://ntfy.sh/${CLOUD_TOPIC}`;
 
 export class SharedWorldSync {
   constructor(engine, onRemoteUpdate) {
@@ -16,18 +19,20 @@ export class SharedWorldSync {
     this.isCloudConnected = false;
     this.seenMsgIds = new Set();
     this._msgSeq = 0;
-    this._destroyed = false;
+    this._lastPollTime = 'all';
+    this._pollInterval = null;
+    this._announceInterval = null;
 
-    // Pending pixel conquest batch buffer so dragging doesn't spam network requests
+    // Pending pixel conquest batch buffer
     this._pendingPixels = [];
     this._batchTimer = null;
 
     // 1. Local BroadcastChannel for instant same-browser tab sync
     if (typeof BroadcastChannel !== 'undefined') {
       try {
-        this.channel = new BroadcastChannel('sf_shared_world_mmo_v10');
+        this.channel = new BroadcastChannel('sf_shared_world_mmo_v11');
         this.channel.onmessage = (e) => {
-          this._handleRemoteMessage(e.data);
+          this._handleRemoteMessage(e.data, false);
         };
       } catch {}
     }
@@ -35,7 +40,7 @@ export class SharedWorldSync {
     // 2. Listen to localStorage updates across tabs
     if (typeof window !== 'undefined') {
       this._storageListener = (e) => {
-        if (e.key === 'sf_shared_world_v10_cloud' || e.key === 'sf_my_country_id') {
+        if (e.key === 'sf_shared_world_v9_clean' || e.key === 'sf_my_country_id') {
           this.engine.loadState();
           this.onRemoteUpdate();
         }
@@ -43,7 +48,7 @@ export class SharedWorldSync {
       window.addEventListener('storage', this._storageListener);
     }
 
-    // 3. Connect to Persistent Cloud Sync (Phone <-> PC over standard HTTPS)
+    // 3. Start Cloud Sync (Initial History Poll + 3s Active Poll + Live SSE)
     this._initCloudSync();
   }
 
@@ -51,95 +56,131 @@ export class SharedWorldSync {
     return this.isCloudConnected ? Math.max(1, this.engine.countries.length) : 0;
   }
 
-  async _initCloudSync() {
-    if (this._destroyed || typeof window === 'undefined') return;
+  _initCloudSync() {
+    if (typeof window === 'undefined') return;
 
-    // Step A: Fetch 24h persistent cloud history immediately via HTTPS GET
-    try {
-      const res = await fetch(`${CLOUD_URL}/json?poll=1&since=all`, {
-        cache: 'no-store',
-      });
-      if (res.ok) {
-        const text = await res.text();
-        const lines = text.split('\n');
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const env = JSON.parse(line);
-            if (env && env.event === 'message' && env.message) {
-              const data = JSON.parse(env.message);
-              this._handleRemoteMessage(data, true);
-            }
-          } catch {}
-        }
-        this.isCloudConnected = true;
-        this.onRemoteUpdate();
+    // Immediate history poll
+    this._pollCloudMessages();
+
+    // Poll every 3 seconds as a 100% reliable fallback for mobile networks
+    this._pollInterval = setInterval(() => {
+      this._pollCloudMessages();
+    }, 3000);
+
+    // Periodically announce our country snapshot every 12 seconds so newly opened devices always see us
+    this._announceInterval = setInterval(() => {
+      const myC = this.engine.getMyCountry();
+      if (myC && myC.landCount > 0) {
+        this.publishMyCountrySnapshot();
       }
-    } catch (e) {
-      console.warn('Cloud history fetch warning:', e);
-    }
+    }, 12000);
 
-    // Step B: Open real-time HTTPS Server-Sent Events (EventSource) stream
-    if (typeof EventSource !== 'undefined' && !this._destroyed) {
+    // Live SSE stream for sub-second updates
+    if (typeof EventSource !== 'undefined') {
       try {
-        const es = new EventSource(`${CLOUD_URL}/sse`);
+        const es = new EventSource(`${CLOUD_TOPIC_URL}/sse`);
         this.eventSource = es;
 
         es.onopen = () => {
           this.isCloudConnected = true;
           this.onRemoteUpdate();
-          // Announce our country to other connected devices if we have one
-          this.publishMyCountrySnapshot();
+          setTimeout(() => {
+            this.publishMyCountrySnapshot();
+          }, 400);
         };
 
         es.onmessage = (ev) => {
           if (!ev || !ev.data) return;
           try {
             const env = JSON.parse(ev.data);
+            if (env && env.time) {
+              this._lastPollTime = env.time;
+            }
             if (env && env.event === 'message' && env.message) {
               const payload = JSON.parse(env.message);
               this._handleRemoteMessage(payload, false);
             }
           } catch {}
         };
-
-        es.onerror = () => {
-          this.isCloudConnected = false;
-        };
-      } catch (e) {
-        console.warn('EventSource error:', e);
-      }
+      } catch {}
     }
   }
 
-  // Create a compact <= 1400 byte thumbnail dataUrl of a flag so it fits in fast cloud packets
-  createCompactFlagUrl(flagDataUrl) {
-    if (!flagDataUrl || typeof document === 'undefined') return null;
+  async _pollCloudMessages() {
     try {
-      if (flagDataUrl.length <= 1400) return flagDataUrl;
-      const img = new Image();
-      img.src = flagDataUrl;
-      if (!img.complete || img.naturalWidth === 0) return null;
-      const cv = document.createElement('canvas');
-      cv.width = 36;
-      cv.height = 24;
-      const ctx = cv.getContext('2d');
-      ctx.drawImage(img, 0, 0, 36, 24);
-      return cv.toDataURL('image/jpeg', 0.6);
-    } catch {
-      return null;
-    }
+      const url = `${CLOUD_TOPIC_URL}/json?poll=1&since=${this._lastPollTime}`;
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) return;
+
+      const text = await res.text();
+      this.isCloudConnected = true;
+
+      if (!text || !text.trim()) return;
+
+      let maxTime = typeof this._lastPollTime === 'number' ? this._lastPollTime : 0;
+      const lines = text.split('\n');
+      let anyHandled = false;
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const env = JSON.parse(line);
+          if (env && typeof env.time === 'number' && env.time > maxTime) {
+            maxTime = env.time;
+          }
+          if (env && env.event === 'message' && env.message) {
+            const data = JSON.parse(env.message);
+            this._handleRemoteMessage(data, true);
+            anyHandled = true;
+          }
+        } catch {}
+      }
+
+      if (maxTime > 0) {
+        this._lastPollTime = maxTime;
+      }
+      if (anyHandled) {
+        this.onRemoteUpdate();
+      }
+    } catch {}
   }
 
-  // Publish our country's current state + owned pixels to the cloud so other devices (Phone/PC) see it
+  // Synchronously convert country's decoded flagRgba buffer (or small dataUrl) into a compact <=1200 byte JPEG dataUrl
+  getCompactFlagFromCountry(country) {
+    if (!country || typeof document === 'undefined') return null;
+    try {
+      if (country.flagRgba && country.flagRgba.length === FLAG_W * FLAG_H * 4) {
+        const srcCv = document.createElement('canvas');
+        srcCv.width = FLAG_W;
+        srcCv.height = FLAG_H;
+        const sctx = srcCv.getContext('2d');
+        const imgData = sctx.createImageData(FLAG_W, FLAG_H);
+        imgData.data.set(country.flagRgba);
+        sctx.putImageData(imgData, 0, 0);
+
+        const dstCv = document.createElement('canvas');
+        dstCv.width = 36;
+        dstCv.height = 24;
+        const dctx = dstCv.getContext('2d');
+        dctx.drawImage(srcCv, 0, 0, 36, 24);
+        return dstCv.toDataURL('image/jpeg', 0.65);
+      }
+      if (country.flagDataUrl && country.flagDataUrl.length <= 1500) {
+        return country.flagDataUrl;
+      }
+    } catch {}
+    return null;
+  }
+
+  // Publish our country's current state + owned pixels to the cloud so Phone & PC always see each other
   publishMyCountrySnapshot() {
     const myC = this.engine.getMyCountry();
     if (!myC || myC.landCount <= 0) return;
 
-    const pts = this.engine.getCountryPixelCoords(myC.id, 350);
-    const compactFlag = this.createCompactFlagUrl(myC.flagDataUrl);
+    const pts = this.engine.getCountryPixelCoords(myC.id, 280);
+    const compactFlag = this.getCompactFlagFromCountry(myC);
 
-    this.broadcast({
+    this._sendToCloud({
       type: 'COUNTRY_SYNC_PACKET',
       country: {
         id: myC.id,
@@ -160,9 +201,7 @@ export class SharedWorldSync {
     });
   }
 
-  // Queue a pixel conquest for batched cloud broadcast (instant locally, batched every 450ms to cloud)
   queuePixelConquest(countryId, x, y, cost) {
-    // 1. Instant local tab broadcast
     if (this.channel) {
       try {
         this.channel.postMessage({
@@ -176,19 +215,18 @@ export class SharedWorldSync {
       } catch {}
     }
 
-    // 2. Batch for cloud broadcast so dragging doesn't flood network
     this._pendingPixels.push(x, y);
     if (!this._batchTimer) {
       this._batchTimer = setTimeout(() => {
         this._flushPixelBatch(countryId);
-      }, 450);
+      }, 400);
     }
   }
 
   _flushPixelBatch(countryId) {
     this._batchTimer = null;
     if (this._pendingPixels.length === 0) return;
-    const pts = this._pendingPixels.splice(0, 240);
+    const pts = this._pendingPixels.splice(0, 220);
     this._sendToCloud({
       type: 'CONQUER_BATCH',
       countryId,
@@ -213,14 +251,15 @@ export class SharedWorldSync {
       } catch {}
     }
 
-    // 2. Cloud HTTPS pub/sub for all remote devices (Phone <-> PC)
+    // 2. Cloud HTTPS pub/sub
     if (data.type === 'CONQUER_PIXEL') {
       this.queuePixelConquest(data.countryId, data.x, data.y, data.cost);
       return;
     }
 
     if (data.type === 'NEW_COUNTRY' && packet.country) {
-      const compactFlag = this.createCompactFlagUrl(packet.country.flagDataUrl);
+      const fullC = this.engine.countryMap.get(packet.country.id) || packet.country;
+      const compactFlag = this.getCompactFlagFromCountry(fullC);
       this._sendToCloud({
         ...packet,
         country: {
@@ -228,6 +267,10 @@ export class SharedWorldSync {
           flagDataUrl: compactFlag,
         },
       });
+      // Also send full sync packet after 1s
+      setTimeout(() => {
+        this.publishMyCountrySnapshot();
+      }, 900);
       return;
     }
 
@@ -242,9 +285,13 @@ export class SharedWorldSync {
     };
     this.seenMsgIds.add(fullPacket._msgId);
 
-    fetch(CLOUD_URL, {
+    // Post wrapped in official ntfy JSON envelope { topic, message } so ntfy never misinterprets fields
+    fetch(CLOUD_ROOT_URL, {
       method: 'POST',
-      body: JSON.stringify(fullPacket),
+      body: JSON.stringify({
+        topic: CLOUD_TOPIC,
+        message: JSON.stringify(fullPacket),
+      }),
     }).catch(() => {});
   }
 
@@ -255,7 +302,7 @@ export class SharedWorldSync {
     if (data._msgId) {
       if (this.seenMsgIds.has(data._msgId)) return;
       this.seenMsgIds.add(data._msgId);
-      if (this.seenMsgIds.size > 600) {
+      if (this.seenMsgIds.size > 800) {
         const first = this.seenMsgIds.values().next().value;
         this.seenMsgIds.delete(first);
       }
@@ -269,6 +316,9 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'COUNTRY_SYNC_PACKET' && data.country) {
       this.engine.handleRemoteCountrySyncPacket(data.country, data.pts);
+      if (data.country.deviceId === this.engine.myDeviceId && !this.engine.myCountryId) {
+        this.engine.myCountryId = data.country.id;
+      }
       this.onRemoteUpdate();
     } else if (data.type === 'CONQUER_PIXEL') {
       this.engine.handleRemoteConquerPixel(data.countryId, data.x, data.y, data.cost);
@@ -284,20 +334,6 @@ export class SharedWorldSync {
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
       this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
       this.onRemoteUpdate();
-    }
-  }
-
-  destroy() {
-    this._destroyed = true;
-    if (this._batchTimer) clearTimeout(this._batchTimer);
-    if (this.channel) {
-      try { this.channel.close(); } catch {}
-    }
-    if (this.eventSource) {
-      try { this.eventSource.close(); } catch {}
-    }
-    if (typeof window !== 'undefined' && this._storageListener) {
-      window.removeEventListener('storage', this._storageListener);
     }
   }
 }

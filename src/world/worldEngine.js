@@ -116,12 +116,12 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.dirtyRegions = true;
 
+    this.loadState();
+
     this.sync = new SharedWorldSync(this, () => {
       this.dirtyPixels = true;
       this.dirtyRegions = true;
     });
-
-    this.loadState();
   }
 
   getMyCountry() {
@@ -778,19 +778,42 @@ export class WorldSimulationEngine {
     return { ok: true, country };
   }
 
+  _generateFallbackFlagUrl(name, color) {
+    if (typeof document === 'undefined') return null;
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = 64;
+      cv.height = 40;
+      const cctx = cv.getContext('2d');
+      cctx.fillStyle = color || '#E11D48';
+      cctx.fillRect(0, 0, 64, 40);
+      cctx.fillStyle = '#FFFFFF';
+      cctx.font = '900 20px Inter, sans-serif';
+      cctx.textAlign = 'center';
+      cctx.textBaseline = 'middle';
+      const initial = (name || 'D').trim().charAt(0).toUpperCase();
+      cctx.fillText(initial, 32, 20);
+      return cv.toDataURL('image/jpeg', 0.7);
+    } catch {
+      return null;
+    }
+  }
+
   async handleRemoteNewCountry(remoteData) {
     if (this.countryMap.has(remoteData.id)) return;
 
+    const flagUrl = remoteData.flagDataUrl || this._generateFallbackFlagUrl(remoteData.name, remoteData.color);
     let flagRgba = null;
-    if (remoteData.flagDataUrl) {
+    if (flagUrl) {
       try {
-        const decoded = await loadDataUrlToFlagBuffer(remoteData.flagDataUrl);
+        const decoded = await loadDataUrlToFlagBuffer(flagUrl);
         flagRgba = decoded.rgba;
       } catch {}
     }
 
     const country = this._normalizeCountry({
       ...remoteData,
+      flagDataUrl: flagUrl,
       flagRgba,
       landCount: 1,
     });
@@ -830,21 +853,32 @@ export class WorldSimulationEngine {
 
     let country = this.countryMap.get(remoteCountry.id);
     if (!country) {
+      const flagUrl = remoteCountry.flagDataUrl || this._generateFallbackFlagUrl(remoteCountry.name, remoteCountry.color);
       let flagRgba = null;
-      if (remoteCountry.flagDataUrl) {
+      if (flagUrl) {
         try {
-          const decoded = await loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl);
+          const decoded = await loadDataUrlToFlagBuffer(flagUrl);
           flagRgba = decoded.rgba;
         } catch {}
       }
       country = this._normalizeCountry({
         ...remoteCountry,
+        flagDataUrl: flagUrl,
         flagRgba,
       });
       this.countries.push(country);
       this.countryMap.set(country.id, country);
     } else {
       if (remoteCountry.color) country.color = remoteCountry.color;
+      if (remoteCountry.flagDataUrl && !country.flagRgba) {
+        country.flagDataUrl = remoteCountry.flagDataUrl;
+        loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl)
+          .then((res) => {
+            country.flagRgba = res.rgba;
+            this.dirtyPixels = true;
+          })
+          .catch(() => {});
+      }
       if (remoteCountry.upgrades) {
         country.upgrades = { ...DEFAULT_UPGRADES, ...remoteCountry.upgrades };
       }
