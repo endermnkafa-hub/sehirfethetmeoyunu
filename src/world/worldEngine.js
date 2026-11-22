@@ -112,6 +112,7 @@ export class WorldSimulationEngine {
     this.countryMap = new Map();
     this.ships = []; // Active naval expeditions sailing across water
     this.chatMessages = [];
+    this.undoStack = []; // 5-second undo stack for recent pixel conquests
     this.myDeviceId = getOrCreateDeviceId();
     this.myCountryId = null;
 
@@ -501,6 +502,13 @@ export class WorldSimulationEngine {
     }
 
     if (isAdjacent) {
+      if (this.isSnakingConquest(countryId, x, y)) {
+        return {
+          valid: false,
+          reason: 'Devletini yılan gibi tek piksel uzatamazsın! Sınırlarını kalınlaştırarak büyümelisin.',
+        };
+      }
+
       return {
         valid: true,
         isNaval: false,
@@ -553,6 +561,55 @@ export class WorldSimulationEngine {
       isEnemy,
       targetOwnerId: currentOwner,
     };
+  }
+
+  // Prevent 1-pixel wide snaking across continents
+  isSnakingConquest(countryId, x, y) {
+    const country = this.countryMap.get(countryId);
+    if (!country || country.landCount < 6) return false;
+
+    let ownedNeighbors = 0;
+    let singleNeighbor = null;
+
+    const dirs = [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+
+    for (const [dx, dy] of dirs) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
+        if (this.owners[ny * MAP_W + nx] === countryId) {
+          ownedNeighbors++;
+          singleNeighbor = { x: nx, y: ny };
+        }
+      }
+    }
+
+    // Touching 2 or more owned pixels connects or thickens territory, which is always encouraged
+    if (ownedNeighbors >= 2) return false;
+    if (ownedNeighbors === 0 || !singleNeighbor) return false;
+
+    // Touches only 1 owned pixel. Check if that neighbor is already a 1-pixel thin tip:
+    let neighborBodySupport = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const px = singleNeighbor.x + dx;
+        const py = singleNeighbor.y + dy;
+        if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
+          if (this.owners[py * MAP_W + px] === countryId) {
+            neighborBodySupport++;
+          }
+        }
+      }
+    }
+
+    // If the base neighbor has <= 2 pixels supporting it in its 3x3 box, extending it creates a 1-pixel snake string
+    return neighborBodySupport <= 2;
   }
 
   // Conquer single pixel (instant on adjacent land, or dispatches a sailing Ship across the sea!)
@@ -617,6 +674,20 @@ export class WorldSimulationEngine {
     country.landCount++;
     country.population += 5;
 
+    // Record for 5-Second Undo if this was our own country
+    if (countryId === this.myCountryId) {
+      this.undoStack.push({
+        countryId,
+        x,
+        y,
+        prevOwner,
+        cost: check.cost,
+        time: Date.now(),
+      });
+      const cutoff = Date.now() - 5000;
+      this.undoStack = this.undoStack.filter((u) => u.time >= cutoff);
+    }
+
     if (prevOwner > 0) {
       const prevCountry = this.countryMap.get(prevOwner);
       if (prevCountry) {
@@ -631,6 +702,9 @@ export class WorldSimulationEngine {
       // O(1) incremental bounding box expansion (avoids 500,000-pixel scan on mobile!)
       this._expandCountryBound(countryId, x, y);
     }
+
+    // Automatically detect and absorb any small enclosed neutral holes left inside territory
+    this.fillEnclosedCavities(countryId, x, y);
 
     this._recalculateDerivedStats(country);
 
@@ -647,6 +721,182 @@ export class WorldSimulationEngine {
 
     this.scheduleSave();
     return { ok: true, isNaval: false, country };
+  }
+
+  // Automatically fills neutral land pockets (cavities) completely enclosed by the country
+  fillEnclosedCavities(countryId, targetX, targetY) {
+    const country = this.countryMap.get(countryId);
+    if (!country) return 0;
+
+    const candidates = [];
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = targetX + dx;
+        const ny = targetY + dy;
+        if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
+          const idx = ny * MAP_W + nx;
+          if (this.owners[idx] === 0 && this.worldData.isLand[idx]) {
+            candidates.push(idx);
+          }
+        }
+      }
+    }
+
+    if (candidates.length === 0) return 0;
+
+    let totalFilled = 0;
+    const visitedGlobal = new Set();
+
+    for (const startIdx of candidates) {
+      if (visitedGlobal.has(startIdx) || this.owners[startIdx] !== 0) continue;
+
+      const queue = [startIdx];
+      const component = [startIdx];
+      visitedGlobal.add(startIdx);
+      let isEnclosed = true;
+
+      let qHead = 0;
+      while (qHead < queue.length) {
+        const cur = queue[qHead++];
+        const cx = cur % MAP_W;
+        const cy = (cur / MAP_W) | 0;
+
+        const dirs = [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ];
+        for (const [ddx, ddy] of dirs) {
+          const adjX = cx + ddx;
+          const adjY = cy + ddy;
+          if (adjX < 0 || adjX >= MAP_W || adjY < 0 || adjY >= MAP_H) {
+            isEnclosed = false;
+            break;
+          }
+          const adjIdx = adjY * MAP_W + adjX;
+          if (!this.worldData.isLand[adjIdx]) {
+            // Water/ocean is a natural boundary, doesn't break enclosure
+            continue;
+          }
+          const o = this.owners[adjIdx];
+          if (o === countryId) {
+            continue;
+          }
+          if (o !== 0) {
+            isEnclosed = false;
+            break;
+          }
+          if (!visitedGlobal.has(adjIdx)) {
+            visitedGlobal.add(adjIdx);
+            component.push(adjIdx);
+            queue.push(adjIdx);
+            if (component.length > 25) {
+              isEnclosed = false;
+              break;
+            }
+          }
+        }
+        if (!isEnclosed) break;
+      }
+
+      if (isEnclosed && component.length <= 25) {
+        for (const idx of component) {
+          this.owners[idx] = countryId;
+          const px = idx % MAP_W;
+          const py = (idx / MAP_W) | 0;
+          this._expandCountryBound(countryId, px, py);
+          totalFilled++;
+
+          this.sync.broadcast({
+            type: 'CONQUER_PIXEL',
+            countryId,
+            x: px,
+            y: py,
+            cost: 0,
+          });
+        }
+        country.landCount += component.length;
+        country.population += component.length * 3;
+      }
+    }
+
+    if (totalFilled > 0) {
+      this._recalculateDerivedStats(country);
+      this.dirtyPixels = true;
+      this.dirtyRegions = true;
+      this.onEvent(`${totalFilled} adet iç boşluk pikseli otomatik dolduruldu!`);
+    }
+
+    return totalFilled;
+  }
+
+  // 5-Second Undo for mistakenly conquered pixels
+  undoLastConquest() {
+    const cutoff = Date.now() - 5000;
+    this.undoStack = (this.undoStack || []).filter((u) => u.time >= cutoff);
+    if (this.undoStack.length === 0) {
+      return { ok: false, reason: 'Geri alınabilecek son 5 saniye içinde fethedilmiş piksel yok.' };
+    }
+
+    const item = this.undoStack.pop();
+    const country = this.countryMap.get(item.countryId);
+    if (!country) return { ok: false, reason: 'Devlet bulunamadı.' };
+
+    const idx = item.y * MAP_W + item.x;
+    if (this.owners[idx] !== item.countryId) {
+      return { ok: false, reason: 'Bu piksel zaten başka bir işlem gördü.' };
+    }
+
+    this.owners[idx] = item.prevOwner;
+    country.landCount = Math.max(1, country.landCount - 1);
+    country.troops = Math.min(country.capacity, Number((country.troops + item.cost).toFixed(1)));
+    country.population = Math.max(15, country.population - 5);
+
+    if (item.prevOwner > 0) {
+      const prevC = this.countryMap.get(item.prevOwner);
+      if (prevC) {
+        prevC.landCount++;
+        this._recalculateDerivedStats(prevC);
+      }
+    }
+
+    this.dirtyPixels = true;
+    this.dirtyRegions = true;
+    this._recalculateDerivedStats(country);
+    this.saveState();
+
+    this.sync.broadcast({
+      type: 'UNDO_PIXEL',
+      countryId: item.countryId,
+      x: item.x,
+      y: item.y,
+      prevOwner: item.prevOwner,
+      cost: item.cost,
+    });
+
+    this.onEvent('Son fethedilen piksel geri alındı ve askerin iade edildi!');
+    return { ok: true, x: item.x, y: item.y, remainingUndos: this.undoStack.length };
+  }
+
+  handleRemoteUndoPixel(countryId, x, y, prevOwner) {
+    if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
+    const idx = y * MAP_W + x;
+    this.owners[idx] = prevOwner;
+    const c = this.countryMap.get(countryId);
+    if (c) {
+      c.landCount = Math.max(0, c.landCount - 1);
+      this._recalculateDerivedStats(c);
+    }
+    if (prevOwner > 0) {
+      const pc = this.countryMap.get(prevOwner);
+      if (pc) {
+        pc.landCount++;
+        this._recalculateDerivedStats(pc);
+      }
+    }
+    this.dirtyPixels = true;
+    this.dirtyRegions = true;
   }
 
   // O(1) incremental bounding box expansion when conquering a pixel

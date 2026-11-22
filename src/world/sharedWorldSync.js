@@ -63,20 +63,20 @@ export class SharedWorldSync {
     // Immediate history poll
     this._pollCloudMessages();
 
-    // Poll every 3 seconds as a 100% reliable fallback for mobile networks
+    // Fallback poll every 15 seconds for networks where SSE is restricted
     this._pollInterval = setInterval(() => {
       this._pollCloudMessages();
-    }, 3000);
+    }, 15000);
 
-    // Periodically announce our country snapshot every 10 seconds so newly opened devices always see us
+    // Periodically announce our country snapshot every 16 seconds so newly opened devices always see us
     this._announceInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
         this.publishMyCountrySnapshot();
       }
-    }, 10000);
+    }, 16000);
 
-    // Periodically broadcast our real-time troops, gold & stats every 2.5 seconds so all players see exact troop counts
+    // Periodically broadcast our real-time troops, gold & stats every 6 seconds so all players see exact troop counts without spamming HTTP 429
     this._statsInterval = setInterval(() => {
       const myC = this.engine.getMyCountry();
       if (myC && myC.landCount > 0) {
@@ -92,7 +92,7 @@ export class SharedWorldSync {
           },
         });
       }
-    }, 2500);
+    }, 6000);
 
     // Live SSE stream for sub-second updates
     if (typeof EventSource !== 'undefined') {
@@ -304,14 +304,20 @@ export class SharedWorldSync {
     };
     this.seenMsgIds.add(fullPacket._msgId);
 
-    // Post wrapped in official ntfy JSON envelope { topic, message } so ntfy never misinterprets fields
-    fetch(CLOUD_ROOT_URL, {
-      method: 'POST',
-      body: JSON.stringify({
-        topic: CLOUD_TOPIC,
-        message: JSON.stringify(fullPacket),
-      }),
-    }).catch(() => {});
+    const now = Date.now();
+    const delay = Math.max(0, (this._lastPostTime || 0) + 650 - now);
+    this._lastPostTime = now + delay;
+
+    setTimeout(() => {
+      // Post wrapped in official ntfy JSON envelope { topic, message }
+      fetch(CLOUD_ROOT_URL, {
+        method: 'POST',
+        body: JSON.stringify({
+          topic: CLOUD_TOPIC,
+          message: JSON.stringify(fullPacket),
+        }),
+      }).catch(() => {});
+    }, delay);
   }
 
   _handleRemoteMessage(data, isHistoryReplay = false) {
@@ -352,6 +358,9 @@ export class SharedWorldSync {
       this.onRemoteUpdate();
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
       this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
+      this.onRemoteUpdate();
+    } else if (data.type === 'UNDO_PIXEL') {
+      this.engine.handleRemoteUndoPixel(data.countryId, data.x, data.y, data.prevOwner);
       this.onRemoteUpdate();
     } else if (data.type === 'GLOBAL_CHAT' && data.chat) {
       this.engine.handleRemoteChatMessage(data.chat);

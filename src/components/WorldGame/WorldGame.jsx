@@ -34,6 +34,7 @@ import {
   Send,
   ChevronDown,
   ChevronUp,
+  RotateCcw,
 } from 'lucide-react';
 
 export default function WorldGame({ onReturnToModeSelect }) {
@@ -564,10 +565,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
         const eng = engineRef.current;
         if (eng) {
           const myC = eng.getMyCountry();
+          const cutoff = Date.now() - 5000;
+          const undos = (eng.undoStack || []).filter((u) => u.time >= cutoff);
+          const latestUndo = undos.length > 0 ? undos[undos.length - 1] : null;
+          const undoSec = latestUndo ? Math.max(0, Math.ceil((5000 - (Date.now() - latestUndo.time)) / 1000)) : 0;
+
           setHud({
             myCountry: myC ? { ...myC } : null,
             totalCountriesCount: eng.countries.filter((c) => c.landCount > 0).length,
             connectedPeers: eng.sync?.getConnectedPeersCount() || 0,
+            canUndo: undos.length > 0,
+            undoSeconds: undoSec,
             time: now,
           });
         }
@@ -604,6 +612,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
     const myC = eng?.getMyCountry();
     if (!eng || !myC) return;
     const res = eng.buyUpgrade(myC.id, key);
+    if (!res.ok) {
+      showToast(res.reason);
+    }
+  }, [showToast]);
+
+  const handleUndo = useCallback(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const res = eng.undoLastConquest();
     if (!res.ok) {
       showToast(res.reason);
     }
@@ -915,6 +932,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
               >
                 <span>+5</span>
               </button>
+
+              {hud.canUndo && hud.undoSeconds > 0 && (
+                <button
+                  onClick={handleUndo}
+                  className="py-2 px-2 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xs flex items-center justify-center gap-1 shadow transition animate-pulse"
+                  title="Son 5 saniye içinde fethettiğin pikseli geri al ve harcanan askeri geri kazan"
+                >
+                  <RotateCcw size={14} />
+                  <span>Geri Al ({hud.undoSeconds}s)</span>
+                </button>
+              )}
             </>
           )}
 
