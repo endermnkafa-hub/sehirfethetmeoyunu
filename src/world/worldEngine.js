@@ -1155,7 +1155,7 @@ export class WorldSimulationEngine {
   }
 
   // Export up to maxPts [x1, y1, x2, y2...] coordinates for a country (used by cloud sync)
-  getCountryPixelCoords(countryId, maxPts = 350) {
+  getCountryPixelCoords(countryId, maxPts = 1500) {
     const b = (this.countryBounds || this.computeCountryBounds()).get(countryId);
     if (!b || b.count === 0) return [];
     const pts = [];
@@ -1223,14 +1223,42 @@ export class WorldSimulationEngine {
     }
 
     if (Array.isArray(pts)) {
+      const validPtsSet = new Set();
       for (let i = 0; i < pts.length; i += 2) {
         const px = pts[i];
         const py = pts[i + 1];
         if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
-          const idx = py * MAP_W + px;
+          validPtsSet.add(py * MAP_W + px);
+        }
+      }
+
+      // If we are not the owner of this country, synchronize its territory exactly with the owner's authoritative pts
+      if (country.id !== this.myCountryId && validPtsSet.size > 0) {
+        // Clear any old/orphaned pixels that this country no longer owns
+        const b = (this.countryBounds || this.computeCountryBounds()).get(country.id);
+        if (b && b.count > 0) {
+          for (let y = b.minY; y <= b.maxY; y++) {
+            const row = y * MAP_W;
+            for (let x = b.minX; x <= b.maxX; x++) {
+              const idx = row + x;
+              if (this.owners[idx] === country.id && !validPtsSet.has(idx)) {
+                this.owners[idx] = 0;
+              }
+            }
+          }
+        }
+
+        // Set all authoritative pixels
+        for (const idx of validPtsSet) {
+          if (this.worldData.isLand[idx]) {
+            this.owners[idx] = country.id;
+          }
+        }
+      } else {
+        for (const idx of validPtsSet) {
           if (this.worldData.isLand[idx] && this.owners[idx] !== country.id) {
             this.owners[idx] = country.id;
-            this._expandCountryBound(country.id, px, py);
+            this._expandCountryBound(country.id, idx % MAP_W, (idx / MAP_W) | 0);
           }
         }
       }

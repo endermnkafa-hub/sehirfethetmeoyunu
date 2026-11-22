@@ -196,7 +196,7 @@ export class SharedWorldSync {
     const myC = this.engine.getMyCountry();
     if (!myC || myC.landCount <= 0) return;
 
-    const pts = this.engine.getCountryPixelCoords(myC.id, 280);
+    const pts = this.engine.getCountryPixelCoords(myC.id, 1500);
     const compactFlag = this.getCompactFlagFromCountry(myC);
 
     this._sendToCloud({
