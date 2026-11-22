@@ -3,6 +3,17 @@ import { MAP_W, MAP_H, getWorldRasterData } from '../../world/worldRasterizer';
 import { WorldSimulationEngine, UPGRADE_DEFINITIONS } from '../../world/worldEngine';
 import { WorldMapRenderer } from '../../world/worldRenderer';
 import { checkNetworkAndSecurity } from '../../world/networkSecurity';
+import {
+  LogoSwords,
+  LogoGold,
+  LogoPopulation,
+  LogoTerritory,
+  LogoNavy,
+  LogoPan,
+  LogoPalette,
+  LogoCitadel,
+  UpgradeLogo,
+} from './GameLogos';
 import { soundManager } from '../../utils/audio';
 import confetti from 'canvas-confetti';
 import {
@@ -154,7 +165,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     const reader = new FileReader();
     reader.onload = (ev) => {
       setFoundFlagDataUrl(ev.target.result);
-      showToast('✅ Resim seçildi!');
+      showToast('Resim seçildi!');
     };
     reader.readAsDataURL(file);
   }, [showToast]);
@@ -167,7 +178,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
       return;
     }
     if (!foundName.trim()) {
-      showToast('⚠️ Lütfen bir ülke adı yazın!');
+      showToast('Lütfen bir ülke adı yazın!');
       return;
     }
 
@@ -266,26 +277,29 @@ export default function WorldGame({ onReturnToModeSelect }) {
             // Enforce 1 Device = 1 Country
             const existing = eng.countries.find((c) => c.deviceId === eng.myDeviceId);
             if (existing) {
-              showToast(`⚠️ Bu cihazdan zaten "${existing.name}" kurulmuş! (1 Cihaz = 1 Ülke)`);
+              showToast(`Bu cihazdan zaten "${existing.name}" kurulmuş! (1 Cihaz = 1 Ülke)`);
               eng.myCountryId = existing.id;
               centerOnCoords(existing.capitalX, existing.capitalY, 3.8);
               return;
             }
             setFoundingModal({ x: pos.x, y: pos.y });
           } else if (worldData.isLand[idx]) {
-            showToast('⚠️ Bu piksel zaten başka bir devlete ait!');
+            showToast('Bu piksel zaten başka bir devlete ait!');
           } else {
-            showToast('⚠️ Deniz veya okyanusa ülke kurulamaz!');
+            showToast('Deniz veya okyanusa ülke kurulamaz!');
           }
           isPaintingRef.current = false;
           return;
         }
 
-        // Player already has country: conquer adjacent pixel
+        // Player already has country: conquer adjacent pixel OR launch naval ship across sea
         const check = eng.canExpandToPixel(myCountry.id, pos.x, pos.y);
         if (check.valid) {
-          isPaintingRef.current = true;
-          eng.conquerPixel(myCountry.id, pos.x, pos.y);
+          isPaintingRef.current = !check.isNaval;
+          const res = eng.conquerPixel(myCountry.id, pos.x, pos.y);
+          if (!res.ok && res.reason) {
+            showToast(res.reason);
+          }
         } else {
           // Dragging outside border cells pans the map smoothly!
           isPaintingRef.current = false;
@@ -435,7 +449,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!eng || !myC) return;
     const res = eng.buyUpgrade(myC.id, key);
     if (!res.ok) {
-      showToast(`⚠️ ${res.reason}`);
+      showToast(res.reason);
     }
   }, [showToast]);
 
@@ -450,7 +464,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
         className="hidden"
       />
 
-      {/* SLEEK MINIMALIST TOP BAR */}
+      {/* SLEEK MINIMALIST TOP BAR (ZERO EMOJIS — BESPOKE VECTOR LOGOS) */}
       <div className="absolute top-3 left-3 right-3 sm:left-5 sm:right-5 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
         <div className="pointer-events-auto bg-slate-900/90 border border-slate-700/75 backdrop-blur-md rounded-2xl px-2.5 py-2 shadow-2xl flex items-center gap-2.5 max-w-full">
           <button
@@ -478,25 +492,31 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </span>
               </div>
 
-              {/* Clean Metrics */}
-              <div className="flex flex-wrap items-center gap-3 text-xs font-bold">
-                <span className="text-amber-400" title="Mevcut Asker / Maksimum Kapasite">
-                  ⚔️ {myCountry.troops.toFixed(1)} / {myCountry.capacity}
-                  <span className="text-emerald-400 ml-1 text-[11px]">
+              {/* Clean Metrics with Vector Logos */}
+              <div className="flex flex-wrap items-center gap-3.5 text-xs font-bold">
+                <span className="text-amber-400 flex items-center gap-1.5" title="Mevcut Asker / Maksimum Kapasite">
+                  <LogoSwords size={16} />
+                  <span>
+                    {myCountry.troops.toFixed(1)} / {myCountry.capacity}
+                  </span>
+                  <span className="text-emerald-400 text-[11px]">
                     (+{(myCountry.productionRate || 0).toFixed(3)}/sn)
                   </span>
                 </span>
 
-                <span className="text-slate-300" title="Toplam Toprak (Piksel)">
-                  📍 {myCountry.landCount} Piksel
+                <span className="text-slate-200 flex items-center gap-1.5" title="Toplam Toprak (Piksel)">
+                  <LogoTerritory size={16} />
+                  <span>{myCountry.landCount} Piksel</span>
                 </span>
 
-                <span className="text-sky-300 hidden sm:inline" title="Ülkende Yaşayan Halk Nüfusu">
-                  👥 {Math.floor(myCountry.population || 15)} Halk
+                <span className="text-sky-300 hidden sm:flex items-center gap-1.5" title="Ülkende Yaşayan Halk Nüfusu">
+                  <LogoPopulation size={16} />
+                  <span>{Math.floor(myCountry.population || 15)} Halk</span>
                 </span>
 
-                <span className="text-amber-300" title="Vergi Hazinesi (Geliştirmeler için kullanılır)">
-                  💰 {Math.floor(myCountry.gold || 0)} Altın
+                <span className="text-amber-300 flex items-center gap-1.5" title="Vergi Hazinesi (Geliştirmeler için kullanılır)">
+                  <LogoGold size={16} />
+                  <span>{Math.floor(myCountry.gold || 0)} Altın</span>
                 </span>
               </div>
             </div>
@@ -515,7 +535,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
               onClick={() => setShowUpgrades(true)}
               className="px-3.5 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-xl transition"
             >
-              <span>🏛️ Geliştir</span>
+              <LogoCitadel size={16} />
+              <span>Geliştir</span>
             </button>
           )}
 
@@ -579,7 +600,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <span>⚔️ Fethet</span>
+            <LogoSwords size={16} />
+            <span>Fethet / Gemi</span>
           </button>
 
           <button
@@ -590,7 +612,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <span>🖐️ Kaydır</span>
+            <LogoPan size={16} />
+            <span>Kaydır</span>
           </button>
         </div>
       </div>
@@ -611,9 +634,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
           <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-5 shadow-2xl text-left">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="text-base font-black text-white">🏛️ Devlet Geliştirmeleri (8 Dal • Max Sv.25)</h3>
-                <p className="text-[11px] text-slate-400">
-                  Halkının ödediği vergilerle ({Math.floor(myCountry.gold)} 💰 Altın) devletini kalıcı olarak güçlendir.
+                <h3 className="text-base font-black text-white flex items-center gap-2">
+                  <LogoCitadel size={20} />
+                  <span>Devlet Geliştirmeleri (9 Dal • Max Sv.25)</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
+                  <span>Halkının ödediği vergilerle ({Math.floor(myCountry.gold)} Altın) devletini güçlendir.</span>
                 </p>
               </div>
               <button
@@ -626,7 +652,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
             {/* Live Border Color Picker */}
             <div className="mb-3 p-2.5 rounded-2xl bg-slate-800/70 border border-slate-700/80 flex items-center justify-between gap-2">
-              <span className="text-xs font-bold text-slate-300">🎨 Sınır Rengi:</span>
+              <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <LogoPalette size={16} />
+                <span>Sınır Rengi:</span>
+              </span>
               <div className="flex items-center gap-2">
                 {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#FFFFFF'].map((c) => (
                   <button
@@ -634,7 +663,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     type="button"
                     onClick={() => {
                       engineRef.current?.setCountryColor(myCountry.id, c);
-                      showToast('🎨 Sınır rengin güncellendi!');
+                      showToast('Sınır rengin güncellendi!');
                     }}
                     style={{ backgroundColor: c }}
                     className={`w-5 h-5 rounded-full transition ${
@@ -664,22 +693,27 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     key={def.key}
                     className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/80 flex items-center justify-between gap-3"
                   >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-black text-xs text-white">
-                          {def.icon} {def.name}
-                        </span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
-                          Sv. {lvl}/{def.maxLevel}
-                        </span>
+                    <div className="flex items-start gap-2.5 flex-1">
+                      <div className="mt-0.5 shrink-0">
+                        <UpgradeLogo upgradeKey={def.key} size={24} />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">{def.desc}</p>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-black text-xs text-white">
+                            {def.name}
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
+                            Sv. {lvl}/{def.maxLevel}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">{def.desc}</p>
+                      </div>
                     </div>
 
                     <button
                       disabled={!canAfford}
                       onClick={() => handleBuyUpgrade(def.key)}
-                      className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 transition ${
+                      className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 flex items-center gap-1 transition ${
                         isMax
                           ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-600/40'
                           : canAfford
@@ -687,7 +721,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
                       }`}
                     >
-                      {isMax ? 'Maksimum' : `${cost} 💰`}
+                      {isMax ? (
+                        <span>Maksimum</span>
+                      ) : (
+                        <>
+                          <span>{cost}</span>
+                          <LogoGold size={14} />
+                        </>
+                      )}
                     </button>
                   </div>
                 );
@@ -702,7 +743,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-3xl p-5 sm:p-6 shadow-2xl text-left">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-black text-white">🏛️ Devletini Kur</h3>
+              <h3 className="text-lg font-black text-white flex items-center gap-2">
+                <LogoCitadel size={22} />
+                <span>Devletini Kur</span>
+              </h3>
               <button
                 onClick={() => setFoundingModal(null)}
                 className="p-1 rounded-lg text-slate-400 hover:text-white"
@@ -774,10 +818,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 </div>
               </div>
 
-              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 space-y-0.5">
-                <div>📍 Konum: ({foundingModal.x}, {foundingModal.y})</div>
-                <div>⚔️ Başlangıç: 1 Piksel Toprak & 1 Asker Kapasitesi</div>
-                <div>🖼️ Yüklediğin resim 1 pikselde bile tam çözünürlükte toprağının içinde görünür.</div>
+              <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <LogoTerritory size={14} />
+                  <span>Konum: ({foundingModal.x}, {foundingModal.y})</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <LogoSwords size={14} />
+                  <span>Başlangıç: 1 Piksel Toprak & 1 Asker Kapasitesi</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <LogoNavy size={14} />
+                  <span>Denize kıyın olduğunda karşı kıyılara gemi gönderebilirsin.</span>
+                </div>
               </div>
 
               <button
@@ -785,7 +838,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 onClick={handleConfirmFoundCountry}
                 className="w-full py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm transition shadow-xl"
               >
-                Devletimi Kur ➔
+                Devletimi Kur
               </button>
             </div>
           </div>
@@ -828,16 +881,25 @@ export default function WorldGame({ onReturnToModeSelect }) {
             </div>
             <div className="space-y-2.5 text-xs text-slate-300 leading-relaxed">
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
-                <div className="font-black text-white mb-0.5">⚔️ Değerli Büyüme & Asker Üretimi</div>
+                <div className="font-black text-white mb-0.5 flex items-center gap-1.5">
+                  <LogoSwords size={16} />
+                  <span>Değerli Büyüme & Asker Üretimi</span>
+                </div>
                 <div>Her piksel değerlidir. Ülkenin asker kapasitesi toprak sayısına eşittir. Asker üretim hızı logaritmik artar; büyük devletler yüksek kapasiteye sahip olurken küçük devletler de üretim hızıyla onlara yetişebilir.</div>
               </div>
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
-                <div className="font-black text-white mb-0.5">👥 Halk, Altın & Geliştirmeler</div>
-                <div>Topraklarında yaşayan halk zamanla çoğalır ve hazinene otomatik <b>Altın</b> vergisi öder. Biriken altınlarla <b>🏛️ Geliştir</b> menüsünden üretim hızını, saldırı/savunma gücünü ve ordu kapasiteni artırabilirsin.</div>
+                <div className="font-black text-white mb-0.5 flex items-center gap-1.5">
+                  <LogoNavy size={16} />
+                  <span>Deniz Aşırı Gemi Seferleri</span>
+                </div>
+                <div>Denize kıyısı olan bir toprağın varsa, menzilin içindeki karşı kıyılara veya adalara tıklayarak <b>Çıkarma Gemisi</b> gönderebilirsin. Gemin denizde ilerleyip karşı kıyıya ulaştığında o toprağı fetheder. <b>Donanma & Tersane</b> geliştirmesiyle gemi menzilini ve hızını artırabilirsin.</div>
               </div>
               <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
-                <div className="font-black text-white mb-0.5">🖼️ Tam Çözünürlüklü Bayrak Haritası</div>
-                <div>Yüklediğin resim, ülken 1 piksel bile olsa harita üzerinde toprağının tam içine yüksek çözünürlüklü olarak çizilir ve sınırların genişledikçe haritaya yayılır.</div>
+                <div className="font-black text-white mb-0.5 flex items-center gap-1.5">
+                  <LogoGold size={16} />
+                  <span>Halk, Altın & 25 Seviyeli Geliştirmeler</span>
+                </div>
+                <div>Topraklarında yaşayan halk zamanla çoğalır ve hazinene otomatik <b>Altın</b> vergisi öder. Biriken altınlarla 9 farklı geliştirme dalını 25. seviyeye kadar yükseltebilirsin.</div>
               </div>
             </div>
             <button

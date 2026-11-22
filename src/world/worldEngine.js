@@ -1,6 +1,5 @@
 // Real-Time Shared World MMO Conquest Engine
-// Hardcore logarithmic progression: every single pixel matters, zero snowballing, native high-DPI territory rendering
-// 1 Device = 1 Nation, Max 2 Nations per IP, VPN/Proxy Detection, Cross-Tab Live Sync
+// Hardcore logarithmic progression, Naval Ship Expeditions across seas, 9 Upgrade Branches (Max Lv.25), Zero Emojis
 
 import { MAP_W, MAP_H } from './worldRasterizer';
 import { loadDataUrlToFlagBuffer } from './flagLibrary';
@@ -13,7 +12,6 @@ export const UPGRADE_DEFINITIONS = [
   {
     key: 'mobilization',
     name: 'Seferberlik Hızı',
-    icon: '⚡',
     desc: 'Her seviyede saniye başı asker üretim hızını +%5 artırır.',
     baseCost: 25,
     costScale: 1.38,
@@ -22,7 +20,6 @@ export const UPGRADE_DEFINITIONS = [
   {
     key: 'weapons',
     name: 'Taarruz Doktrini',
-    icon: '⚔️',
     desc: 'Her seviyede ordunun saldırı gücünü +%6 artırır; düşman toprağı alırken daha az asker harcarsın.',
     baseCost: 30,
     costScale: 1.38,
@@ -31,16 +28,30 @@ export const UPGRADE_DEFINITIONS = [
   {
     key: 'fortification',
     name: 'Sınır Tahkimatı',
-    icon: '🛡️',
     desc: 'Her seviyede topraklarının savunma direncini +%6 artırır; rakipler senden piksel alırken ağır kayıp verir.',
     baseCost: 30,
     costScale: 1.38,
     maxLevel: 25,
   },
   {
+    key: 'citadel',
+    name: 'Vatan Direnişi & Siper Ağı',
+    desc: 'Her seviyede tüm topraklarının işgal direncini +%8 artırır; toprağına saldıranlar çok daha fazla asker harcar.',
+    baseCost: 35,
+    costScale: 1.38,
+    maxLevel: 25,
+  },
+  {
+    key: 'navy',
+    name: 'Donanma & Tersane',
+    desc: 'Her seviyede gemilerin deniz aşırı çıkarma menzilini +14 piksel ve gemi seyir hızını +%10 artırır.',
+    baseCost: 30,
+    costScale: 1.36,
+    maxLevel: 25,
+  },
+  {
     key: 'logistics',
     name: 'Ordu Lojistiği',
-    icon: '📦',
     desc: 'Her seviyede maksimum asker depolama kapasitesini +%8 artırır.',
     baseCost: 25,
     costScale: 1.35,
@@ -49,7 +60,6 @@ export const UPGRADE_DEFINITIONS = [
   {
     key: 'economy',
     name: 'Vergi & Hazine',
-    icon: '💰',
     desc: 'Her seviyede halktan toplanan saniye başı altın gelirini +%6 artırır.',
     baseCost: 25,
     costScale: 1.35,
@@ -58,7 +68,6 @@ export const UPGRADE_DEFINITIONS = [
   {
     key: 'housing',
     name: 'İskan & Nüfus',
-    icon: '🌾',
     desc: 'Her seviyede halk kapasitesini ve nüfus artış hızını +%7 artırır (Ek vergi katkısı sağlar).',
     baseCost: 20,
     costScale: 1.33,
@@ -67,19 +76,9 @@ export const UPGRADE_DEFINITIONS = [
   {
     key: 'siege',
     name: 'Kuşatma & Harekat',
-    icon: '🎯',
     desc: 'Her seviyede sahipsiz gri toprakları fethetme asker maliyetini %2 düşürür.',
     baseCost: 40,
     costScale: 1.42,
-    maxLevel: 25,
-  },
-  {
-    key: 'citadel',
-    name: 'Vatan Direnişi & Siper Ağı',
-    icon: '🏰',
-    desc: 'Her seviyede tüm topraklarının işgal direncini +%8 artırır; toprağına saldıranlar çok daha fazla asker harcar.',
-    baseCost: 35,
-    costScale: 1.38,
     maxLevel: 25,
   },
 ];
@@ -88,11 +87,12 @@ export const DEFAULT_UPGRADES = {
   mobilization: 0,
   weapons: 0,
   fortification: 0,
+  citadel: 0,
+  navy: 0,
   logistics: 0,
   economy: 0,
   housing: 0,
   siege: 0,
-  citadel: 0,
 };
 
 export class WorldSimulationEngine {
@@ -109,6 +109,7 @@ export class WorldSimulationEngine {
 
     this.countries = [];
     this.countryMap = new Map();
+    this.ships = []; // Active naval expeditions sailing across water
     this.myDeviceId = getOrCreateDeviceId();
     this.myCountryId = null;
 
@@ -139,6 +140,64 @@ export class WorldSimulationEngine {
     return this.countryMap.get(this.myCountryId) || null;
   }
 
+  // Check if a land pixel (x, y) borders sea/ocean
+  isCoastalPixel(x, y) {
+    if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return false;
+    const isLand = this.worldData.isLand;
+    const idx = y * MAP_W + x;
+    if (!isLand[idx]) return false;
+    return (
+      (x > 0 && !isLand[idx - 1]) ||
+      (x < MAP_W - 1 && !isLand[idx + 1]) ||
+      (y > 0 && !isLand[idx - MAP_W]) ||
+      (y < MAP_H - 1 && !isLand[idx + MAP_W])
+    );
+  }
+
+  // Check if straight line between (x0, y0) and (x1, y1) crosses sea/water and minimal land
+  hasWaterPath(x0, y0, x1, y1) {
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const steps = Math.max(4, Math.ceil(dist));
+    let waterSamples = 0;
+    const isLand = this.worldData.isLand;
+
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const sx = Math.round(x0 + (x1 - x0) * t);
+      const sy = Math.round(y0 + (y1 - y0) * t);
+      if (sx >= 0 && sx < MAP_W && sy >= 0 && sy < MAP_H) {
+        if (!isLand[sy * MAP_W + sx]) {
+          waterSamples++;
+        }
+      }
+    }
+    // Must traverse at least 45% water cells along the route
+    return waterSamples >= Math.max(1, Math.floor((steps - 1) * 0.45));
+  }
+
+  // Find nearest owned coastal pixel (port) to launch a ship toward (targetX, targetY)
+  findNearestOwnedPort(countryId, targetX, targetY) {
+    const b = (this.countryBounds || this.computeCountryBounds()).get(countryId);
+    if (!b || b.count === 0) return null;
+
+    let bestPort = null;
+    let bestDist = Infinity;
+
+    for (let y = b.minY; y <= b.maxY; y++) {
+      const row = y * MAP_W;
+      for (let x = b.minX; x <= b.maxX; x++) {
+        if (this.owners[row + x] === countryId && this.isCoastalPixel(x, y)) {
+          const d = Math.hypot(targetX - x, targetY - y);
+          if (d < bestDist) {
+            bestDist = d;
+            bestPort = { x, y, distance: d };
+          }
+        }
+      }
+    }
+    return bestPort;
+  }
+
   _normalizeCountry(c) {
     c.upgrades = { ...DEFAULT_UPGRADES, ...(c.upgrades || {}) };
     c.landCount = Math.max(1, c.landCount || 1);
@@ -163,7 +222,6 @@ export class WorldSimulationEngine {
     c.maxPopulation = Math.floor(c.landCount * 15 * (1 + (up.housing || 0) * 0.07));
     c.popGrowthRate = (0.12 + 0.03 * Math.log(c.landCount + 1)) * (1 + (up.housing || 0) * 0.07);
 
-    // Saniye başı altın geliri (Daha zorlu ve uzun vadeli ekonomi: Vergi * %6 + İskan katkısı)
     const popBonus = 1 + Math.min(0.5, (c.population || 15) / 2500);
     c.goldIncome =
       (0.08 + 0.14 * Math.log(c.landCount + 1)) *
@@ -178,9 +236,12 @@ export class WorldSimulationEngine {
       (up.fortification || 0) * 0.06 +
       (up.citadel || 0) * 0.08 +
       underdogBonus;
+
+    // 5. Donanma Menzili & Gemi Hızı
+    c.navalRange = 38 + (up.navy || 0) * 14;
+    c.shipSpeed = 11 * (1 + (up.navy || 0) * 0.10);
   }
 
-  // Get live center coordinates of a country's current territory
   getCountryCenter(countryId) {
     const bounds = this.countryBounds || this.computeCountryBounds();
     const b = bounds.get(countryId);
@@ -194,7 +255,6 @@ export class WorldSimulationEngine {
     return c ? { x: c.capitalX, y: c.capitalY } : { x: MAP_W / 2, y: MAP_H / 2 };
   }
 
-  // Change Country Border Color live
   setCountryColor(countryId, newColor) {
     const country = this.countryMap.get(countryId);
     if (!country || !newColor) return { ok: false };
@@ -216,7 +276,7 @@ export class WorldSimulationEngine {
     return { ok: true };
   }
 
-  // Real-time continuous simulation tick
+  // Real-time continuous simulation tick (Troops, Population, Gold & Naval Ships)
   update(deltaTimeSec) {
     if (deltaTimeSec <= 0 || deltaTimeSec > 1.0) deltaTimeSec = 0.05;
 
@@ -225,22 +285,78 @@ export class WorldSimulationEngine {
 
       this._recalculateDerivedStats(c);
 
-      // Continuous troop production up to capacity
       if (c.troops < c.capacity) {
         c.troops = Math.min(c.capacity, c.troops + c.productionRate * deltaTimeSec);
       }
 
-      // Continuous background population growth
       if (c.population < c.maxPopulation) {
         c.population = Math.min(c.maxPopulation, c.population + c.popGrowthRate * deltaTimeSec);
       }
 
-      // Continuous gold tax accumulation for upgrades
       c.gold += c.goldIncome * deltaTimeSec;
+    }
+
+    // Update sailing ships across oceans/seas
+    if (this.ships.length > 0) {
+      const remainingShips = [];
+      for (const ship of this.ships) {
+        ship.progress += (ship.speed * deltaTimeSec) / Math.max(1, ship.distance);
+        ship.x = ship.fromX + (ship.toX - ship.fromX) * Math.min(1, ship.progress);
+        ship.y = ship.fromY + (ship.toY - ship.fromY) * Math.min(1, ship.progress);
+
+        if (ship.progress >= 1.0) {
+          // Ship has arrived at target shore -> execute amphibious landing!
+          this._completeNavalLanding(ship);
+        } else {
+          remainingShips.push(ship);
+        }
+      }
+      this.ships = remainingShips;
     }
   }
 
-  // Purchase Technology / Upgrade with Gold
+  _completeNavalLanding(ship) {
+    const country = this.countryMap.get(ship.countryId);
+    if (!country || country.landCount <= 0) return;
+
+    const idx = ship.toY * MAP_W + ship.toX;
+    const prevOwner = this.owners[idx];
+    if (prevOwner === ship.countryId) return;
+
+    this.owners[idx] = ship.countryId;
+    country.landCount++;
+    country.population += 5;
+
+    if (prevOwner > 0) {
+      const prevCountry = this.countryMap.get(prevOwner);
+      if (prevCountry) {
+        prevCountry.landCount = Math.max(0, prevCountry.landCount - 1);
+        this._recalculateDerivedStats(prevCountry);
+        if (prevCountry.troops > prevCountry.capacity) {
+          prevCountry.troops = prevCountry.capacity;
+        }
+      }
+    }
+
+    this._recalculateDerivedStats(country);
+    this.dirtyPixels = true;
+    this.dirtyRegions = true;
+    this.onSound('celebration');
+    if (ship.countryId === this.myCountryId) {
+      this.onEvent(`Donanman karşı kıyıya çıkarma yaptı! (${ship.toX}, ${ship.toY})`);
+    }
+
+    this.sync.broadcast({
+      type: 'CONQUER_PIXEL',
+      countryId: ship.countryId,
+      x: ship.toX,
+      y: ship.toY,
+      cost: 0,
+    });
+
+    this.saveState();
+  }
+
   buyUpgrade(countryId, upgradeKey) {
     const country = this.countryMap.get(countryId);
     if (!country) return { ok: false, reason: 'Devlet bulunamadı.' };
@@ -262,7 +378,7 @@ export class WorldSimulationEngine {
     country.upgrades[upgradeKey] = currentLevel + 1;
     this._recalculateDerivedStats(country);
     this.onSound('celebration');
-    this.onEvent(`${def.icon} ${def.name} Seviye ${currentLevel + 1} oldu!`);
+    this.onEvent(`${def.name} Seviye ${currentLevel + 1} oldu!`);
     this.saveState();
 
     this.sync.broadcast({
@@ -279,7 +395,7 @@ export class WorldSimulationEngine {
     return { ok: true, level: currentLevel + 1, cost };
   }
 
-  // Check if pixel (x, y) can be expanded into by countryId
+  // Check if pixel (x, y) can be conquered by land OR by naval ship expedition
   canExpandToPixel(countryId, x, y) {
     if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) {
       return { valid: false, reason: 'Harita dışı.' };
@@ -298,39 +414,82 @@ export class WorldSimulationEngine {
     const attacker = this.countryMap.get(countryId);
     if (!attacker) return { valid: false, reason: 'Devlet bulunamadı.' };
 
-    // Must be 4-way adjacent to a pixel currently owned by this country
+    // 1. Check 4-way land adjacency
     const isAdjacent =
       (x > 0 && this.owners[idx - 1] === countryId) ||
       (x < MAP_W - 1 && this.owners[idx + 1] === countryId) ||
       (y > 0 && this.owners[idx - MAP_W] === countryId) ||
       (y < MAP_H - 1 && this.owners[idx + MAP_W] === countryId);
 
-    if (!isAdjacent) {
-      return { valid: false, reason: 'Sadece sınırındaki komşu pikselleri fethedebilirsin.' };
-    }
-
     const isEnemy = currentOwner > 0;
-    let cost = 1.0;
+    let baseCost = 1.0;
 
     if (!isEnemy) {
       const siegeLevel = attacker.upgrades?.siege || 0;
-      cost = Math.max(0.5, Number((1.0 - siegeLevel * 0.02).toFixed(2)));
+      baseCost = Math.max(0.5, Number((1.0 - siegeLevel * 0.02).toFixed(2)));
     } else {
       const defender = this.countryMap.get(currentOwner);
       const defPower = defender ? (defender.defensePower || 1.0) : 1.0;
       const atkPower = attacker.attackPower || 1.0;
-      cost = Math.max(1.0, Number(((2.0 * defPower) / atkPower).toFixed(2)));
+      baseCost = Math.max(1.0, Number(((2.0 * defPower) / atkPower).toFixed(2)));
     }
+
+    if (isAdjacent) {
+      return {
+        valid: true,
+        isNaval: false,
+        cost: baseCost,
+        isEnemy,
+        targetOwnerId: currentOwner,
+      };
+    }
+
+    // 2. Not adjacent on land -> Check if reachable across water via Naval Ship Expedition!
+    if (!this.isCoastalPixel(x, y)) {
+      return {
+        valid: false,
+        reason: 'Sadece sınırındaki komşu pikselleri veya deniz aşırı kıyı şeritlerini (gemiyle) fethedebilirsin.',
+      };
+    }
+
+    const nearestPort = this.findNearestOwnedPort(countryId, x, y);
+    if (!nearestPort) {
+      return {
+        valid: false,
+        reason: 'Deniz aşırı gemi göndermek için önce denize kıyısı olan bir toprağa sahip olmalısın!',
+      };
+    }
+
+    const maxRange = attacker.navalRange || 38;
+    if (nearestPort.distance > maxRange) {
+      return {
+        valid: false,
+        reason: `Hedef kıyı donanma menzili dışında! (Mesafe: ${Math.round(nearestPort.distance)}, Menzil: ${maxRange} • Donanma geliştir)`,
+      };
+    }
+
+    if (!this.hasWaterPath(nearestPort.x, nearestPort.y, x, y)) {
+      return {
+        valid: false,
+        reason: 'Gemi rotası deniz üzerinden geçmelidir.',
+      };
+    }
+
+    const navalCost = Number((baseCost + 1.0).toFixed(2));
 
     return {
       valid: true,
-      cost,
+      isNaval: true,
+      portX: nearestPort.x,
+      portY: nearestPort.y,
+      distance: nearestPort.distance,
+      cost: navalCost,
       isEnemy,
       targetOwnerId: currentOwner,
     };
   }
 
-  // Conquer single pixel
+  // Conquer single pixel (instant on adjacent land, or dispatches a sailing Ship across the sea!)
   conquerPixel(countryId, x, y) {
     const country = this.countryMap.get(countryId);
     if (!country) return { ok: false, reason: 'Devlet bulunamadı.' };
@@ -345,6 +504,39 @@ export class WorldSimulationEngine {
       };
     }
 
+    // Naval Ship Expedition across sea/ocean
+    if (check.isNaval) {
+      // Prevent duplicate ship to same target pixel
+      const alreadySailing = this.ships.some(
+        (s) => s.countryId === countryId && s.toX === x && s.toY === y
+      );
+      if (alreadySailing) {
+        return { ok: false, reason: 'Bu kıyıya zaten bir çıkarma gemisi ilerliyor!' };
+      }
+
+      country.troops = Math.max(0, country.troops - check.cost);
+      const ship = {
+        id: 'ship_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        countryId,
+        color: country.color || '#38BDF8',
+        fromX: check.portX,
+        fromY: check.portY,
+        toX: x,
+        toY: y,
+        x: check.portX,
+        y: check.portY,
+        distance: check.distance,
+        speed: country.shipSpeed || 11,
+        progress: 0,
+      };
+      this.ships.push(ship);
+      this.onSound('pencil');
+      this.onEvent(`Çıkarma gemisi denize açıldı! Hedef kıyıya ilerliyor...`);
+      this.saveState();
+      return { ok: true, isNaval: true, ship, country };
+    }
+
+    // Adjacent Land Conquest
     const idx = y * MAP_W + x;
     const prevOwner = this.owners[idx];
 
@@ -379,10 +571,9 @@ export class WorldSimulationEngine {
     });
 
     this.saveState();
-    return { ok: true, country };
+    return { ok: true, isNaval: false, country };
   }
 
-  // Found a brand new country on an unclaimed neutral land pixel
   async foundCountry({ name, color, flagDataUrl, capitalX, capitalY, creatorIp }) {
     const idx = capitalY * MAP_W + capitalX;
     if (!this.worldData.isLand[idx]) {
@@ -392,7 +583,6 @@ export class WorldSimulationEngine {
       return { ok: false, reason: 'Bu piksel zaten başka bir devlete ait!' };
     }
 
-    // 1 Device = 1 Country Enforcement
     const existingForDevice = this.countries.find((c) => c.deviceId === this.myDeviceId);
     if (existingForDevice && existingForDevice.landCount > 0) {
       return {
@@ -409,7 +599,6 @@ export class WorldSimulationEngine {
       };
     }
 
-    // IP Check: Max 2 countries per IP
     if (creatorIp) {
       const countForIp = this.countries.filter((c) => c.creatorIp === creatorIp && c.landCount > 0).length;
       if (countForIp >= 2) {
@@ -438,7 +627,7 @@ export class WorldSimulationEngine {
       landCount: 1,
       population: 15,
       gold: 0,
-      troops: 1.0, // Starts with 1 pixel, capacity 1, and 1 soldier
+      troops: 1.0,
       upgrades: { ...DEFAULT_UPGRADES },
       creatorIp: creatorIp || 'unknown',
       deviceId: this.myDeviceId,
@@ -455,7 +644,7 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.dirtyRegions = true;
     this.onSound('celebration');
-    this.onEvent(`🌍 ${country.name} kuruldu!`);
+    this.onEvent(`${country.name} kuruldu!`);
 
     this.sync.broadcast({
       type: 'NEW_COUNTRY',
@@ -520,7 +709,7 @@ export class WorldSimulationEngine {
     const country = this.countryMap.get(countryId);
     if (country) {
       country.landCount++;
-      country.troops = Math.max(0, country.troops - (cost || 1));
+      country.troops = Math.max(0, country.troops - (cost || 0));
       this._recalculateDerivedStats(country);
     }
 
@@ -637,7 +826,6 @@ export class WorldSimulationEngine {
 
   loadState() {
     try {
-      // One-time clean wipe for v8 hardcore balance
       if (!localStorage.getItem('sf_world_reset_v8_done')) {
         localStorage.removeItem('sf_shared_world_v4_data');
         localStorage.removeItem('sf_shared_world_v5_worldbox');

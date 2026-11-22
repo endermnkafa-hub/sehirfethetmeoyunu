@@ -256,7 +256,79 @@ export class WorldMapRenderer {
       }
     }
 
-    // 6. Clean, Non-Intrusive Country Name Label (Positioned ABOVE the country's top boundary so it never covers the pixels!)
+    // 6. Render Active Naval Ships Sailing Across Seas/Oceans (Vector Warship & Wake Trail)
+    if (Array.isArray(engine.ships) && engine.ships.length > 0) {
+      for (const ship of engine.ships) {
+        const fromSx = (ship.fromX + 0.5) * scale;
+        const fromSy = (ship.fromY + 0.5) * scale;
+        const toSx = (ship.toX + 0.5) * scale;
+        const toSy = (ship.toY + 0.5) * scale;
+        const curSx = (ship.x + 0.5) * scale;
+        const curSy = (ship.y + 0.5) * scale;
+
+        ctx.save();
+        // Dashed sea route line
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(fromSx, fromSy);
+        ctx.lineTo(toSx, toSy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Wake trail behind ship
+        ctx.strokeStyle = 'rgba(186, 230, 253, 0.75)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(fromSx, fromSy);
+        ctx.lineTo(curSx, curSy);
+        ctx.stroke();
+
+        // Vector Warship Icon
+        const sz = Math.max(9, Math.min(18, scale * 2.2));
+        ctx.translate(curSx, curSy);
+
+        // Outer beacon ring
+        ctx.beginPath();
+        ctx.arc(0, 0, sz * 0.85, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(8, 47, 73, 0.85)';
+        ctx.fill();
+        ctx.strokeStyle = ship.color || '#38BDF8';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+
+        // Ship Hull
+        ctx.fillStyle = ship.color || '#38BDF8';
+        ctx.beginPath();
+        ctx.moveTo(-sz * 0.55, sz * 0.15);
+        ctx.lineTo(sz * 0.55, sz * 0.15);
+        ctx.lineTo(sz * 0.35, sz * 0.48);
+        ctx.lineTo(-sz * 0.35, sz * 0.48);
+        ctx.closePath();
+        ctx.fill();
+
+        // Ship Sails
+        ctx.fillStyle = '#F8FAFC';
+        ctx.beginPath();
+        ctx.moveTo(0, -sz * 0.52);
+        ctx.lineTo(sz * 0.45, sz * 0.08);
+        ctx.lineTo(0, sz * 0.08);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(-sz * 0.06, -sz * 0.38);
+        ctx.lineTo(-sz * 0.42, sz * 0.08);
+        ctx.lineTo(-sz * 0.06, sz * 0.08);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+      }
+    }
+
+    // 7. Clean, Non-Intrusive Country Name Label (Positioned ABOVE the country's top boundary so it never covers the pixels!)
     for (const country of engine.countries) {
       if (country.landCount <= 0) continue;
       const b = bounds.get(country.id);
@@ -351,9 +423,29 @@ export class WorldMapRenderer {
           const check = engine.canExpandToPixel(myCountry.id, mx, my);
           const cellSz = Math.max(1.5, scale);
           if (check.valid) {
-            ctx.strokeStyle = check.isEnemy ? '#F43F5E' : '#10B981';
-            ctx.lineWidth = 1.8;
-            ctx.strokeRect(hx, hy, cellSz, cellSz);
+            if (check.isNaval) {
+              // Draw dashed sea expedition route preview from nearest port to target coast
+              const pSx = (check.portX + 0.5) * scale;
+              const pSy = (check.portY + 0.5) * scale;
+              const tSx = hx + cellSz / 2;
+              const tSy = hy + cellSz / 2;
+              ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+              ctx.lineWidth = 1.6;
+              ctx.setLineDash([5, 4]);
+              ctx.beginPath();
+              ctx.moveTo(pSx, pSy);
+              ctx.lineTo(tSx, tSy);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              ctx.strokeStyle = '#38BDF8';
+              ctx.lineWidth = 2;
+              ctx.strokeRect(hx, hy, cellSz, cellSz);
+            } else {
+              ctx.strokeStyle = check.isEnemy ? '#F43F5E' : '#10B981';
+              ctx.lineWidth = 1.8;
+              ctx.strokeRect(hx, hy, cellSz, cellSz);
+            }
           } else if (isLand) {
             ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
             ctx.lineWidth = 1;
