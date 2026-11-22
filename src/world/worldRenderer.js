@@ -102,14 +102,42 @@ export class WorldMapRenderer {
             dst[p4 + 2] = bb;
             dst[p4 + 3] = 255;
           } else if (flagRgba) {
-            const u = (x - minX) / bw;
-            const v = (y - minY) / bh;
-            const fx = Math.min(FLAG_W - 1, (u * FLAG_W) | 0);
-            const fy = Math.min(FLAG_H - 1, (v * FLAG_H) | 0);
+            const isSmall = bw <= 18 && bh <= 12;
+            let fx = 0;
+            let fy = 0;
+
+            if (isSmall) {
+              // Center and fit within bounding box preserving 1.6 aspect ratio
+              const flagAspect = FLAG_W / FLAG_H;
+              const boxAspect = bw / bh;
+              let normU = (x - minX + 0.5) / bw;
+              let normV = (y - minY + 0.5) / bh;
+              if (boxAspect > flagAspect) {
+                const scaleFactor = boxAspect / flagAspect;
+                normU = (normU - 0.5) * scaleFactor + 0.5;
+              } else {
+                const scaleFactor = flagAspect / boxAspect;
+                normV = (normV - 0.5) * scaleFactor + 0.5;
+              }
+              normU = Math.max(0, Math.min(0.999, normU));
+              normV = Math.max(0, Math.min(0.999, normV));
+              fx = (normU * FLAG_W) | 0;
+              fy = (normV * FLAG_H) | 0;
+            } else {
+              // Large territory: Repeating aspect-ratio-preserved flag texture (tiling)
+              // Each pattern tile is 24x15 map pixels (perfect 1.6:1 flag aspect ratio)
+              const TILE_W = 24;
+              const TILE_H = 15;
+              const tx = (((x - minX) % TILE_W) + TILE_W) % TILE_W;
+              const ty = (((y - minY) % TILE_H) + TILE_H) % TILE_H;
+              fx = Math.min(FLAG_W - 1, ((tx / TILE_W) * FLAG_W) | 0);
+              fy = Math.min(FLAG_H - 1, ((ty / TILE_H) * FLAG_H) | 0);
+            }
+
             const fp = (fy * FLAG_W + fx) * 4;
-            dst[p4] = flagRgba[fp];
-            dst[p4 + 1] = flagRgba[fp + 1];
-            dst[p4 + 2] = flagRgba[fp + 2];
+            dst[p4] = (flagRgba[fp] * 0.90 + br * 0.10) | 0;
+            dst[p4 + 1] = (flagRgba[fp + 1] * 0.90 + bg * 0.10) | 0;
+            dst[p4 + 2] = (flagRgba[fp + 2] * 0.90 + bb * 0.10) | 0;
             dst[p4 + 3] = 255;
           } else {
             dst[p4] = br;
@@ -175,39 +203,131 @@ export class WorldMapRenderer {
 
       const bounds = engine.countryBounds || engine.computeCountryBounds();
 
-      // 3. For small countries (1..9 pixels) when zoomed in, draw their crisp full flag image & border directly on their tiles
-      if (scale >= 3.0) {
-        for (const country of engine.countries) {
-          if (country.landCount <= 0 || country.landCount > 9) continue;
-          const b = bounds.get(country.id);
-          if (!b || b.count === 0) continue;
+      // 3. Crisp High-Resolution Country Crest / Emblem Banner in Territory
+      // Displays the player's full uncompressed, anti-aliased image / flag right at their capital or core territory!
+      for (const country of engine.countries) {
+        if (country.landCount <= 0) continue;
+        const b = bounds.get(country.id);
+        if (!b || b.count === 0) continue;
 
-          const sx = b.minX * scale;
-          const sy = b.minY * scale;
-          if (
-            sx + originX < -100 ||
-            sx + originX > viewW + 100 ||
-            sy + originY < -100 ||
-            sy + originY > viewH + 100
-          ) {
-            continue;
-          }
+        let crestX = country.capitalX;
+        let crestY = country.capitalY;
+        const capIdx = crestY * MAP_W + crestX;
 
-          const sw = Math.max(1, b.maxX - b.minX + 1) * scale;
-          const sh = Math.max(1, b.maxY - b.minY + 1) * scale;
-          const img = this.getOrLoadImage(country.flagDataUrl, () => {
-            engine.dirtyPixels = true;
-          });
+        // If capital is invalid or no longer owned by this country, use owned pixel nearest to centroid
+        if (
+          crestX == null ||
+          crestY == null ||
+          engine.owners[capIdx] !== country.id ||
+          !this.worldData.isLand[capIdx]
+        ) {
+          const targetX = Math.round(b.sumX / b.count);
+          const targetY = Math.round(b.sumY / b.count);
+          let bestDist = Infinity;
+          let bestX = b.minX;
+          let bestY = b.minY;
 
-          if (b.count === (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1)) {
-            if (img) {
-              ctx.drawImage(img, sx, sy, sw, sh);
+          for (let cy = b.minY; cy <= b.maxY; cy++) {
+            const row = cy * MAP_W;
+            for (let cx = b.minX; cx <= b.maxX; cx++) {
+              if (engine.owners[row + cx] === country.id) {
+                const dist = (cx - targetX) ** 2 + (cy - targetY) ** 2;
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  bestX = cx;
+                  bestY = cy;
+                }
+              }
             }
-            ctx.strokeStyle = country.color || "#FBBF24";
-            ctx.lineWidth = 2;
-            ctx.strokeRect(sx, sy, sw, sh);
           }
+          crestX = bestX;
+          crestY = bestY;
         }
+
+        const sx = (crestX + 0.5) * scale;
+        const sy = (crestY + 0.5) * scale;
+
+        // Viewport culling
+        if (
+          sx + originX < -120 ||
+          sx + originX > viewW + 120 ||
+          sy + originY < -120 ||
+          sy + originY > viewH + 120
+        ) {
+          continue;
+        }
+
+        const isMe = country.id === engine.myCountryId;
+        const img = this.getOrLoadImage(country.flagDataUrl, () => {
+          engine.dirtyPixels = true;
+        });
+
+        // Compute crest dimensions based on country size and camera scale
+        const baseW = Math.max(14, Math.min(30, Math.sqrt(country.landCount) * 1.6));
+        const screenW = Math.max(26, Math.min(92, baseW * scale));
+        const screenH = Math.round(screenW * (FLAG_H / FLAG_W));
+
+        ctx.save();
+        ctx.translate(sx, sy);
+
+        // Elegant drop shadow
+        ctx.shadowColor = "rgba(0, 0, 0, 0.75)";
+        ctx.shadowBlur = Math.min(10, 4 + scale);
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 2;
+
+        const halfW = screenW / 2;
+        const halfH = screenH / 2;
+        const radius = Math.max(3, Math.min(6, screenW * 0.12));
+
+        // Base rounded rect
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(-halfW, -halfH, screenW, screenH, radius);
+        } else {
+          ctx.rect(-halfW, -halfH, screenW, screenH);
+        }
+        ctx.fillStyle = "#090d16";
+        ctx.fill();
+
+        const crestBorderColor = country.color || (isMe ? "#FBBF24" : "#94A3B8");
+        ctx.strokeStyle = crestBorderColor;
+        ctx.lineWidth = isMe ? 2.2 : 1.6;
+        ctx.stroke();
+
+        // Clip & draw high-resolution image with anti-aliasing
+        ctx.save();
+        ctx.shadowColor = "transparent";
+        ctx.clip();
+        if (img) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(img, -halfW, -halfH, screenW, screenH);
+        } else {
+          ctx.fillStyle = country.color || "#E11D48";
+          ctx.fillRect(-halfW, -halfH, screenW, screenH);
+        }
+        ctx.restore();
+
+        // Overlay border stroke for razor-sharp edge
+        ctx.shadowColor = "transparent";
+        ctx.strokeStyle = crestBorderColor;
+        ctx.lineWidth = isMe ? 2.2 : 1.6;
+        ctx.stroke();
+
+        // Capital indicator badge (small star in top-left)
+        if (country.capitalX === crestX && country.capitalY === crestY) {
+          const starR = Math.max(3, Math.min(6, screenW * 0.11));
+          ctx.fillStyle = "#FBBF24";
+          ctx.strokeStyle = "#0f172a";
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(-halfW + starR + 2, -halfH + starR + 2, starR, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        ctx.restore();
       }
 
       const myCountry = engine.getMyCountry();
@@ -308,12 +428,12 @@ export class WorldMapRenderer {
         const fontSize = 11;
         ctx.font = "800 11px Inter, system-ui, sans-serif";
         const label = `${country.name} (${country.landCount} px · 🎖️${Math.floor(country.troops)})`;
-        const flagThumbW = 16;
-        const flagThumbH = 11;
+        const flagThumbW = 20;
+        const flagThumbH = 13;
         const textW = ctx.measureText(label).width;
-        const tw = textW + flagThumbW + 16;
-        const th = 20;
-        const labelY = topY - th - 5;
+        const tw = textW + flagThumbW + 18;
+        const th = 22;
+        const labelY = topY - th - 6;
         const pillX = centerX - tw / 2;
 
         const pillBorderColor = country.color || (isMe ? "#FBBF24" : "#94A3B8");
@@ -333,7 +453,17 @@ export class WorldMapRenderer {
         const thumbX = pillX + 5;
         const thumbY = labelY + (th - flagThumbH) / 2;
         if (img) {
+          ctx.save();
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") {
+            ctx.roundRect(thumbX, thumbY, flagThumbW, flagThumbH, 2.5);
+          } else {
+            ctx.rect(thumbX, thumbY, flagThumbW, flagThumbH);
+          }
+          ctx.clip();
+          ctx.imageSmoothingEnabled = true;
           ctx.drawImage(img, thumbX, thumbY, flagThumbW, flagThumbH);
+          ctx.restore();
         } else {
           ctx.fillStyle = country.color || "#E11D48";
           ctx.fillRect(thumbX, thumbY, flagThumbW, flagThumbH);
@@ -342,7 +472,7 @@ export class WorldMapRenderer {
         ctx.fillStyle = isMe ? "#FDE68A" : "#F1F5F9";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(label, thumbX + flagThumbW + 5, labelY + th / 2);
+        ctx.fillText(label, thumbX + flagThumbW + 6, labelY + th / 2);
         ctx.restore();
       }
 

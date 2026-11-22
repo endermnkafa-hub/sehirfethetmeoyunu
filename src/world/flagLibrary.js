@@ -1,8 +1,8 @@
 // Crisp Offline-First Flag Library & Custom Image Buffer Decoder
-// Renders clean, CORS-free 128x80 RGBA flag buffers for real-time pixel-clipped world territory fills
+// Renders clean, CORS-free 256x160 RGBA flag buffers for real-time pixel-clipped world territory fills
 
-export const FLAG_W = 128;
-export const FLAG_H = 80;
+export const FLAG_W = 256;
+export const FLAG_H = 160;
 
 // Convert any HTMLImageElement or HTMLCanvasElement to a FLAG_W x FLAG_H RGBA Uint8ClampedArray
 export function canvasToFlagBuffer(source) {

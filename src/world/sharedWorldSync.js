@@ -308,7 +308,7 @@ export class SharedWorldSync {
     }
   }
 
-  // Synchronously convert country's decoded flagRgba buffer (or small dataUrl) into a compact <=1200 byte JPEG dataUrl
+  // Synchronously convert country's decoded flagRgba buffer (or small dataUrl) into a compact <=1600 byte JPEG dataUrl
   getCompactFlagFromCountry(country) {
     if (!country || typeof document === 'undefined') return null;
     try {
@@ -322,13 +322,13 @@ export class SharedWorldSync {
         sctx.putImageData(imgData, 0, 0);
 
         const dstCv = document.createElement('canvas');
-        dstCv.width = 36;
-        dstCv.height = 24;
+        dstCv.width = 60;
+        dstCv.height = 38;
         const dctx = dstCv.getContext('2d');
-        dctx.drawImage(srcCv, 0, 0, 36, 24);
-        return dstCv.toDataURL('image/jpeg', 0.65);
+        dctx.drawImage(srcCv, 0, 0, 60, 38);
+        return dstCv.toDataURL('image/jpeg', 0.70);
       }
-      if (country.flagDataUrl && country.flagDataUrl.length <= 1500) {
+      if (country.flagDataUrl && country.flagDataUrl.length <= 2500) {
         return country.flagDataUrl;
       }
     } catch {}

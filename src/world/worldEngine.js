@@ -1450,9 +1450,13 @@ export class WorldSimulationEngine {
     }
 
     let flagRgba = null;
+    let finalFlagDataUrl = flagDataUrl;
     try {
       const decoded = await loadDataUrlToFlagBuffer(flagDataUrl);
       flagRgba = decoded.rgba;
+      if (decoded.dataUrl) {
+        finalFlagDataUrl = decoded.dataUrl;
+      }
     } catch {}
 
     // Unique 15-bit integer ID (10..32000) so countries created on different devices (Phone vs PC) never collide
@@ -1465,7 +1469,7 @@ export class WorldSimulationEngine {
       id: newId,
       name: (name || "Devletim").trim(),
       color: color || "#E11D48",
-      flagDataUrl,
+      flagDataUrl: finalFlagDataUrl || flagDataUrl,
       flagRgba,
       capitalX,
       capitalY,
