@@ -590,7 +590,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
           )}
         </div>
 
-        {/* Right: Upgrades, Reset, Sound & Help */}
+        {/* Right: Upgrades, Sound & Help */}
         <div className="pointer-events-auto flex items-center gap-2">
           {myCountry && (
             <button
@@ -600,20 +600,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
               <span>🏛️ Geliştirmeler</span>
             </button>
           )}
-
-          <button
-            onClick={() => {
-              const eng = engineRef.current;
-              if (eng) {
-                eng.resetWorldMap(true);
-                cameraRef.current = { zoom: 1.0, panX: 0, panY: 0 };
-              }
-            }}
-            className="px-2.5 h-9 rounded-xl bg-stone-900/90 border border-red-500/40 text-red-300 hover:bg-red-950/60 font-black text-xs flex items-center gap-1 transition shadow"
-            title="Haritayı ve tüm devletleri sıfırla (1 pikselden baştan başla)"
-          >
-            <span>🔄 Sıfırla</span>
-          </button>
 
           <button
             onClick={() => setSoundEnabled((prev) => !prev)}

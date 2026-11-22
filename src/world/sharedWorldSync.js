@@ -72,9 +72,6 @@ export class SharedWorldSync {
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
       this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats);
       this.onRemoteUpdate();
-    } else if (data.type === 'RESET_WORLD') {
-      this.engine.resetWorldMap(false);
-      this.onRemoteUpdate();
     }
   }
 
