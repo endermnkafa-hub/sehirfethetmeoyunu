@@ -14,46 +14,73 @@ export const UPGRADE_DEFINITIONS = [
     key: 'mobilization',
     name: 'Seferberlik Hızı',
     icon: '⚡',
-    desc: 'Saniye başı asker üretim hızını +%20 artırır.',
-    baseCost: 30,
-    costScale: 1.8,
-    maxLevel: 5,
+    desc: 'Her seviyede saniye başı asker üretim hızını +%5 artırır.',
+    baseCost: 25,
+    costScale: 1.38,
+    maxLevel: 25,
   },
   {
     key: 'weapons',
     name: 'Taarruz Doktrini',
     icon: '⚔️',
-    desc: 'Ordunun saldırı gücünü +%25 artırır; düşman toprağı alırken daha az asker harcarsın.',
-    baseCost: 35,
-    costScale: 1.8,
-    maxLevel: 5,
+    desc: 'Her seviyede ordunun saldırı gücünü +%6 artırır; düşman toprağı alırken daha az asker harcarsın.',
+    baseCost: 30,
+    costScale: 1.38,
+    maxLevel: 25,
   },
   {
     key: 'fortification',
     name: 'Sınır Tahkimatı',
     icon: '🛡️',
-    desc: 'Topraklarının savunma direncini +%30 artırır; rakipler senden piksel alırken ağır kayıp verir.',
-    baseCost: 35,
-    costScale: 1.8,
-    maxLevel: 5,
+    desc: 'Her seviyede topraklarının savunma direncini +%6 artırır; rakipler senden piksel alırken ağır kayıp verir.',
+    baseCost: 30,
+    costScale: 1.38,
+    maxLevel: 25,
   },
   {
     key: 'logistics',
-    name: 'Ordu Kapasitesi',
+    name: 'Ordu Lojistiği',
     icon: '📦',
-    desc: 'Biriktirebileceğin maksimum asker kapasitesini +%25 artırır.',
-    baseCost: 30,
-    costScale: 1.75,
-    maxLevel: 5,
+    desc: 'Her seviyede maksimum asker depolama kapasitesini +%8 artırır.',
+    baseCost: 25,
+    costScale: 1.35,
+    maxLevel: 25,
   },
   {
     key: 'economy',
-    name: 'Halk & Vergi Reformu',
+    name: 'Vergi & Hazine',
     icon: '💰',
-    desc: 'Halkın büyüme hızını ve hazineye akan saniye başı altın gelirini +%25 artırır.',
+    desc: 'Her seviyede halktan toplanan saniye başı altın gelirini +%6 artırır.',
     baseCost: 25,
-    costScale: 1.7,
-    maxLevel: 5,
+    costScale: 1.35,
+    maxLevel: 25,
+  },
+  {
+    key: 'housing',
+    name: 'İskan & Nüfus',
+    icon: '🌾',
+    desc: 'Her seviyede halk kapasitesini ve nüfus artış hızını +%7 artırır (Ek vergi katkısı sağlar).',
+    baseCost: 20,
+    costScale: 1.33,
+    maxLevel: 25,
+  },
+  {
+    key: 'siege',
+    name: 'Kuşatma & Harekat',
+    icon: '🎯',
+    desc: 'Her seviyede sahipsiz gri toprakları fethetme asker maliyetini %2 düşürür.',
+    baseCost: 40,
+    costScale: 1.42,
+    maxLevel: 25,
+  },
+  {
+    key: 'citadel',
+    name: 'Başkent İç Kalesi',
+    icon: '🏰',
+    desc: 'Her seviyede başkentin ve yakın çevresinin kuşatma direncini +%10 artırır.',
+    baseCost: 35,
+    costScale: 1.38,
+    maxLevel: 25,
   },
 ];
 
@@ -63,6 +90,9 @@ export const DEFAULT_UPGRADES = {
   fortification: 0,
   logistics: 0,
   economy: 0,
+  housing: 0,
+  siege: 0,
+  citadel: 0,
 };
 
 export class WorldSimulationEngine {
@@ -122,31 +152,50 @@ export class WorldSimulationEngine {
   _recalculateDerivedStats(c) {
     const up = c.upgrades || DEFAULT_UPGRADES;
 
-    // 1. Asker Kapasitesi = Toprak Sayısı * Lojistik Çarpanı
-    // Büyük devletin ağırlığı: Biriktirebildiği maksimum ordu kapasitesidir!
-    c.capacity = Math.max(1, Math.floor(c.landCount * (1 + up.logistics * 0.25)));
+    // 1. Asker Kapasitesi = Toprak Sayısı * (1 + Lojistik * %8)
+    c.capacity = Math.max(1, Math.floor(c.landCount * (1 + (up.logistics || 0) * 0.08)));
 
-    // 2. Asker Üretim Hızı (Logaritmik Azalan Getiri Formülü):
-    // - 1 piksel: ~0.033 asker/sn (30 saniyede 1 asker)
-    // - 10 piksel: ~0.098 asker/sn (10 saniyede 1 asker)
-    // - 100 piksel (Şehir): ~0.163 asker/sn (6 saniyede 1 asker)
-    // - 1000 piksel (Büyük Devlet): ~0.229 asker/sn (4.3 saniyede 1 asker)
-    // - 3500 piksel (Dev İmparatorluk): ~0.264 asker/sn (3.8 saniyede 1 asker)
-    // Asla saniyede 5-10 asker basıp haritayı boyayamaz! Küçük devlet büyüğe yetişebilir.
+    // 2. Asker Üretim Hızı (Logaritmik Azalan Getiri Formülü + Seferberlik * %5)
     const baseRate = (1.0 + 0.85 * Math.log(Math.max(1, c.landCount))) / 30.0;
-    c.productionRate = baseRate * (1 + up.mobilization * 0.20);
+    c.productionRate = baseRate * (1 + (up.mobilization || 0) * 0.05);
 
     // 3. Otomatik Halk (Nüfus) & Vergi (Altın) Üretimi
-    c.maxPopulation = c.landCount * 15;
-    c.popGrowthRate = (0.15 + 0.04 * Math.log(c.landCount + 1)) * (1 + up.economy * 0.25);
+    c.maxPopulation = Math.floor(c.landCount * 15 * (1 + (up.housing || 0) * 0.07));
+    c.popGrowthRate = (0.12 + 0.03 * Math.log(c.landCount + 1)) * (1 + (up.housing || 0) * 0.07);
 
-    // Saniye başı altın geliri (Upgradeler için birikir, 역시 logaritmik dengeli)
-    c.goldIncome = (0.20 + 0.35 * Math.log(c.landCount + 1)) * (1 + up.economy * 0.25);
+    // Saniye başı altın geliri (Daha zorlu ve uzun vadeli ekonomi: Vergi * %6 + İskan katkısı)
+    const popBonus = 1 + Math.min(0.5, (c.population || 15) / 2500);
+    c.goldIncome =
+      (0.08 + 0.14 * Math.log(c.landCount + 1)) *
+      (1 + (up.economy || 0) * 0.06) *
+      popBonus;
 
-    // 4. Saldırı & Savunma Gücü (Küçük ülkelere +%35 Vatan Savunması direnci)
-    c.attackPower = 1.0 + up.weapons * 0.25;
+    // 4. Saldırı & Savunma Gücü (Her seviye +%6, küçük ülkelere +%35 Vatan Savunması)
+    c.attackPower = 1.0 + (up.weapons || 0) * 0.06;
     const underdogBonus = c.landCount < 40 ? 0.35 : c.landCount < 100 ? 0.15 : 0;
-    c.defensePower = 1.0 + up.fortification * 0.30 + underdogBonus;
+    c.defensePower = 1.0 + (up.fortification || 0) * 0.06 + underdogBonus;
+  }
+
+  // Change Country Border Color live
+  setCountryColor(countryId, newColor) {
+    const country = this.countryMap.get(countryId);
+    if (!country || !newColor) return { ok: false };
+    country.color = newColor;
+    this.dirtyPixels = true;
+    this.saveState();
+
+    this.sync.broadcast({
+      type: 'SYNC_COUNTRY_STATS',
+      countryId: country.id,
+      stats: {
+        color: country.color,
+        gold: country.gold,
+        population: country.population,
+        troops: country.troops,
+        upgrades: country.upgrades,
+      },
+    });
+    return { ok: true };
   }
 
   // Real-time continuous simulation tick
@@ -245,11 +294,21 @@ export class WorldSimulationEngine {
     const isEnemy = currentOwner > 0;
     let cost = 1.0;
 
-    if (isEnemy) {
+    if (!isEnemy) {
+      const siegeLevel = attacker.upgrades?.siege || 0;
+      cost = Math.max(0.5, Number((1.0 - siegeLevel * 0.02).toFixed(2)));
+    } else {
       const defender = this.countryMap.get(currentOwner);
       const defPower = defender ? (defender.defensePower || 1.0) : 1.0;
       const atkPower = attacker.attackPower || 1.0;
-      cost = Math.max(1.0, Number(((2.0 * defPower) / atkPower).toFixed(2)));
+      let citadelMult = 1.0;
+      if (defender) {
+        const dist = Math.hypot(x - defender.capitalX, y - defender.capitalY);
+        if (dist <= 5) {
+          citadelMult = 1.3 + (defender.upgrades?.citadel || 0) * 0.10;
+        }
+      }
+      cost = Math.max(1.0, Number(((2.0 * defPower * citadelMult) / atkPower).toFixed(2)));
     }
 
     return {
@@ -469,6 +528,10 @@ export class WorldSimulationEngine {
   handleRemoteSyncCountryStats(countryId, stats) {
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
+    if (stats.color) {
+      country.color = stats.color;
+      this.dirtyPixels = true;
+    }
     if (typeof stats.gold === 'number') country.gold = stats.gold;
     if (typeof stats.population === 'number') country.population = stats.population;
     if (typeof stats.troops === 'number') country.troops = stats.troops;

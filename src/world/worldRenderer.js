@@ -204,11 +204,16 @@ export class WorldMapRenderer {
       }
       ctx.restore();
 
-      // Crisp territory perimeter border
+      // Crisp territory perimeter border using the country's chosen border color!
       const isMe = country.id === engine.myCountryId;
-      ctx.strokeStyle = isMe ? '#FBBF24' : 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = Math.max(0.08, (isMe ? 1.8 : 1.2) / scale);
+      const borderColor = country.color || (isMe ? '#FBBF24' : '#FFFFFF');
+      ctx.save();
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = Math.max(0.12, (isMe ? 2.4 : 1.8) / scale);
+      ctx.shadowColor = borderColor;
+      ctx.shadowBlur = isMe ? 6 : 3;
       ctx.stroke(paths.borderPath);
+      ctx.restore();
     }
 
     ctx.restore();
@@ -284,10 +289,11 @@ export class WorldMapRenderer {
       const labelY = topY - th - 5;
       const pillX = centerX - tw / 2;
 
-      // Subtle pill above territory
-      ctx.fillStyle = 'rgba(9, 13, 22, 0.88)';
-      ctx.strokeStyle = isMe ? 'rgba(251, 191, 36, 0.85)' : 'rgba(255, 255, 255, 0.25)';
-      ctx.lineWidth = 1.2;
+      // Subtle pill above territory with country's chosen border color
+      const pillBorderColor = country.color || (isMe ? '#FBBF24' : 'rgba(255, 255, 255, 0.35)');
+      ctx.fillStyle = 'rgba(9, 13, 22, 0.90)';
+      ctx.strokeStyle = pillBorderColor;
+      ctx.lineWidth = isMe ? 1.8 : 1.3;
       ctx.beginPath();
       ctx.roundRect(pillX, labelY, tw, th, 6);
       ctx.fill();

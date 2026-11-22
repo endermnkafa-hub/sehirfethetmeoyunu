@@ -464,7 +464,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <div className="flex flex-wrap items-center gap-3">
               {/* Flag & Country Name */}
               <div className="flex items-center gap-2 pr-2.5 border-r border-slate-700/80">
-                <div className="w-8 h-6 rounded overflow-hidden border border-amber-400/60 shadow shrink-0 bg-slate-950">
+                <div
+                  className="w-8 h-6 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950"
+                  style={{ borderColor: myCountry.color || '#FBBF24' }}
+                >
                   {myCountry.flagDataUrl && (
                     <img src={myCountry.flagDataUrl} alt="Bayrak" className="w-full h-full object-cover" />
                   )}
@@ -603,7 +606,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
           <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-5 shadow-2xl text-left">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="text-base font-black text-white">🏛️ Devlet Geliştirmeleri</h3>
+                <h3 className="text-base font-black text-white">🏛️ Devlet Geliştirmeleri (8 Dal • Max Sv.25)</h3>
                 <p className="text-[11px] text-slate-400">
                   Halkının ödediği vergilerle ({Math.floor(myCountry.gold)} 💰 Altın) devletini kalıcı olarak güçlendir.
                 </p>
@@ -616,7 +619,35 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </button>
             </div>
 
-            <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+            {/* Live Border Color Picker */}
+            <div className="mb-3 p-2.5 rounded-2xl bg-slate-800/70 border border-slate-700/80 flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-300">🎨 Sınır Rengi:</span>
+              <div className="flex items-center gap-2">
+                {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#FFFFFF'].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => {
+                      engineRef.current?.setCountryColor(myCountry.id, c);
+                      showToast('🎨 Sınır rengin güncellendi!');
+                    }}
+                    style={{ backgroundColor: c }}
+                    className={`w-5 h-5 rounded-full transition ${
+                      myCountry.color === c ? 'ring-2 ring-white scale-110' : 'opacity-75 hover:opacity-100'
+                    }`}
+                  />
+                ))}
+                <input
+                  type="color"
+                  value={myCountry.color || '#E11D48'}
+                  onChange={(e) => engineRef.current?.setCountryColor(myCountry.id, e.target.value)}
+                  className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
+                  title="Özel Sınır Rengi Seç"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
               {UPGRADE_DEFINITIONS.map((def) => {
                 const lvl = myCountry.upgrades?.[def.key] || 0;
                 const isMax = lvl >= def.maxLevel;
@@ -714,10 +745,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
-                  Renk
+                  Sınır Işıltı Rengi
                 </label>
-                <div className="flex gap-2.5">
-                  {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'].map((c) => (
+                <div className="flex items-center gap-2.5">
+                  {['#E11D48', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4'].map((c) => (
                     <button
                       key={c}
                       type="button"
@@ -728,6 +759,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }`}
                     />
                   ))}
+                  <input
+                    type="color"
+                    value={foundColor}
+                    onChange={(e) => setFoundColor(e.target.value)}
+                    className="w-7 h-7 rounded cursor-pointer bg-transparent border-0"
+                    title="Özel Sınır Rengi Seç"
+                  />
                 </div>
               </div>
 
