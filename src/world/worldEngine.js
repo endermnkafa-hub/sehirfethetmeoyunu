@@ -932,9 +932,15 @@ export class WorldSimulationEngine {
     return { ok: true, strike, remainingNukes: c.inventory.nukes };
   }
 
-  handleRemoteNuclearStrike(strike, isLocal = false) {
+  handleRemoteNuclearStrike(strike, isLocal = false, isHistoryReplay = false) {
     if (!strike || strike.x == null || strike.y == null) return;
     const { fromX, fromY, x, y, radius = 22 } = strike;
+
+    // If loading past history or refreshed page, apply wasteland directly without playing flight & explosion animations
+    if (isHistoryReplay) {
+      this._applyNuclearWastelandOnly(strike);
+      return;
+    }
 
     // 1. Launch in-flight missile animation from capital/origin to target
     const startX = fromX != null ? fromX : x;
@@ -959,6 +965,43 @@ export class WorldSimulationEngine {
     setTimeout(() => {
       this._detonateNuclearStrike(strike, isLocal);
     }, flightDuration);
+  }
+
+  _applyNuclearWastelandOnly(strike) {
+    if (!strike || strike.x == null || strike.y == null) return;
+    const { x, y, radius = 22 } = strike;
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    if ((now - (strike.time || now)) >= ONE_DAY) return;
+
+    if (!this.nuclearStrikes.some((s) => s.id === strike.id)) {
+      this.nuclearStrikes.push(strike);
+    }
+
+    const r2 = radius * radius;
+    for (let dy = -radius; dy <= radius; dy++) {
+      const cy = y + dy;
+      if (cy < 0 || cy >= MAP_H) continue;
+      const row = cy * MAP_W;
+      for (let dx = -radius; dx <= radius; dx++) {
+        const cx = x + dx;
+        if (cx < 0 || cx >= MAP_W) continue;
+        if (dx * dx + dy * dy > r2) continue;
+        const idx = row + cx;
+        if (!this.worldData.isLand[idx]) continue;
+
+        this.isWasteland[idx] = 1;
+        const prevOwner = this.owners[idx];
+        if (prevOwner > 0) {
+          this.owners[idx] = 0;
+          const country = this.countryMap.get(prevOwner);
+          if (country) {
+            country.landCount = Math.max(0, country.landCount - 1);
+            country.troops = Math.max(0, country.troops - 0.75);
+          }
+        }
+      }
+    }
   }
 
   _detonateNuclearStrike(strike, isLocal = false) {

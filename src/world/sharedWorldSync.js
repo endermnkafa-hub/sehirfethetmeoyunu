@@ -377,9 +377,9 @@ export class SharedWorldSync {
       }
     }
 
-    // Replay Nuclear Strikes (radioactive wastelands)
+    // Replay Nuclear Strikes (radioactive wastelands without re-triggering explosion animations)
     for (const strike of nuclearStrikes) {
-      this.engine.handleRemoteNuclearStrike(strike, true);
+      this.engine.handleRemoteNuclearStrike(strike, false, true);
     }
 
     // 6. Compute exact country bounds ONCE for the entire map
@@ -698,7 +698,7 @@ export class SharedWorldSync {
       this.engine.handleRemoteTreatyTerminationReject(data.treatyId);
       this.onRemoteUpdate();
     } else if (data.type === 'NUCLEAR_STRIKE' && data.strike) {
-      this.engine.handleRemoteNuclearStrike(data.strike, false);
+      this.engine.handleRemoteNuclearStrike(data.strike, false, isHistoryReplay);
       this.onRemoteUpdate();
     } else if (data.type === 'GLOBAL_CHAT' && data.chat) {
       this.engine.handleRemoteChatMessage(data.chat);
