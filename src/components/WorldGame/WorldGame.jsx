@@ -153,6 +153,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [hud, setHud] = useState({
     myCountry: null,
     totalCountriesCount: 0,
+    allCountries: [],
     connectedPeers: 0,
     isCloudConnected: false,
     time: 0,
@@ -186,7 +187,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
   }, [soundEnabled]);
 
   const showToast = useCallback((msg) => {
-    setToastMessage(msg);
+    if (!msg) return;
+    if (typeof msg === "object") {
+      if (msg.type === "NUCLEAR_STRIKE") {
+        setToastMessage(
+          msg.isLocal
+            ? "Nükleer başlık patladı! Bölge nükleer çorak araziye dönüştü!"
+            : "DİKKAT: Dünyada taktik bir nükleer saldırı gerçekleşti!",
+        );
+      } else {
+        setToastMessage(msg.message || JSON.stringify(msg));
+      }
+    } else {
+      setToastMessage(String(msg));
+    }
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => {
       toastTimerRef.current = null;
@@ -865,13 +879,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
             : 0;
 
           const activeCountryIds = new Set();
+          const activeList = [];
           for (const c of eng.countries) {
-            if (c.landCount > 0) activeCountryIds.add(c.id);
+            if (c.landCount > 0) {
+              activeCountryIds.add(c.id);
+              activeList.push(c);
+            }
           }
 
           setHud({
             myCountry: myC ? { ...myC } : null,
             totalCountriesCount: activeCountryIds.size,
+            allCountries: activeList,
             connectedPeers: eng.sync?.getConnectedPeersCount() || 0,
             isCloudConnected: Boolean(eng.sync?.isCloudConnected),
             canUndo: undos.length > 0,
@@ -940,7 +959,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!eng || !myCountry) return;
     const res = eng.buyMercenaries(myCountry.id, count);
     if (res.ok) {
-      showToast(`⚔️ ${res.count} Paralı Asker kiralandı! (-${res.cost.toLocaleString()} 🪙)`);
+      showToast(`${res.count} Paralı Asker kiralandı! (-${res.cost.toLocaleString()} Altın)`);
     } else {
       showToast(res.reason || "Paralı asker alınamadı.");
     }
@@ -951,7 +970,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!eng || !myCountry) return;
     const res = eng.buyNuclear(myCountry.id);
     if (res.ok) {
-      showToast(`☢️ 1 Adet Taktik Nükleer Silah depolandı! (Envanterinde: ${res.nukes} Adet)`);
+      showToast(`1 Adet Taktik Nükleer Silah depolandı! (Envanterinde: ${res.nukes} Adet)`);
     } else {
       showToast(res.reason || "Nükleer silah satın alınamadı.");
     }
@@ -965,7 +984,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     const res = eng.launchNuclearStrike(myCountry.id, x, y);
     if (res.ok) {
       showToast(
-        `☢️ TAKTİK NÜKLEER BAŞLIK FIRLATILDI! BÖLGE YOK EDİLDİ! (Kalan Nükleer: ${res.remainingNukes})`,
+        `TAKTİK NÜKLEER BAŞLIK FIRLATILDI! BÖLGE YOK EDİLDİ! (Kalan Nükleer: ${res.remainingNukes})`,
       );
     } else {
       showToast(res.reason || "Nükleer silah fırlatılamadı.");
@@ -1014,7 +1033,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!eng || !myCountry) return;
     const res = eng.acceptTreatyTermination(treatyId, myCountry.id);
     if (res.ok) {
-      showToast("🕊️ Anlaşma karşılıklı rıza ile cezasız olarak feshedildi!");
+      showToast("Anlaşma karşılıklı rıza ile cezasız olarak feshedildi!");
     } else {
       showToast(res.reason || "Hata oluştu.");
     }
@@ -1256,7 +1275,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
               <span className="hidden xs:inline sm:inline">Market</span>
               {(myCountry.inventory?.nukes || 0) > 0 && (
                 <span className="absolute -top-1 -right-1 px-1.5 py-0.2 bg-rose-600 text-white text-[9px] font-black rounded-full border border-slate-900 shadow animate-pulse">
-                  ☢️{myCountry.inventory.nukes}
+                  N{myCountry.inventory.nukes}
                 </span>
               )}
             </button>
@@ -1269,8 +1288,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   const next = !prev;
                   showToast(
                     next
-                      ? "⚡ Otomatik Fetih Açıldı! (Boş topraklar otomatik fethediliyor)"
-                      : "⏸️ Otomatik Fetih Durduruldu.",
+                      ? "Otomatik Fetih Açıldı! (Boş topraklar otomatik fethediliyor)"
+                      : "Otomatik Fetih Durduruldu.",
                   );
                   return next;
                 });
@@ -1620,7 +1639,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
               {(() => {
                 const uniqueCountries = [];
                 const seenIds = new Set();
-                for (const c of engineRef.current?.countries || []) {
+                for (const c of hud.allCountries || []) {
                   if (c.landCount > 0 && !seenIds.has(c.id)) {
                     seenIds.add(c.id);
                     uniqueCountries.push(c);
@@ -1670,33 +1689,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {!myCountry && (
-                            <button
-                              onClick={() => {
-                                const eng = engineRef.current;
-                                if (eng) {
-                                  const res = eng.claimExistingCountry(c.id);
-                                  if (res.ok) {
-                                    const center = eng.getCountryCenter(c.id);
-                                    centerOnCoords(center.x, center.y, 16.0);
-                                    setShowCountriesList(false);
-                                    showToast(
-                                      `${c.name} yönetimi bu cihaza bağlandı!`,
-                                    );
-                                  } else {
-                                    showToast(
-                                      res.reason || "Devlet bağlanamadı.",
-                                    );
-                                  }
-                                }
-                              }}
-                              className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
-                              title="Bu devleti kontrol et"
-                            >
-                              Yönetimi Al
-                            </button>
-                          )}
-
                           <button
                             onClick={() => {
                               const eng = engineRef.current;
@@ -1716,9 +1708,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   });
               })()}
 
-              {(!engineRef.current?.countries ||
-                engineRef.current.countries.filter((c) => c.landCount > 0)
-                  .length === 0) && (
+              {(!hud.allCountries || hud.allCountries.length === 0) && (
                 <div className="p-6 text-center text-xs text-slate-400">
                   Henüz haritada kurulmuş bir devlet yok. Gri bir piksele
                   dokunarak ilk devleti kur!
@@ -2211,7 +2201,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }
                       className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] transition shadow"
                     >
-                      ☢️ +1 Nükleer Başlık Ekle
+                      +1 Nükleer Başlık Ekle
                     </button>
                     <button
                       onClick={() =>
@@ -2219,7 +2209,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }
                       className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
                     >
-                      ☢️ +5 Nükleer Başlık Ekle
+                      +5 Nükleer Başlık Ekle
                     </button>
                     <button
                       onClick={() =>
@@ -2227,7 +2217,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }
                       className="py-2 px-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-black text-[11px] transition shadow"
                     >
-                      🗺️ +25 Toprak Genişlet
+                      +25 Toprak Genişlet
                     </button>
                     <button
                       onClick={() =>
@@ -2254,8 +2244,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   Haritadaki Devletleri Yönet ({hud.totalCountriesCount})
                 </div>
                 <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                  {(engineRef.current?.countries || [])
-                    .filter((c) => c.landCount > 0)
+                  {(hud.allCountries || [])
+                    .slice()
                     .sort((a, b) => b.landCount - a.landCount)
                     .map((c) => (
                       <div
@@ -2302,9 +2292,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
                       </div>
                     ))}
-                  {(!engineRef.current?.countries ||
-                    engineRef.current.countries.filter((c) => c.landCount > 0)
-                      .length === 0) && (
+                  {(!hud.allCountries || hud.allCountries.length === 0) && (
                     <div className="text-[11px] text-slate-500 text-center py-2">
                       Aktif devlet yok.
                     </div>
@@ -2322,13 +2310,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     onClick={() => engineRef.current?.adminGiveAllPlayersGold(10000)}
                     className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
                   >
-                    🎁 Herkese +10K Altın Dağıt
+                    Herkese +10K Altın Dağıt
                   </button>
                   <button
                     onClick={() => engineRef.current?.adminClearRadiation(true)}
                     className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] transition shadow"
                   >
-                    🌱 Radyasyonu Temizle
+                    Radyasyonu Temizle
                   </button>
                   <button
                     onClick={() => {
@@ -2338,7 +2326,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     }}
                     className="py-2 px-2.5 rounded-xl bg-sky-700 hover:bg-sky-600 text-white font-black text-[11px] transition shadow"
                   >
-                    🕊️ Genel Barış İlan Et
+                    Genel Barış İlan Et
                   </button>
                   <button
                     onClick={() => {
@@ -2352,7 +2340,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     }}
                     className="py-2 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-bold text-[11px] transition"
                   >
-                    💬 Sohbeti Temizle
+                    Sohbeti Temizle
                   </button>
                   <button
                     onClick={() => {
@@ -2367,7 +2355,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     }}
                     className="col-span-2 py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow"
                   >
-                    ⚠️ Tüm Haritayı Sıfırla (Wipe)
+                    Tüm Haritayı Sıfırla (Wipe)
                   </button>
                 </div>
               </div>
@@ -2414,7 +2402,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 <span className="text-slate-400">
                   v{mandatoryUpdate.localVersion || "1.0"}
                 </span>
-                <span>➔</span>
+                <span>-&gt;</span>
                 <span className="text-amber-400 font-black">
                   v{mandatoryUpdate.remoteVersion}
                 </span>
@@ -2550,7 +2538,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
                 return activeList.map((tr) => {
                   const partnerId = tr.fromId === myCountry.id ? tr.toId : tr.fromId;
-                  const partner = engineRef.current?.countryMap.get(partnerId);
+                  const partner = (hud.allCountries || []).find((c) => c.id === partnerId) || engineRef.current?.countryMap.get(partnerId);
                   const isAlliance = tr.type === "ALLIANCE";
                   const isPayer = tr.tributePayerId === myCountry.id;
 
@@ -2576,7 +2564,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                               : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
                           }`}
                         >
-                          {isAlliance ? "🛡️ İttifak (Saldırmazlık)" : "💰 Haraç Anlaşması"}
+                          {isAlliance ? "İttifak (Saldırmazlık)" : "Haraç Anlaşması"}
                         </span>
                       </div>
 
@@ -2688,7 +2676,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     {/* INCOMING TERMINATION REQUESTS */}
                     {incomingTerminations.map((tr) => {
                       const partnerId = tr.fromId === myCountry.id ? tr.toId : tr.fromId;
-                      const partner = engineRef.current?.countryMap.get(partnerId);
+                      const partner = (hud.allCountries || []).find((c) => c.id === partnerId) || engineRef.current?.countryMap.get(partnerId);
                       return (
                         <div
                           key={`term_${tr.id}`}
@@ -2728,7 +2716,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
                     {/* INCOMING PROPOSALS */}
                     {incomingList.map((tr) => {
-                      const sender = engineRef.current?.countryMap.get(tr.fromId);
+                      const sender = (hud.allCountries || []).find((c) => c.id === tr.fromId) || engineRef.current?.countryMap.get(tr.fromId);
                       const isAlliance = tr.type === "ALLIANCE";
                       const iWouldPay = tr.tributePayerId === myCountry.id;
 
@@ -2754,14 +2742,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
                                   : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
                               }`}
                             >
-                              {isAlliance ? "🛡️ İttifak Teklifi" : "💰 Haraç Teklifi"}
+                              {isAlliance ? "İttifak Teklifi" : "Haraç Teklifi"}
                             </span>
                           </div>
 
                           <div className="text-[11px] text-slate-200 bg-slate-900/70 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
                             {tr.type === "LAND_PURCHASE" ? (
                               <div className="text-amber-200">
-                                💰 Bu devlet sizden <strong className="text-amber-400">{tr.landPixelCount} piksel</strong> sınır toprağınızı toplam <strong className="text-amber-400">{tr.landTotalPrice?.toLocaleString()} Altın</strong> karşılığında satın almak istiyor.
+                                Bu devlet sizden <strong className="text-amber-400">{tr.landPixelCount} piksel</strong> sınır toprağınızı toplam <strong className="text-amber-400">{tr.landTotalPrice?.toLocaleString()} Altın</strong> karşılığında satın almak istiyor.
                               </div>
                             ) : isAlliance ? (
                               <div>
@@ -2769,11 +2757,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                               </div>
                             ) : iWouldPay ? (
                               <div className="text-amber-200">
-                                ⚠️ Bu devlet sana saldırmama karşılığında dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> haraç talep ediyor.
+                                Bu devlet sana saldırmama karşılığında dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> haraç talep ediyor.
                               </div>
                             ) : (
                               <div className="text-emerald-300">
-                                🎁 Bu devlet ona saldırmaman karşılığında sana dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> ödemeyi teklif ediyor.
+                                Bu devlet ona saldırmaman karşılığında sana dakikada <strong className="text-amber-400 font-black">{tr.tributeAmount} Altın</strong> ödemeyi teklif ediyor.
                               </div>
                             )}
                             <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 flex items-center justify-between">
@@ -2811,7 +2799,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
               {diplomacyTab === "NEW" && (() => {
                 const countries = [];
                 const seen = new Set();
-                for (const c of engineRef.current?.countries || []) {
+                for (const c of hud.allCountries || []) {
                   if (c.id !== myCountry.id && c.landCount > 0 && !seen.has(c.id)) {
                     seen.add(c.id);
                     countries.push(c);
@@ -2892,7 +2880,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           }`}
                         >
                           <div className="flex items-center gap-1 font-black text-[11px] text-white">
-                            <span className="text-emerald-400">📜</span>
+                            <FileText size={13} className="text-emerald-400" />
                             <span>Toprak Satın Al</span>
                           </div>
                           <span className="text-[9px] text-slate-400 leading-tight">
@@ -2986,7 +2974,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
                         <div>
                           <label className="block text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
-                            Piksel Başına Teklif ({landPricePerPixel} 🪙 / piksel)
+                            Piksel Başına Teklif ({landPricePerPixel} Altın / piksel)
                           </label>
                           <div className="grid grid-cols-4 gap-1.5">
                             {[25, 50, 100, 250].map((price) => (
@@ -3000,7 +2988,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                                     : "bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
                                 }`}
                               >
-                                {price} 🪙
+                                {price} Altın
                               </button>
                             ))}
                           </div>
@@ -3125,7 +3113,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* NUCLEAR TARGETING ACTIVE BANNER */}
       {isTargetingNuke && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 bg-rose-950/95 border-2 border-rose-500 text-rose-100 px-4 py-2 rounded-2xl shadow-2xl text-xs font-black flex items-center gap-3 animate-bounce">
-          <span className="text-base">☢️</span>
+          <ShieldAlert size={16} className="text-rose-400" />
           <span>HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!</span>
           <button
             onClick={() => setIsTargetingNuke(false)}
@@ -3140,8 +3128,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {nukeConfirmModal && (
         <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none">
           <div className="w-full max-w-sm bg-slate-900 border-2 border-rose-600 rounded-3xl p-5 shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95">
-            <div className="w-16 h-16 rounded-2xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center mx-auto text-3xl shadow-lg shadow-rose-600/30">
-              ☢️
+            <div className="w-16 h-16 rounded-2xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center mx-auto text-xs font-black shadow-lg shadow-rose-600/30">
+              <ShieldAlert size={32} />
             </div>
 
             <div>
@@ -3179,7 +3167,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 onClick={handleConfirmNukeStrike}
                 className="py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs transition shadow-lg shadow-rose-600/40 active:scale-95"
               >
-                Fırlat & Ateşle! 🚀
+                Fırlat & Ateşle!
               </button>
             </div>
           </div>
@@ -3217,14 +3205,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <div className="my-3 p-2.5 rounded-2xl bg-slate-950/70 border border-slate-800/80 flex items-center justify-between text-xs">
               <div className="flex items-center gap-1.5 font-bold text-slate-300">
                 <LogoGold size={15} />
-                <span>Kasa: <strong className="text-amber-400">{Math.floor(myCountry.gold).toLocaleString()} 🪙</strong></span>
+                <span>Kasa: <strong className="text-amber-400">{Math.floor(myCountry.gold).toLocaleString()} Altın</strong></span>
               </div>
               <div className="flex items-center gap-1.5 font-bold text-slate-300">
                 <LogoSwords size={15} />
                 <span>Ordu: <strong className="text-emerald-400">{myCountry.troops.toFixed(1)} / {Math.floor(myCountry.capacity)}</strong></span>
               </div>
               <div className="flex items-center gap-1.5 font-bold text-slate-300">
-                <span>☢️</span>
+                <ShieldAlert size={15} className="text-rose-400" />
                 <span>Nükleer: <strong className="text-rose-400">{myCountry.inventory?.nukes || 0} Adet</strong></span>
               </div>
             </div>
@@ -3270,7 +3258,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 to-yellow-500/5 border border-amber-500/30 space-y-2.5">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="text-lg">⚔️</span>
+                        <LogoSwords size={20} className="text-amber-400" />
                         <div>
                           <div className="text-xs font-black text-amber-300">
                             Paralı Asker Birliği
@@ -3281,16 +3269,16 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
                       </div>
                       <span className="text-[10px] font-black text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
-                        1 Asker = 1.000 🪙
+                        1 Asker = 250 Altın
                       </span>
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 pt-1">
                       {[
-                        { count: 5, cost: 5000 },
-                        { count: 10, cost: 10000 },
-                        { count: 25, cost: 25000 },
-                        { count: 50, cost: 50000 },
+                        { count: 5, cost: 1250 },
+                        { count: 10, cost: 2500 },
+                        { count: 25, cost: 6250 },
+                        { count: 50, cost: 12500 },
                       ].map(({ count, cost }) => {
                         const canAfford = myCountry.gold >= cost;
                         return (
@@ -3307,7 +3295,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           >
                             <span className="text-xs font-black">+{count} Asker</span>
                             <span className="text-[10px] font-bold opacity-90">
-                              {(cost / 1000).toFixed(0)}K 🪙
+                              {cost.toLocaleString()} Altın
                             </span>
                           </button>
                         );
@@ -3319,8 +3307,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <div className="p-4 rounded-2xl bg-gradient-to-r from-rose-950/60 to-red-950/30 border border-rose-500/40 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center text-lg">
-                          ☢️
+                        <div className="w-8 h-8 rounded-xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center text-xs font-black">
+                          <ShieldAlert size={18} />
                         </div>
                         <div>
                           <div className="text-xs font-black text-rose-300">
@@ -3332,7 +3320,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </div>
                       </div>
                       <span className="text-[10px] font-black text-rose-400 bg-rose-500/20 px-2 py-0.5 rounded-full border border-rose-500/30">
-                        35.000 🪙
+                        65.000 Altın
                       </span>
                     </div>
 
@@ -3342,16 +3330,16 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
                     <button
                       type="button"
-                      disabled={myCountry.gold < 35000}
+                      disabled={myCountry.gold < 65000}
                       onClick={handleBuyNuclear}
                       className={`w-full py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition shadow-lg active:scale-95 ${
-                        myCountry.gold >= 35000
+                        myCountry.gold >= 65000
                           ? "bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white shadow-rose-600/30 cursor-pointer"
                           : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
                       }`}
                     >
-                      <span>☢️</span>
-                      <span>Satın Al ve Depola (-35.000 Altın)</span>
+                      <ShieldAlert size={15} />
+                      <span>Satın Al ve Depola (-65.000 Altın)</span>
                     </button>
                   </div>
                 </>
@@ -3362,8 +3350,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700/80 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5">
-                        <div className="w-10 h-10 rounded-2xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center text-xl shadow">
-                          ☢️
+                        <div className="w-10 h-10 rounded-2xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center text-xs font-black shadow">
+                          <ShieldAlert size={20} />
                         </div>
                         <div>
                           <div className="text-xs font-black text-white">
@@ -3379,7 +3367,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                           : "bg-slate-700/50 text-slate-400"
                       }`}>
-                        {(myCountry.inventory?.nukes || 0) > 0 ? "Fırlatmaya Hazır 🚀" : "Depoda Yok"}
+                        {(myCountry.inventory?.nukes || 0) > 0 ? "Fırlatmaya Hazır" : "Depoda Yok"}
                       </span>
                     </div>
 
@@ -3393,7 +3381,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       onClick={() => {
                         setShowMarket(false);
                         setIsTargetingNuke(true);
-                        showToast("☢️ HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!");
+                        showToast("HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!");
                       }}
                       className={`w-full py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition active:scale-95 ${
                         myCountry.inventory?.nukes > 0
@@ -3402,7 +3390,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }`}
                     >
                       <Zap size={14} />
-                      <span>Kullan (1 Tane Fırlat) 🚀</span>
+                      <span>Kullan (1 Tane Fırlat)</span>
                     </button>
                   </div>
 
@@ -3419,7 +3407,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       </div>
                       <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                         <span className="text-slate-400 block text-[10px]">Ordu Kuvveti:</span>
-                        <span className="font-black text-emerald-400">🎖️ {Math.floor(myCountry.troops)} Asker</span>
+                        <span className="font-black text-emerald-400">{Math.floor(myCountry.troops)} Asker</span>
                       </div>
                     </div>
                   </div>

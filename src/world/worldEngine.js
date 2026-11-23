@@ -129,8 +129,8 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.dirtyRegions = true;
 
-    // 100% Server-Backed Global World: purge any legacy localStorage world/chat caches
-    this._clearLegacyLocalWorldCache();
+    // Load local country and world cache immediately so refreshing never flashes an empty world
+    this._loadLocalWorldBackup();
 
     // Restore any persistent wasteland & nuclear strikes immediately so initial render is irradiated
     this._loadPersistedNuclearStrikes();
@@ -141,14 +141,25 @@ export class WorldSimulationEngine {
     });
   }
 
-  _clearLegacyLocalWorldCache() {
+  _saveLocalWorldBackup() {
     try {
-      localStorage.removeItem("sf_shared_world_v4_data");
-      localStorage.removeItem("sf_shared_world_v5_worldbox");
-      localStorage.removeItem("sf_shared_world_v7_fresh");
-      localStorage.removeItem("sf_shared_world_v8_clean");
-      localStorage.removeItem(WORLD_SAVE_KEY);
-      localStorage.removeItem("sf_global_chat_v1");
+      if (typeof localStorage === 'undefined') return;
+      const snapshot = this.exportSnapshot();
+      if (snapshot) {
+        localStorage.setItem(WORLD_SAVE_KEY, JSON.stringify(snapshot));
+      }
+    } catch {}
+  }
+
+  _loadLocalWorldBackup() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const raw = localStorage.getItem(WORLD_SAVE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data && Array.isArray(data.countries) && Array.isArray(data.rle)) {
+        this.mergeRemoteSnapshot(data);
+      }
     } catch {}
   }
 
@@ -302,7 +313,7 @@ export class WorldSimulationEngine {
 
       this.onSound("celebration");
       this.onEvent(
-        `🎖️ Çevrimdışı Kışla Desteği (${timeStr}): Ordu kışlanda +${Math.floor(troopsProduced)} asker hazırlandı! (Asker: ${Math.floor(c.troops)}/${c.capacity})`,
+        ` Çevrimdışı Kışla Desteği (${timeStr}): Ordu kışlanda +${Math.floor(troopsProduced)} asker hazırlandı! (Asker: ${Math.floor(c.troops)}/${c.capacity})`,
       );
 
       this.sync.broadcast({
@@ -423,15 +434,18 @@ export class WorldSimulationEngine {
     this.saveState();
   }
 
-  // Link this app/browser instance to an existing country created by the player (e.g. Web -> Android App)
+  // Only allows linking if deviceId matches
   claimExistingCountry(countryId) {
     const c = this.countryMap.get(countryId);
     if (!c || c.landCount <= 0)
       return { ok: false, reason: "Devlet bulunamadı." };
+    if (c.deviceId && c.deviceId !== this.myDeviceId) {
+      return { ok: false, reason: "Bu devlet başka bir oyuncuya aittir!" };
+    }
     this.myCountryId = c.id;
     c.deviceId = this.myDeviceId;
     saveMyCountryId(c.id);
-    this.scheduleSave();
+    this.saveState();
     this.onEvent(`${c.name} devletinin yönetimi bu cihaza bağlandı!`);
     this.processOfflineProgress();
     return { ok: true, country: c };
@@ -746,7 +760,7 @@ export class WorldSimulationEngine {
     return { ok: true, level: currentLevel + 1, cost };
   }
 
-  // Mercenary Recruitment: 1 Troop = 1,000 Gold
+  // Mercenary Recruitment: 1 Troop = 250 Gold
   buyMercenaries(countryId, troopCount) {
     const c = this.countryMap.get(countryId);
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
@@ -757,15 +771,16 @@ export class WorldSimulationEngine {
       return { ok: false, reason: `Asker kapasiten dolu! (Maks: ${Math.floor(maxTroops)})` };
     }
     const count = Math.min(troopCount, availableCap);
-    const cost = Math.round(count * 1000);
+    const cost = Math.round(count * 250);
     if (c.gold < cost) {
       return { ok: false, reason: `Yetersiz altın! ${Math.floor(count)} asker için ${cost.toLocaleString()} Altın gereklidir.` };
     }
     c.gold -= cost;
     c.troops = Number((c.troops + count).toFixed(1));
     this.dirtyPixels = true;
+    this.saveState();
     this.onSound("celebration");
-    this.onEvent(`⚔️ ${Math.floor(count)} Paralı Asker kiralandı! (-${cost.toLocaleString()} Altın)`);
+    this.onEvent(`${Math.floor(count)} Paralı Asker kiralandı! (-${cost.toLocaleString()} Altın)`);
 
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
@@ -795,11 +810,11 @@ export class WorldSimulationEngine {
     return best;
   }
 
-  // Buy and Stockpile Nuclear Warhead: costs 35,000 Gold, safely stores in country inventory
+  // Buy and Stockpile Nuclear Warhead: costs 65,000 Gold, safely stores in country inventory
   buyNuclear(countryId) {
     const c = this.countryMap.get(countryId);
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
-    const COST = 35000;
+    const COST = 65000;
     if (c.gold < COST) {
       return {
         ok: false,
@@ -811,9 +826,10 @@ export class WorldSimulationEngine {
     c.inventory.nukes = (c.inventory.nukes || 0) + 1;
     this._persistCountryInventory(c);
     this.dirtyPixels = true;
+    this.saveState();
     this.onSound("celebration");
     this.onEvent(
-      `☢️ 1 Adet Taktik Nükleer Başlık satın alındı ve depolandı! (Toplam Depoda: ${c.inventory.nukes} Adet)`,
+      `1 Adet Taktik Nükleer Başlık satın alındı ve depolandı! (Toplam Depoda: ${c.inventory.nukes} Adet)`,
     );
 
     this.sync.broadcast({
@@ -887,7 +903,7 @@ export class WorldSimulationEngine {
     });
 
     this.sync.sendChatMessage(
-      `🚨 ${c.name} haritaya TAKTİK NÜKLEER BAŞLIK fırlattı! Hedef bölge radyoaktif yaşanamaz alana dönüştü! ☢️`,
+      ` ${c.name} haritaya TAKTİK NÜKLEER BAŞLIK fırlattı! Hedef bölge radyoaktif yaşanamaz alana dönüştü! `,
       true,
     );
 
@@ -1136,7 +1152,7 @@ export class WorldSimulationEngine {
       return { valid: false, reason: "Deniz veya okyanus fethedilemez." };
     }
     if (this.isWasteland && this.isWasteland[idx]) {
-      return { valid: false, reason: "Bu bölge nükleer serpinti ve radyasyon nedeniyle yaşanamaz haldedir! ☢️" };
+      return { valid: false, reason: "Bu bölge nükleer serpinti ve radyasyon nedeniyle yaşanamaz haldedir! " };
     }
 
     const currentOwner = this.owners[idx];
@@ -2376,7 +2392,7 @@ export class WorldSimulationEngine {
           });
 
           this.onSound("cash");
-          this.onEvent(`💰 ${payer.name}, ${receiver?.name || "Devlet"} için dakikalık ${treaty.tributeAmount} Altın haraç ödedi.`);
+          this.onEvent(` ${payer.name}, ${receiver?.name || "Devlet"} için dakikalık ${treaty.tributeAmount} Altın haraç ödedi.`);
           if (this.onTreatyUpdate) this.onTreatyUpdate();
         } else {
           // Payer has insufficient gold -> treaty is broken due to non-payment!
@@ -2585,13 +2601,13 @@ export class WorldSimulationEngine {
       });
 
       this.sync.sendChatMessage(
-        `📜 ${treaty.fromName}, ${treaty.toName} devletinden ${transferred} piksel toprağı ${treaty.landTotalPrice.toLocaleString()} Altın karşılığında satın aldı! 💰`,
+        ` ${treaty.fromName}, ${treaty.toName} devletinden ${transferred} piksel toprağı ${treaty.landTotalPrice.toLocaleString()} Altın karşılığında satın aldı! `,
         true,
       );
 
       this.onSound("celebration");
       this.onEvent(
-        `💰 Toprak Satışı: ${treaty.fromName}, ${treaty.toName} devletinden ${transferred} piksel toprağı satın aldı!`,
+        ` Toprak Satışı: ${treaty.fromName}, ${treaty.toName} devletinden ${transferred} piksel toprağı satın aldı!`,
       );
       if (this.onTreatyUpdate) this.onTreatyUpdate();
       return { ok: true, treaty, transferred };
@@ -2609,7 +2625,7 @@ export class WorldSimulationEngine {
 
     this.onSound("celebration");
     this.onEvent(
-      `🤝 ${treaty.fromName} ve ${treaty.toName} arasında ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması imzalandı!`,
+      ` ${treaty.fromName} ve ${treaty.toName} arasında ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması imzalandı!`,
     );
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     return { ok: true, treaty };
@@ -2670,7 +2686,7 @@ export class WorldSimulationEngine {
     const breakerName = breaker ? breaker.name : "Devlet";
     const victimName = victim ? victim.name : "Devlet";
     this.onEvent(
-      `🚨 ${breakerName}, ${victimName} ile olan ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşmasını ${reason === "SALDIRI" ? "saldırarak" : "ödemeyerek"} ihlal etti! (${deducted} Altın ceza ödendi)`,
+      ` ${breakerName}, ${victimName} ile olan ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşmasını ${reason === "SALDIRI" ? "saldırarak" : "ödemeyerek"} ihlal etti! (${deducted} Altın ceza ödendi)`,
     );
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     return { ok: true, deducted, treaty };
@@ -2697,7 +2713,7 @@ export class WorldSimulationEngine {
 
     this.onSound("pencil");
     this.onEvent(
-      `📜 ${requester ? requester.name : "Devlet"}, ${other ? other.name : "karşı devlete"} anlaşmayı cezasız feshetme teklifi gönderdi.`,
+      ` ${requester ? requester.name : "Devlet"}, ${other ? other.name : "karşı devlete"} anlaşmayı cezasız feshetme teklifi gönderdi.`,
     );
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     return { ok: true, treaty };
@@ -2736,12 +2752,12 @@ export class WorldSimulationEngine {
     });
 
     this.sync.sendChatMessage(
-      `🕊️ ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması karşılıklı rıza ile cezasız olarak feshedildi!`,
+      ` ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması karşılıklı rıza ile cezasız olarak feshedildi!`,
       true,
     );
 
     this.onSound("celebration");
-    this.onEvent(`🕊️ Anlaşma karşılıklı kabul ile cezasız feshedildi.`);
+    this.onEvent(` Anlaşma karşılıklı kabul ile cezasız feshedildi.`);
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     return { ok: true, treaty };
   }
@@ -2772,7 +2788,7 @@ export class WorldSimulationEngine {
     if (otherId === this.myCountryId) {
       this.onSound("notification");
       const reqName = requesterId === treaty.fromId ? treaty.fromName : treaty.toName;
-      this.onEvent(`⚠️ ${reqName} anlaşmayı cezasız feshetmek istiyor. Anlaşmalar menüsünden yanıtlayabilirsiniz.`);
+      this.onEvent(` ${reqName} anlaşmayı cezasız feshetmek istiyor. Anlaşmalar menüsünden yanıtlayabilirsiniz.`);
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
@@ -2792,7 +2808,7 @@ export class WorldSimulationEngine {
     treaty.terminatedAt = Date.now();
     treaty.terminationRequestedBy = null;
     this.onSound("celebration");
-    this.onEvent(`🕊️ ${treaty.fromName} ve ${treaty.toName} arasındaki anlaşma cezasız olarak feshedildi.`);
+    this.onEvent(` ${treaty.fromName} ve ${treaty.toName} arasındaki anlaşma cezasız olarak feshedildi.`);
     if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
 
@@ -2817,7 +2833,7 @@ export class WorldSimulationEngine {
     if (!isReplay && remoteTreaty.toId === this.myCountryId) {
       this.onSound("notification");
       this.onEvent(
-        `📜 Diplomatik Teklif: ${remoteTreaty.fromName} size bir ${remoteTreaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması teklif etti!`,
+        ` Diplomatik Teklif: ${remoteTreaty.fromName} size bir ${remoteTreaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması teklif etti!`,
       );
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
@@ -2833,7 +2849,7 @@ export class WorldSimulationEngine {
     if (!isReplay) {
       this.onSound("celebration");
       this.onEvent(
-        `🤝 ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması yürürlüğe girdi!`,
+        ` ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması yürürlüğe girdi!`,
       );
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
@@ -2868,7 +2884,7 @@ export class WorldSimulationEngine {
       const breakerName = breaker ? breaker.name : "Devlet";
       const victimName = victim ? victim.name : "Devlet";
       this.onEvent(
-        `🚨 ${breakerName}, ${victimName} ile olan anlaşmasını ihlal etti! (${penalty} Altın tazminat)`,
+        ` ${breakerName}, ${victimName} ile olan anlaşmasını ihlal etti! (${penalty} Altın tazminat)`,
       );
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
@@ -2886,7 +2902,7 @@ export class WorldSimulationEngine {
       if (receiver && receiver.id === this.myCountryId) {
         receiver.gold += amount;
         this.onSound("cash");
-        this.onEvent(`💰 ${payer?.name || "Vasal"} size ${amount} Altın haraç ödedi.`);
+        this.onEvent(` ${payer?.name || "Vasal"} size ${amount} Altın haraç ödedi.`);
       }
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
@@ -2988,7 +3004,7 @@ export class WorldSimulationEngine {
       }
     }
     this.saveState();
-    this.sync.sendChatMessage(`🎉 [SUNUCU ETKİNLİĞİ] Admin tüm aktif devletlere +${goldAmount.toLocaleString()} Altın hediye etti!`, true);
+    this.sync.sendChatMessage(` [SUNUCU ETKİNLİĞİ] Admin tüm aktif devletlere +${goldAmount.toLocaleString()} Altın hediye etti!`, true);
     this.onSound("cash");
     this.onEvent(`[ADMIN] Tüm ${count} devlete +${goldAmount.toLocaleString()} Altın dağıtıldı!`);
     return { ok: true, count };
@@ -3020,7 +3036,7 @@ export class WorldSimulationEngine {
     if (this.onTreatyUpdate) this.onTreatyUpdate();
     if (broadcast) {
       this.sync.broadcast({ type: "ADMIN_RESET_TREATIES" });
-      this.sync.sendChatMessage(`🕊️ [BARIŞ İLANI] Admin tüm diplomatik savaşları ve anlaşmaları sıfırladı. Tüm devletler barışa kavuştu!`, true);
+      this.sync.sendChatMessage(` [BARIŞ İLANI] Admin tüm diplomatik savaşları ve anlaşmaları sıfırladı. Tüm devletler barışa kavuştu!`, true);
       this.onEvent(`[ADMIN] Tüm anlaşmalar ve savaşlar sıfırlandı!`);
     }
     return { ok: true };
@@ -3284,10 +3300,13 @@ export class WorldSimulationEngine {
     return bounds;
   }
 
-  // 100% Server-Authoritative Mode: World map, countries, stats & chat are stored on the cloud server (never in localStorage/cookies)
-  saveState() {}
+  // Authoritative State persistence: keeps local copy in sync with server state
+  saveState() {
+    this._saveLocalWorldBackup();
+  }
 
   loadState() {
-    return false;
+    this._loadLocalWorldBackup();
+    return true;
   }
 }

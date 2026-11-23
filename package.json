@@ -16,6 +16,7 @@
     "@capacitor/core": "^8.6.2",
     "@tailwindcss/vite": "^4.3.5",
     "canvas-confetti": "^1.9.4",
+    "fflate": "^0.8.3",
     "lucide-react": "^1.77.0",
     "peerjs": "^1.5.5",
     "react": "^19.3.1",

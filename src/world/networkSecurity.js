@@ -5,7 +5,16 @@ const DEVICE_ID_KEY = 'sf_unique_device_id';
 const MY_COUNTRY_KEY = 'sf_my_country_id';
 
 // Salted FNV-1a hashes of authorized Admin IPv4 & IPv6 /64 prefix so raw IPs are never exposed in public source
-const ADMIN_IP_HASHES = new Set(['8e7ef9be', 'fd703693']);
+const ADMIN_IP_HASHES = new Set([
+  '8e7ef9be',
+  'fd703693',
+  'bb850af4',
+  '4ee3cbf5',
+  'bbe48bfc',
+  '3d67831b',
+  '75b15967',
+  '11be88f1',
+]);
 
 function hashIpForAdmin(ip) {
   if (!ip || typeof ip !== 'string') return '';
@@ -95,8 +104,11 @@ export async function checkNetworkAndSecurity() {
   let providerName = '';
 
   try {
-    // Fast check via ipwho.is which returns proxy/vpn detection
-    const res = await fetch('https://ipwho.is/', { cache: 'no-store' });
+    // Fast check via ipwho.is with timeout to never block world map load
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch('https://ipwho.is/', { cache: 'no-store', signal: controller.signal });
+    clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
       if (data && data.success !== false) {
@@ -124,10 +136,13 @@ export async function checkNetworkAndSecurity() {
         }
       }
     }
-  } catch (err) {
-    // Fallback IP check
+  } catch (_err) {
+    // Fallback IP check with timeout
     try {
-      const r2 = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
+      const controller2 = new AbortController();
+      const timeoutId2 = setTimeout(() => controller2.abort(), 1500);
+      const r2 = await fetch('https://api.ipify.org?format=json', { cache: 'no-store', signal: controller2.signal });
+      clearTimeout(timeoutId2);
       const d2 = await r2.json();
       if (d2?.ip) clientIp = d2.ip;
     } catch {}

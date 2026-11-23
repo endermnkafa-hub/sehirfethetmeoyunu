@@ -4,7 +4,7 @@
 
 import { FLAG_W, FLAG_H } from './flagLibrary';
 
-const CLOUD_TOPIC = 'sf_mmo_turkey_v15_fast';
+const CLOUD_TOPIC = 'sf_mmo_earth_v17_fresh';
 const CLOUD_ROOT_URL = 'https://ntfy.sh';
 const CLOUD_TOPIC_URL = `${CLOUD_ROOT_URL}/${CLOUD_TOPIC}`;
 
@@ -153,7 +153,14 @@ export class SharedWorldSync {
     try {
       const isInitialLoad = this._lastPollTime === 'all';
       const url = `${CLOUD_TOPIC_URL}/json?poll=1&since=${this._lastPollTime}`;
-      const res = await fetch(url, { cache: 'no-store' });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      let res;
+      try {
+        res = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (!res.ok) return;
 
       const text = await res.text();
@@ -379,6 +386,7 @@ export class SharedWorldSync {
     this.engine.computeCountryBounds();
     this.engine.dirtyRegions = false;
     this.engine.dirtyPixels = true;
+    this.engine.saveState();
 
     // 7. Load latest 50 chat messages from server
     const recentChats = chats.slice(-50);
@@ -523,21 +531,37 @@ export class SharedWorldSync {
     if (data.type === 'NEW_COUNTRY' && packet.country) {
       const fullC = this.engine.countryMap.get(packet.country.id) || packet.country;
       const compactFlag = this.getCompactFlagFromCountry(fullC);
-      this._sendToCloud({
+      // Immediately send NEW_COUNTRY packet without waiting in queue
+      this._sendToCloudImmediately({
         ...packet,
         country: {
           ...packet.country,
           flagDataUrl: compactFlag,
         },
       });
-      // Also send full RLE sync packet after 2s
+      // Also send immediate initial snapshot packet
       setTimeout(() => {
         this.publishMyCountrySnapshot();
-      }, 2000);
+      }, 500);
       return;
     }
 
     this._sendToCloud(packet);
+  }
+
+  _sendToCloudImmediately(packet) {
+    const fullPacket = {
+      ...packet,
+      _msgId: packet._msgId || `${this.tabId}_${Date.now()}_${++this._msgSeq}`,
+      _senderTabId: this.tabId,
+      _sentAt: packet._sentAt || Date.now(),
+    };
+    this.seenMsgIds.add(fullPacket._msgId);
+
+    fetch(CLOUD_TOPIC_URL, {
+      method: 'POST',
+      body: JSON.stringify(fullPacket),
+    }).catch(() => {});
   }
 
   _sendToCloud(packet) {

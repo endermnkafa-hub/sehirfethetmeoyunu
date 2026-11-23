@@ -419,10 +419,10 @@ export class WorldMapRenderer {
           ctx.arc(0, 0, 11, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
-          ctx.font = "900 11px system-ui";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText("☢️", 0, 0);
+          ctx.fillStyle = "#22c55e";
+          ctx.beginPath();
+          ctx.arc(0, 0, 4, 0, Math.PI * 2);
+          ctx.fill();
           ctx.restore();
         }
       }
@@ -546,7 +546,7 @@ export class WorldMapRenderer {
         ctx.save();
         const fontSize = 11;
         ctx.font = "800 11px Inter, system-ui, sans-serif";
-        const label = `${country.name} (${country.landCount} px · 🎖️${Math.floor(country.troops)})`;
+        const label = `${country.name} (${country.landCount} px · ${Math.floor(country.troops)} Asker)`;
         const flagThumbW = 20;
         const flagThumbH = 13;
         const textW = ctx.measureText(label).width;
