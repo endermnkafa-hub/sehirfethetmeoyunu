@@ -21,6 +21,7 @@ import {
   transferTerritory,
   expandPlayerInstant,
   calculateMaxSafeNumber,
+  validateTurnPlacementPlan,
   computeBotTurnMoves,
   evaluateBotDiplomacy,
   PLAYER_COLORS,
@@ -59,12 +60,20 @@ export default function App() {
   const pendingCellsRef = useRef(pendingCells);
   const pendingWallsRef = useRef(pendingWalls);
   const wallsRef = useRef(walls);
+  // Snapshot of committed walls before the current placement phase. Online client
+  // previews may update `walls`, but must never replace this validation baseline.
+  const turnStartWallsRef = useRef(walls);
   const turnHistoryRef = useRef(turnHistory);
   const botActionKeyRef = useRef('');
+  const outgoingOnlineProposalRef = useRef(null);
+  const outgoingOnlineCancelRef = useRef(null);
 
   useEffect(() => { pendingCellsRef.current = pendingCells; }, [pendingCells]);
   useEffect(() => { pendingWallsRef.current = pendingWalls; }, [pendingWalls]);
   useEffect(() => { wallsRef.current = walls; }, [walls]);
+  useEffect(() => {
+    if (turnPhase !== 'PLACING') turnStartWallsRef.current = { ...walls };
+  }, [walls, turnPhase]);
   useEffect(() => { turnHistoryRef.current = turnHistory; }, [turnHistory]);
 
   // Modals & Popups
@@ -591,6 +600,7 @@ export default function App() {
         y,
         cost: 2,
         isWallBreachOnly: false,
+        isWallDemolished: true,
         wasBreachedThisTurn: true,
         previousOwner: grid[y][x],
         isAllianceAttack: check.isAllianceAttack,
@@ -722,10 +732,11 @@ export default function App() {
     penaltyCells = 0,
     allianceIdsToDissolve = null,
     overrideCells = null,
-    overrideWalls = null
+    overrideWalls = null,
+    baseWallsOverride = null
   ) => {
     let newGrid = grid.map(row => [...row]);
-    let newWalls = { ...walls };
+    let newWalls = { ...(baseWallsOverride || walls) };
 
     const cellsToApply = overrideCells || pendingCells;
     const wallsToApply = overrideWalls || pendingWalls;
@@ -733,9 +744,11 @@ export default function App() {
     cellsToApply.forEach(cell => {
       if (!cell.isWallBreachOnly) {
         newGrid[cell.y][cell.x] = activePlayer.id;
-        if (cell.isWallDemolished) {
-          delete newWalls[`${cell.x},${cell.y}`];
-        }
+      }
+      // A one-point breach removes the wall without taking the territory;
+      // a two-point demolition removes the wall and captures the cell.
+      if (cell.isWallDemolished || cell.isWallBreachOnly) {
+        delete newWalls[`${cell.x},${cell.y}`];
       }
     });
 
@@ -1082,6 +1095,10 @@ export default function App() {
 
   // Territory Transfer in Modern Mode
   const handleTransferTerritory = (fromId, toId, amount) => {
+    if (onlineInfo && !onlineInfo.isHost) {
+      multiplayer.sendAction({ type: 'DIPLOMACY_TRANSFER_REQUEST', fromId, toId, amount });
+      return;
+    }
     const { newGrid, newWalls, transferred } = transferTerritory(grid, fromId, toId, amount, walls);
     if (transferred.length === 0) {
       showMessage('Toprak devredilemedi (Sınır komşusu değilsiniz veya bütünlük bozuluyor)!', 3500);
@@ -1104,6 +1121,10 @@ export default function App() {
   };
 
   const handleProposeAlliance = (newAlliance) => {
+    if (onlineInfo && !onlineInfo.isHost) {
+      multiplayer.sendAction({ type: 'DIPLOMACY_LOCAL_ALLIANCE_REQUEST', alliance: newAlliance });
+      return;
+    }
     const created = { ...newAlliance, id: Date.now() };
     const updated = [...alliances, created];
     setAlliances(updated);
@@ -1117,6 +1138,10 @@ export default function App() {
   };
 
   const handleCancelMutualAlliance = (allianceId) => {
+    if (onlineInfo && !onlineInfo.isHost) {
+      multiplayer.sendAction({ type: 'DIPLOMACY_LOCAL_CANCEL_REQUEST', allianceId });
+      return;
+    }
     const updated = alliances.filter(a => a.id !== allianceId);
     setAlliances(updated);
     showMessage('Anlaşma iki tarafın rızasıyla cezasız sonlandırıldı.', 3000);
@@ -1129,15 +1154,25 @@ export default function App() {
   };
 
   const handleSendOnlineProposal = (proposalData) => {
+    const proposal = {
+      ...proposalData,
+      id: proposalData?.id || `proposal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    };
+    if (onlineInfo?.isHost) outgoingOnlineProposalRef.current = proposal;
     broadcastToAll({
       type: 'DIPLOMACY_PROPOSAL',
-      proposal: proposalData,
+      proposal,
     });
   };
 
   const handleSendOnlineCancel = (alliance, proposer, ally) => {
+    const requestId = `cancel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (onlineInfo?.isHost) {
+      outgoingOnlineCancelRef.current = { requestId, allianceId: alliance.id };
+    }
     broadcastToAll({
       type: 'DIPLOMACY_CANCEL_PROPOSAL',
+      requestId,
       alliance,
       proposer,
       ally,
@@ -1146,7 +1181,7 @@ export default function App() {
 
   const handleAcceptIncomingProposal = (proposal) => {
     const newAlliance = {
-      id: Date.now(),
+      id: proposal.id || `alliance_${Date.now()}`,
       player1Id: proposal.proposer.id,
       player2Id: proposal.target.id,
       payerId: proposal.payerId || proposal.proposer.id,
@@ -1195,6 +1230,7 @@ export default function App() {
 
     broadcastToAll({
       type: 'DIPLOMACY_CANCEL_RESPONSE',
+      requestId: request.requestId,
       allianceId: request.alliance.id,
       accepted: true,
       message: cancelMsg,
@@ -1208,6 +1244,8 @@ export default function App() {
 
     broadcastToAll({
       type: 'DIPLOMACY_CANCEL_RESPONSE',
+      requestId: request.requestId,
+      allianceId: request.alliance.id,
       accepted: false,
       message: msg,
     });
@@ -1279,31 +1317,55 @@ export default function App() {
     });
   }, [onlineInfo, gameMode, players, grid, walls, roundNumber, activePlayerIndex, turnPhase, chosenNumber, totalToPlace, alliances, pendingCells, pendingWalls, placingMode]);
 
-  // Host validates and executes Client's finished placing turn authoritatively
+  // Host validates and executes the client's placement plan against the committed
+  // turn-start board. The client is never trusted for coordinates, costs, ownership,
+  // wall state, or alliance penalties.
   const handleClientFinishPlacing = (action) => {
-    if (!onlineInfo || !onlineInfo.isHost) return;
+    if (!onlineInfo || !onlineInfo.isHost || turnPhase !== 'PLACING') return;
     const curActive = players[activePlayerIndex];
     if (!curActive || curActive.phoneId !== 'CLIENT') {
       sendFullStateSnapshot();
       return;
     }
 
-    const clientPendingCells = action.pendingCells || [];
-    const clientPendingWalls = action.pendingWalls || [];
+    const plan = validateTurnPlacementPlan(
+      grid,
+      curActive.id,
+      action.pendingCells ?? [],
+      action.pendingWalls ?? [],
+      turnStartWallsRef.current,
+      alliances,
+      totalToPlace,
+    );
 
-    // Verify spent points against available points
-    const spent = clientPendingCells.reduce((sum, c) => sum + (c.cost || 1), 0) + clientPendingWalls.length;
-    if (spent > totalToPlace && totalToPlace > 0) {
-      showMessage('Geçersiz hamle tespit edildi, oyun durumu eşitleniyor.', 3000);
+    if (!plan.valid) {
+      console.warn('Host rejected invalid client placement plan:', plan.reason);
+      showMessage('Geçersiz hamle tespit edildi; oyun durumu eşitleniyor.', 3000);
       sendFullStateSnapshot();
       return;
     }
 
+    const breachedAlliances = new Map();
+    for (const cell of plan.pendingCells) {
+      if (!cell.isAllianceAttack || !cell.targetOwner) continue;
+      const alliance = alliances.find((candidate) =>
+        candidate.status === 'active' &&
+        ((candidate.player1Id === curActive.id && candidate.player2Id === cell.targetOwner) ||
+         (candidate.player2Id === curActive.id && candidate.player1Id === cell.targetOwner))
+      );
+      if (alliance) breachedAlliances.set(alliance.id, alliance);
+    }
+
+    const allianceIds = Array.from(breachedAlliances.keys());
+    const penaltyCells = Array.from(breachedAlliances.values())
+      .reduce((sum, alliance) => sum + (Number.isFinite(alliance.penaltyCells) ? alliance.penaltyCells : 1), 0);
+
     finalizeTurnPlacing(
-      action.penaltyCells || 0,
-      action.allianceIds || null,
-      clientPendingCells,
-      clientPendingWalls
+      penaltyCells,
+      allianceIds.length > 0 ? allianceIds : null,
+      plan.pendingCells,
+      plan.pendingWalls,
+      turnStartWallsRef.current,
     );
   };
 
@@ -1343,7 +1405,9 @@ export default function App() {
         if (action.type === 'REQUEST_FULL_STATE_SYNC') {
           sendFullStateSnapshot();
         } else if (action.type === 'CHOSEN_NUMBER_SELECT') {
-          if (typeof action.chosenNumber === 'number' && action.chosenNumber >= 1 && action.chosenNumber <= 9) {
+          const curActive = players[activePlayerIndex];
+          if (curActive?.phoneId === 'CLIENT' && turnPhase === 'PICK_NUMBER' &&
+              Number.isInteger(action.chosenNumber) && action.chosenNumber >= 1 && action.chosenNumber <= 9) {
             setChosenNumber(action.chosenNumber);
             multiplayer.broadcastState({
               type: 'CHOSEN_NUMBER_SYNC',
@@ -1352,9 +1416,10 @@ export default function App() {
           }
         } else if (action.type === 'CLIENT_SPIN_REQUEST') {
           const curActive = players[activePlayerIndex];
-          if (curActive && curActive.phoneId === 'CLIENT' && turnPhase === 'PICK_NUMBER' && !isWheelOpen) {
+          if (curActive && curActive.phoneId === 'CLIENT' && turnPhase === 'PICK_NUMBER' && !isWheelOpen &&
+              Number.isInteger(action.chosenNumber) && action.chosenNumber >= 1 && action.chosenNumber <= 9) {
             const maxSafe = calculateMaxSafeNumber(activePlayerArea);
-            const safeChosen = Math.min(action.chosenNumber || chosenNumber, maxSafe);
+            const safeChosen = Math.min(action.chosenNumber, maxSafe);
             setChosenNumber(safeChosen);
 
             const roll = fixedRoll !== null ? fixedRoll : Math.floor(Math.random() * 10);
@@ -1373,34 +1438,205 @@ export default function App() {
             });
           }
         } else if (action.type === 'LIVE_PENDING_SYNC') {
-          if (action.pendingCells !== undefined) setPendingCells(action.pendingCells);
-          if (action.pendingWalls !== undefined) setPendingWalls(action.pendingWalls);
-          if (action.walls !== undefined) setWalls(action.walls);
-          multiplayer.broadcastState(action);
+          const curActive = players[activePlayerIndex];
+          if (!curActive || curActive.phoneId !== 'CLIENT' || turnPhase !== 'PLACING') {
+            sendFullStateSnapshot();
+            return;
+          }
+
+          const plan = validateTurnPlacementPlan(
+            grid,
+            curActive.id,
+            action.pendingCells ?? [],
+            action.pendingWalls ?? [],
+            turnStartWallsRef.current,
+            alliances,
+            totalToPlace,
+          );
+          if (!plan.valid) {
+            console.warn('Host rejected invalid live placement preview:', plan.reason);
+            sendFullStateSnapshot();
+            return;
+          }
+
+          pendingCellsRef.current = plan.pendingCells;
+          pendingWallsRef.current = plan.pendingWalls;
+          setPendingCells(plan.pendingCells);
+          setPendingWalls(plan.pendingWalls);
+          // Keep the preview visible, while turnStartWallsRef preserves the
+          // committed wall map for final validation and commit.
+          setWalls(plan.walls);
+          multiplayer.broadcastState({
+            type: 'LIVE_PENDING_SYNC',
+            pendingCells: plan.pendingCells,
+            pendingWalls: plan.pendingWalls,
+            walls: plan.walls,
+          });
         } else if (action.type === 'CLIENT_FINISH_PLACING') {
           handleClientFinishPlacing(action);
+        } else if (action.type === 'DIPLOMACY_TRANSFER_REQUEST') {
+          const fromPlayer = players.find((player) => player.id === action.fromId);
+          const toPlayer = players.find((player) => player.id === action.toId);
+          const amount = action.amount;
+          if (!fromPlayer || !toPlayer || fromPlayer.phoneId !== 'CLIENT' || toPlayer.phoneId !== 'CLIENT' ||
+              !fromPlayer.alive || !toPlayer.alive || !Number.isInteger(amount) || amount < 1) return;
+          const transfer = transferTerritory(grid, fromPlayer.id, toPlayer.id, amount, walls);
+          if (!transfer.transferred.length || transfer.transferred.length !== amount) {
+            multiplayer.broadcastState({ type: 'DIPLOMACY_SYNC', message: 'Toprak devri doğrulanamadı; harita değiştirilmedi.' });
+            return;
+          }
+          const message = `${fromPlayer.name}, ${toPlayer.name} devletine ${transfer.transferred.length} kare toprak devretti!`;
+          setGrid(transfer.newGrid);
+          setWalls(transfer.newWalls);
+          showMessage(message, 3500);
+          multiplayer.broadcastState({ type: 'DIPLOMACY_SYNC', grid: transfer.newGrid, walls: transfer.newWalls, message });
+        } else if (action.type === 'DIPLOMACY_LOCAL_ALLIANCE_REQUEST') {
+          const data = action.alliance;
+          const player1 = players.find((player) => player.id === data?.player1Id);
+          const player2 = players.find((player) => player.id === data?.player2Id);
+          const areas = countPlayerTerritories(grid, players);
+          const duration = Number(data?.durationRounds);
+          const penalty = Number(data?.penaltyCells);
+          if (!player1 || !player2 || player1.phoneId !== 'CLIENT' || player2.phoneId !== 'CLIENT' ||
+              player1.id === player2.id || !player1.alive || !player2.alive ||
+              !['PEACE', 'TRIBUTE'].includes(data?.type) || !Number.isInteger(duration) || duration < 0 || duration > 10 ||
+              !Number.isInteger(penalty) || penalty < 1 ||
+              alliances.some((alliance) => alliance.status === 'active' &&
+                ((alliance.player1Id === player1.id && alliance.player2Id === player2.id) ||
+                 (alliance.player1Id === player2.id && alliance.player2Id === player1.id)))) return;
+          const maxPenalty = Math.max(1, Math.min(areas[player1.id] || 0, areas[player2.id] || 0));
+          const payerId = data.payerId === player1.id || data.payerId === player2.id ? data.payerId : player1.id;
+          const created = {
+            id: `alliance_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            player1Id: player1.id,
+            player2Id: player2.id,
+            payerId,
+            patronId: payerId === player1.id ? player2.id : player1.id,
+            durationRounds: duration,
+            penaltyCells: Math.min(penalty, maxPenalty),
+            type: data.type,
+            tributeAmount: data.type === 'TRIBUTE' ? Math.max(1, Math.min(1000000, Math.floor(Number(data.tributeAmount) || 1))) : 0,
+            status: 'active',
+          };
+          const updated = [...alliances, created];
+          setAlliances(updated);
+          showMessage('Anlaşma başarıyla kuruldu!', 3000);
+          multiplayer.broadcastState({ type: 'DIPLOMACY_SYNC', alliances: updated });
+        } else if (action.type === 'DIPLOMACY_LOCAL_CANCEL_REQUEST') {
+          const alliance = alliances.find((item) => item.id === action.allianceId);
+          const p1 = alliance && players.find((player) => player.id === alliance.player1Id);
+          const p2 = alliance && players.find((player) => player.id === alliance.player2Id);
+          if (!alliance || p1?.phoneId !== 'CLIENT' || p2?.phoneId !== 'CLIENT') return;
+          const updated = alliances.filter((item) => item.id !== alliance.id);
+          setAlliances(updated);
+          showMessage('Anlaşma iki tarafın rızasıyla cezasız sonlandırıldı.', 3000);
+          multiplayer.broadcastState({ type: 'DIPLOMACY_SYNC', alliances: updated });
         } else if (action.type === 'DIPLOMACY_PROPOSAL') {
-          setIncomingProposal(action.proposal);
+          const incoming = action.proposal;
+          const proposer = players.find((player) => player.id === incoming?.proposer?.id);
+          const target = players.find((player) => player.id === incoming?.target?.id);
+          const areas = countPlayerTerritories(grid, players);
+          const type = incoming?.type;
+          const duration = Number(incoming?.durationRounds);
+          const penalty = Number(incoming?.penaltyCells);
+          if (!proposer || !target || proposer.phoneId !== 'CLIENT' || target.phoneId !== 'HOST' ||
+              !proposer.alive || !target.alive || !['PEACE', 'TRIBUTE'].includes(type) ||
+              !Number.isFinite(duration) || !Number.isInteger(duration) || duration < 0 || duration > 10 ||
+              !Number.isFinite(penalty) || !Number.isInteger(penalty) || penalty < 1) {
+            console.warn('Host rejected malformed or cross-device diplomacy proposal.');
+            return;
+          }
+          const maxPenalty = Math.max(1, Math.min(areas[proposer.id] || 0, areas[target.id] || 0));
+          const safePayerId = incoming.payerId === proposer.id || incoming.payerId === target.id
+            ? incoming.payerId : proposer.id;
+          const safeProposal = {
+            id: typeof incoming.id === 'string' && incoming.id.length <= 128
+              ? incoming.id : `proposal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            proposer,
+            target,
+            payerId: safePayerId,
+            patronId: safePayerId === proposer.id ? target.id : proposer.id,
+            durationRounds: duration,
+            penaltyCells: Math.min(penalty, maxPenalty),
+            type,
+            tributeAmount: type === 'TRIBUTE'
+              ? Math.max(1, Math.min(1000000, Math.floor(Number(incoming.tributeAmount) || 1))) : 0,
+          };
+          setIncomingProposal(safeProposal);
           soundManager.playTick();
         } else if (action.type === 'DIPLOMACY_CANCEL_PROPOSAL') {
-          setIncomingCancelRequest(action);
+          const existingAlliance = alliances.find((alliance) => alliance.id === action.alliance?.id);
+          const proposer = players.find((player) => player.id === action.proposer?.id);
+          const ally = players.find((player) => player.id === action.ally?.id);
+          if (!existingAlliance || !proposer || !ally || proposer.phoneId !== 'CLIENT' || ally.phoneId !== 'HOST' ||
+              ![existingAlliance.player1Id, existingAlliance.player2Id].includes(proposer.id) ||
+              ![existingAlliance.player1Id, existingAlliance.player2Id].includes(ally.id)) {
+            console.warn('Host rejected invalid diplomacy cancellation request.');
+            return;
+          }
+          setIncomingCancelRequest({
+            requestId: typeof action.requestId === 'string' ? action.requestId : null,
+            alliance: existingAlliance,
+            proposer,
+            ally,
+          });
           soundManager.playTick();
         } else if (action.type === 'DIPLOMACY_PROPOSAL_RESPONSE') {
+          const pending = outgoingOnlineProposalRef.current;
+          if (!pending || action.proposalId !== pending.id) return;
+          outgoingOnlineProposalRef.current = null;
           setIsDiplomacyOpen(false);
-          if (action.accepted && action.alliance) {
-            setAlliances(prev => [...prev.filter(a => a.id !== action.alliance.id), action.alliance]);
+          if (action.accepted === true) {
+            const alliance = {
+              id: pending.id,
+              player1Id: pending.proposer.id,
+              player2Id: pending.target.id,
+              payerId: pending.payerId === pending.proposer.id || pending.payerId === pending.target.id
+                ? pending.payerId : pending.proposer.id,
+              patronId: pending.patronId === pending.proposer.id || pending.patronId === pending.target.id
+                ? pending.patronId : pending.target.id,
+              durationRounds: pending.durationRounds,
+              penaltyCells: pending.penaltyCells,
+              type: pending.type === 'TRIBUTE' ? 'TRIBUTE' : 'PEACE',
+              tributeAmount: pending.type === 'TRIBUTE' ? Math.max(1, Math.min(1000000, Math.floor(Number(pending.tributeAmount) || 1))) : 0,
+              status: 'active',
+            };
+            setAlliances(prev => [...prev.filter((item) => item.id !== alliance.id), alliance]);
             soundManager.playWin();
             confetti({ particleCount: 90, spread: 60 });
+            const message = `🤝 ${pending.proposer.name} ile ${pending.target.name} arasında ittifak kuruldu!`;
+            showMessage(message, 3500);
+            multiplayer.broadcastState({ type: 'DIPLOMACY_PROPOSAL_RESPONSE', proposalId: pending.id, accepted: true, alliance, message });
+          } else {
+            const message = 'Diplomasi teklifi reddedildi.';
+            showMessage(message, 3500);
+            multiplayer.broadcastState({ type: 'DIPLOMACY_PROPOSAL_RESPONSE', proposalId: pending.id, accepted: false, message });
           }
-          if (action.message) showMessage(action.message, 3500);
-          multiplayer.broadcastState(action);
         } else if (action.type === 'DIPLOMACY_CANCEL_RESPONSE') {
+          const pending = outgoingOnlineCancelRef.current;
+          if (!pending || action.requestId !== pending.requestId || action.allianceId !== pending.allianceId) return;
+          outgoingOnlineCancelRef.current = null;
           setIsDiplomacyOpen(false);
-          if (action.accepted && action.allianceId) {
-            setAlliances(prev => prev.filter(a => a.id !== action.allianceId));
+          if (action.accepted === true) {
+            setAlliances(prev => prev.filter((alliance) => alliance.id !== pending.allianceId));
           }
-          if (action.message) showMessage(action.message, 3500);
-          multiplayer.broadcastState(action);
+          const message = action.accepted === true
+            ? 'Anlaşma barışçıl şekilde sonlandırıldı.'
+            : 'Anlaşmanın fesih talebi reddedildi.';
+          showMessage(message, 3500);
+          multiplayer.broadcastState({
+            type: 'DIPLOMACY_CANCEL_RESPONSE',
+            requestId: pending.requestId,
+            allianceId: pending.allianceId,
+            accepted: action.accepted === true,
+            message,
+          });
+        } else if (action.type === 'DIPLOMACY_PROPOSAL_ABORTED') {
+          outgoingOnlineProposalRef.current = null;
+          if (incomingProposal?.proposer?.phoneId === 'CLIENT') setIncomingProposal(null);
+        } else if (action.type === 'DIPLOMACY_CANCEL_ABORTED') {
+          outgoingOnlineCancelRef.current = null;
+          if (incomingCancelRequest?.proposer?.phoneId === 'CLIENT') setIncomingCancelRequest(null);
         }
       };
 
@@ -1522,6 +1758,10 @@ export default function App() {
             setAlliances(prev => prev.filter(a => a.id !== msg.allianceId));
           }
           if (msg.message) showMessage(msg.message, 3500);
+        } else if (msg.type === 'DIPLOMACY_PROPOSAL_ABORTED') {
+          setIncomingProposal(null);
+        } else if (msg.type === 'DIPLOMACY_CANCEL_ABORTED') {
+          setIncomingCancelRequest(null);
         } else if (msg.type === 'RESET_GAME_SYNC') {
           returnToSetup(false);
           showMessage('Oyun yeniden başlatıldı, ana menüye dönüldü.', 3500);
@@ -1993,8 +2233,14 @@ export default function App() {
         onlineInfo={onlineInfo}
         onSendOnlineProposal={handleSendOnlineProposal}
         onSendOnlineCancel={handleSendOnlineCancel}
-        onAbortOnlineProposal={() => broadcastToAll({ type: 'DIPLOMACY_PROPOSAL_ABORTED' })}
-        onAbortOnlineCancel={() => broadcastToAll({ type: 'DIPLOMACY_CANCEL_ABORTED' })}
+        onAbortOnlineProposal={() => {
+          if (onlineInfo?.isHost) outgoingOnlineProposalRef.current = null;
+          broadcastToAll({ type: 'DIPLOMACY_PROPOSAL_ABORTED' });
+        }}
+        onAbortOnlineCancel={() => {
+          if (onlineInfo?.isHost) outgoingOnlineCancelRef.current = null;
+          broadcastToAll({ type: 'DIPLOMACY_CANCEL_ABORTED' });
+        }}
       />
 
       {/* Incoming Alliance Proposal Modal for Remote Player */}

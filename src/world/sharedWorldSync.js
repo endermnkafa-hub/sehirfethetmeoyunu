@@ -12,6 +12,7 @@ export class SharedWorldSync {
   constructor(engine, onRemoteUpdate) {
     this.engine = engine;
     this.onRemoteUpdate = onRemoteUpdate || (() => {});
+    this.destroyed = false;
     this.channel = null;
     this.tabId = 'tab_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
 
@@ -132,6 +133,8 @@ export class SharedWorldSync {
   }
 
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     if (this._pollInterval) clearInterval(this._pollInterval);
     if (this._announceInterval) clearInterval(this._announceInterval);
     if (this._statsInterval) clearInterval(this._statsInterval);
@@ -150,6 +153,7 @@ export class SharedWorldSync {
   }
 
   async _pollCloudMessages() {
+    if (this.destroyed) return;
     try {
       const isInitialLoad = this._lastPollTime === 'all';
       const url = `${CLOUD_TOPIC_URL}/json?poll=1&since=${this._lastPollTime}`;
@@ -161,9 +165,10 @@ export class SharedWorldSync {
       } finally {
         clearTimeout(timeoutId);
       }
-      if (!res.ok) return;
+      if (this.destroyed || !res.ok) return;
 
       const text = await res.text();
+      if (this.destroyed) return;
       this.isCloudConnected = true;
 
       if (!text || !text.trim()) {
@@ -347,7 +352,8 @@ export class SharedWorldSync {
         cid,
         entry.data.stats,
         entry.data._sentAt || entry.data._envTime || 0,
-        true // allow initializing own country's latest server stats on reload!
+        true, // allow initializing own country's latest server stats on reload!
+        Boolean(entry.data.isAdminOverride)
       );
     }
 
@@ -665,7 +671,13 @@ export class SharedWorldSync {
       this.engine.handleRemoteLaunchShip(data.ship);
       this.onRemoteUpdate();
     } else if (data.type === 'SYNC_COUNTRY_STATS') {
-      this.engine.handleRemoteSyncCountryStats(data.countryId, data.stats, data._sentAt || 0);
+      this.engine.handleRemoteSyncCountryStats(
+        data.countryId,
+        data.stats,
+        data._sentAt || 0,
+        false,
+        Boolean(data.isAdminOverride)
+      );
       this.onRemoteUpdate();
     } else if (data.type === 'UNDO_PIXEL') {
       this.engine.handleRemoteUndoPixel(data.countryId, data.x, data.y, data.prevOwner);

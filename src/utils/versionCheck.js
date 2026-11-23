@@ -3,15 +3,16 @@ import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 
 export const CURRENT_CLIENT_INFO = {
-  versionCode: 7,
-  versionName: '1.6',
+  versionCode: Number(import.meta.env.VITE_SF_VERSION_CODE) || 0,
+  versionName: import.meta.env.VITE_SF_VERSION_NAME || '0.0',
   platform: typeof window !== 'undefined' && Capacitor.isNativePlatform() ? 'android' : 'web',
 };
 
 // Remote endpoints to check for version metadata
 const REMOTE_VERSION_URLS = [
-  'https://ankafa-hub.github.io/sehirfethetmeoyunu/version.json',
-  '/version.json',
+  // Relative path works both on GitHub Pages (/repo/) and Capacitor's local WebView.
+  './version.json',
+  'https://endermnkafa-hub.github.io/sehirfethetmeoyunu/version.json',
 ];
 
 export async function checkAppVersion() {
@@ -41,8 +42,11 @@ export async function checkAppVersion() {
         headers: { Accept: 'application/json' },
       });
       if (resp.ok) {
-        remoteData = await resp.json();
-        break;
+        const candidate = await resp.json();
+        if (candidate && Number.isInteger(candidate.versionCode) && candidate.versionCode >= 0) {
+          remoteData = candidate;
+          break;
+        }
       }
     } catch {}
   }
@@ -50,6 +54,7 @@ export async function checkAppVersion() {
   if (!remoteData || typeof remoteData.versionCode !== 'number') {
     return {
       checked: true,
+      isNative,
       needsUpdate: false,
       isMandatory: false,
       localVersion,
@@ -58,16 +63,19 @@ export async function checkAppVersion() {
     };
   }
 
-  // On Android native app:
-  // If remote.versionCode > localBuild, update is MANDATORY!
+  // `minVersionCode` distinguishes mandatory security/compatibility updates from optional releases.
   const isOutdated = remoteData.versionCode > localBuild;
-  const isMandatory = isNative && isOutdated;
+  const minimumSupportedBuild = Number.isInteger(remoteData.minVersionCode)
+    ? remoteData.minVersionCode
+    : remoteData.versionCode;
+  const isMandatory = isNative && localBuild < minimumSupportedBuild;
 
   return {
     checked: true,
     isNative,
     needsUpdate: isOutdated,
     isMandatory,
+    isOptionalUpdate: isNative && isOutdated && !isMandatory,
     localVersion,
     localBuild,
     remoteVersion: remoteData.versionName,

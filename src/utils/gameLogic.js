@@ -470,8 +470,14 @@ export function canExpandToCell(grid, activePlayerId, tx, ty, pendingCells = [],
  * - Must be on the outer border
  */
 export function canBuildWallOnCell(grid, activePlayerId, x, y, walls = {}, pendingCells = []) {
+  if (!Array.isArray(grid) || grid.length === 0 || !Array.isArray(grid[0])) {
+    return { valid: false, reason: 'Geçersiz harita' };
+  }
   const height = grid.length;
   const width = grid[0].length;
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= width || y < 0 || y >= height) {
+    return { valid: false, reason: 'Harita dışı' };
+  }
   const key = `${x},${y}`;
 
   if (walls[key]) return { valid: false, reason: 'Burada zaten duvar var' };
@@ -504,6 +510,150 @@ export function canBuildWallOnCell(grid, activePlayerId, x, y, walls = {}, pendi
   }
 
   return { valid: true };
+}
+
+/**
+ * Validates a complete online placement plan on the host before changing the board.
+ * The host must never trust coordinates, costs, ownership claims, or wall changes
+ * supplied by a remote client.
+ */
+export function validateTurnPlacementPlan(
+  grid,
+  activePlayerId,
+  pendingCells = [],
+  pendingWalls = [],
+  walls = {},
+  alliances = [],
+  maxPoints = Infinity,
+) {
+  const invalid = (reason) => ({ valid: false, reason });
+
+  if (!Array.isArray(grid) || grid.length === 0 || !Array.isArray(grid[0]) || grid[0].length === 0) {
+    return invalid('Geçersiz harita');
+  }
+
+  const height = grid.length;
+  const width = grid[0].length;
+  if (grid.some((row) => !Array.isArray(row) || row.length !== width)) {
+    return invalid('Harita satırlarının boyutları tutarsız');
+  }
+  if (!Number.isInteger(activePlayerId) || activePlayerId <= 0) {
+    return invalid('Geçersiz aktif oyuncu');
+  }
+  if (!Array.isArray(pendingCells) || !Array.isArray(pendingWalls)) {
+    return invalid('Hamle verisi geçersiz');
+  }
+  if (pendingCells.length > width * height || pendingWalls.length > width * height) {
+    return invalid('Hamle sayısı harita sınırını aşıyor');
+  }
+  if (!(maxPoints === Infinity || (Number.isFinite(maxPoints) && maxPoints >= 0))) {
+    return invalid('Tur hakkı geçersiz');
+  }
+
+  const nextWalls = { ...(walls && typeof walls === 'object' && !Array.isArray(walls) ? walls : {}) };
+  const acceptedCells = [];
+  const acceptedWalls = [];
+  const seenCells = new Set();
+  const seenWalls = new Set();
+  let spent = 0;
+
+  for (const cell of pendingCells) {
+    if (!cell || typeof cell !== 'object' || Array.isArray(cell)) {
+      return invalid('Geçersiz kare hamlesi');
+    }
+
+    const { x, y } = cell;
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= width || y < 0 || y >= height) {
+      return invalid('Hamle harita sınırlarının dışında');
+    }
+    if (cell.playerId !== activePlayerId) {
+      return invalid('Hamle aktif oyuncuya ait değil');
+    }
+
+    const key = `${x},${y}`;
+    if (seenCells.has(key)) return invalid('Aynı kare birden fazla kez seçilmiş');
+    seenCells.add(key);
+
+    const isBreachOnly = cell.isWallBreachOnly === true;
+    const isWallDemolished = cell.isWallDemolished === true;
+    if (isBreachOnly && isWallDemolished) return invalid('Duvar hamlesi çelişkili');
+
+    const cost = cell.cost === undefined ? 1 : cell.cost;
+    if (!Number.isInteger(cost) || cost < 1 || cost > 2) {
+      return invalid('Hamle maliyeti geçersiz');
+    }
+
+    const owner = grid[y][x];
+    const wallExists = Boolean(nextWalls[key]);
+    const check = canExpandToCell(grid, activePlayerId, x, y, acceptedCells, alliances);
+    if (!check.valid) return invalid(check.reason || 'Geçersiz fetih hamlesi');
+
+    if (isBreachOnly) {
+      if (!wallExists || owner <= 0 || owner === activePlayerId || cost !== 1) {
+        return invalid('Geçersiz duvar aşma hamlesi');
+      }
+      delete nextWalls[key];
+    } else if (isWallDemolished) {
+      if (!wallExists || owner <= 0 || owner === activePlayerId || (cost !== 1 && cost !== 2)) {
+        return invalid('Geçersiz duvar yıkma hamlesi');
+      }
+      delete nextWalls[key];
+    } else {
+      if (wallExists || cost !== 1) return invalid('Normal fetih hamlesi geçersiz');
+    }
+
+    if (cell.previousOwner !== undefined && cell.previousOwner !== owner) {
+      return invalid('Kare sahipliği değişmiş; hamle güncel değil');
+    }
+    if (cell.targetOwner !== undefined && cell.targetOwner !== check.targetOwner) {
+      return invalid('Hedef oyuncu bilgisi uyuşmuyor');
+    }
+
+    spent += cost;
+    if (spent > maxPoints) return invalid('Oyuncu mevcut tur hakkından fazla harcama yapıyor');
+
+    acceptedCells.push({
+      ...cell,
+      x,
+      y,
+      cost,
+      playerId: activePlayerId,
+      previousOwner: owner,
+      targetOwner: check.targetOwner,
+      isAllianceAttack: Boolean(check.isAllianceAttack),
+    });
+  }
+
+  for (const wall of pendingWalls) {
+    if (!wall || typeof wall !== 'object' || Array.isArray(wall)) {
+      return invalid('Geçersiz duvar hamlesi');
+    }
+    const { x, y } = wall;
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= width || y < 0 || y >= height) {
+      return invalid('Duvar harita sınırlarının dışında');
+    }
+
+    const key = `${x},${y}`;
+    if (seenWalls.has(key)) return invalid('Aynı kareye birden fazla duvar kurulamaz');
+    seenWalls.add(key);
+
+    const check = canBuildWallOnCell(grid, activePlayerId, x, y, nextWalls, acceptedCells);
+    if (!check.valid) return invalid(check.reason || 'Geçersiz duvar yeri');
+
+    nextWalls[key] = true;
+    acceptedWalls.push({ x, y });
+    spent += 1;
+    if (spent > maxPoints) return invalid('Oyuncu mevcut tur hakkından fazla harcama yapıyor');
+  }
+
+  return {
+    valid: true,
+    reason: null,
+    pendingCells: acceptedCells,
+    pendingWalls: acceptedWalls,
+    walls: nextWalls,
+    spent,
+  };
 }
 
 /**

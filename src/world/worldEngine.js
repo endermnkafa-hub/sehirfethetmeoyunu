@@ -99,6 +99,27 @@ export const DEFAULT_UPGRADES = {
   siege: 0,
 };
 
+const NUCLEAR_STRIKE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const NUCLEAR_STRIKE_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+const NUCLEAR_STRIKE_MAX_RADIUS = 22;
+
+function normalizeNuclearStrike(rawStrike, now = Date.now()) {
+  if (!rawStrike || typeof rawStrike !== 'object' || Array.isArray(rawStrike)) return null;
+  const { id, x, y } = rawStrike;
+  const fromX = rawStrike.fromX ?? x;
+  const fromY = rawStrike.fromY ?? y;
+  const radius = rawStrike.radius ?? NUCLEAR_STRIKE_MAX_RADIUS;
+  const time = rawStrike.time;
+
+  if (typeof id !== 'string' || id.length === 0 || id.length > 128) return null;
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return null;
+  if (!Number.isInteger(fromX) || !Number.isInteger(fromY) || fromX < 0 || fromX >= MAP_W || fromY < 0 || fromY >= MAP_H) return null;
+  if (!Number.isInteger(radius) || radius < 1 || radius > NUCLEAR_STRIKE_MAX_RADIUS) return null;
+  if (!Number.isFinite(time) || time <= 0 || now - time >= NUCLEAR_STRIKE_MAX_AGE_MS || time - now > NUCLEAR_STRIKE_MAX_FUTURE_SKEW_MS) return null;
+
+  return { ...rawStrike, id, x, y, fromX, fromY, radius, time };
+}
+
 export class WorldSimulationEngine {
   constructor(worldData, callbacks = {}) {
     this.worldData = worldData;
@@ -136,10 +157,19 @@ export class WorldSimulationEngine {
     // Restore any persistent wasteland & nuclear strikes immediately so initial render is irradiated
     this._loadPersistedNuclearStrikes();
 
-    this.sync = new SharedWorldSync(this, () => {
+    // Keep constructors free of network/timer side effects. React StrictMode may
+    // construct and discard render-time instances before a component is mounted.
+    this.sync = null;
+    this._syncUpdateCallback = () => {
       this.dirtyPixels = true;
       this.dirtyRegions = true;
-    });
+    };
+  }
+
+  ensureSync() {
+    if (this.sync && !this.sync.destroyed) return this.sync;
+    this.sync = new SharedWorldSync(this, this._syncUpdateCallback);
+    return this.sync;
   }
 
   _saveLocalWorldBackup() {
@@ -204,12 +234,13 @@ export class WorldSimulationEngine {
         if (raw) {
           const list = JSON.parse(raw);
           if (Array.isArray(list)) {
-            const ONE_DAY = 24 * 60 * 60 * 1000;
             const now = Date.now();
-            for (const strike of list) {
-              if (strike && strike.id && (now - (strike.time || now)) < ONE_DAY && !this.nuclearStrikes.some((s) => s.id === strike.id)) {
+            let ownershipChanged = false;
+            for (const rawStrike of list) {
+              const strike = normalizeNuclearStrike(rawStrike, now);
+              if (strike && !this.nuclearStrikes.some((s) => s.id === strike.id)) {
                 this.nuclearStrikes.push(strike);
-                const { x, y, radius = 22 } = strike;
+                const { x, y, radius } = strike;
                 const r2 = radius * radius;
                 for (let dy = -radius; dy <= radius; dy++) {
                   const cy = y + dy;
@@ -222,12 +253,18 @@ export class WorldSimulationEngine {
                     const idx = row + cx;
                     if (this.worldData.isLand[idx]) {
                       this.isWasteland[idx] = 1;
-                      this.owners[idx] = 0;
+                      if (this.owners[idx] > 0) {
+                        this.owners[idx] = 0;
+                        ownershipChanged = true;
+                      }
                     }
                   }
                 }
               }
             }
+            // The local snapshot may predate a strike; recompute territory counts
+            // from the resulting owner map instead of trusting stale saved counts.
+            if (ownershipChanged) this.computeCountryBounds();
           }
         }
       }
@@ -533,14 +570,30 @@ export class WorldSimulationEngine {
   }
 
   _normalizeCountry(c) {
-    c.upgrades = { ...DEFAULT_UPGRADES, ...(c.upgrades || {}) };
-    c.landCount = Math.max(1, c.landCount || 1);
-    c.population =
-      typeof c.population === "number" ? Math.max(10, c.population) : 10;
-    c.gold = typeof c.gold === "number" ? Math.max(0, c.gold) : 0;
-    c.troops = typeof c.troops === "number" ? Math.max(0, c.troops) : 1.0;
-    c.inventory = c.inventory || { nukes: 0 };
-    if (typeof c.inventory.nukes !== "number") c.inventory.nukes = 0;
+    const sourceUpgrades = c.upgrades && typeof c.upgrades === 'object' && !Array.isArray(c.upgrades)
+      ? c.upgrades : {};
+    c.upgrades = { ...DEFAULT_UPGRADES };
+    for (const key of Object.keys(DEFAULT_UPGRADES)) {
+      const level = sourceUpgrades[key];
+      c.upgrades[key] = Number.isFinite(level) ? Math.max(0, Math.min(25, Math.floor(level))) : 0;
+    }
+
+    c.landCount = Number.isFinite(c.landCount)
+      ? Math.max(1, Math.min(MAP_W * MAP_H, Math.floor(c.landCount))) : 1;
+    c.population = Number.isFinite(c.population)
+      ? Math.max(10, Math.min(1_000_000_000_000, c.population)) : 10;
+    c.gold = Number.isFinite(c.gold)
+      ? Math.max(0, Math.min(1_000_000_000_000_000, c.gold)) : 0;
+    c.troops = Number.isFinite(c.troops)
+      ? Math.max(0, Math.min(1_000_000_000, c.troops)) : 1.0;
+
+    c.name = typeof c.name === 'string' ? c.name.trim().slice(0, 40) || 'Adsız Devlet' : 'Adsız Devlet';
+    c.color = typeof c.color === 'string' && /^#[0-9a-f]{6}$/i.test(c.color) ? c.color : '#E11D48';
+    c.capitalX = Number.isInteger(c.capitalX) && c.capitalX >= 0 && c.capitalX < MAP_W ? c.capitalX : Math.floor(MAP_W / 2);
+    c.capitalY = Number.isInteger(c.capitalY) && c.capitalY >= 0 && c.capitalY < MAP_H ? c.capitalY : Math.floor(MAP_H / 2);
+
+    const rawNukes = c.inventory && typeof c.inventory === 'object' ? c.inventory.nukes : 0;
+    c.inventory = { nukes: Number.isFinite(rawNukes) ? Math.max(0, Math.min(100000, Math.floor(rawNukes))) : 0 };
     this._recalculateDerivedStats(c);
     return c;
   }
@@ -933,8 +986,10 @@ export class WorldSimulationEngine {
   }
 
   handleRemoteNuclearStrike(strike, isLocal = false, isHistoryReplay = false) {
-    if (!strike || strike.x == null || strike.y == null) return;
-    const { fromX, fromY, x, y, radius = 22 } = strike;
+    const safeStrike = normalizeNuclearStrike(strike);
+    if (!safeStrike) return;
+    strike = safeStrike;
+    const { fromX, fromY, x, y } = strike;
 
     // If loading past history or refreshed page, apply wasteland directly without playing flight & explosion animations
     if (isHistoryReplay) {
@@ -968,11 +1023,9 @@ export class WorldSimulationEngine {
   }
 
   _applyNuclearWastelandOnly(strike) {
-    if (!strike || strike.x == null || strike.y == null) return;
-    const { x, y, radius = 22 } = strike;
-    const ONE_DAY = 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    if ((now - (strike.time || now)) >= ONE_DAY) return;
+    strike = normalizeNuclearStrike(strike);
+    if (!strike) return;
+    const { x, y, radius } = strike;
 
     if (!this.nuclearStrikes.some((s) => s.id === strike.id)) {
       this.nuclearStrikes.push(strike);
@@ -1005,13 +1058,13 @@ export class WorldSimulationEngine {
   }
 
   _detonateNuclearStrike(strike, isLocal = false) {
+    strike = normalizeNuclearStrike(strike);
     if (!strike) return;
-    const { x, y, radius = 22 } = strike;
+    const { x, y, radius } = strike;
 
-    // Prune expired strikes older than 24 hours (1 day = 86,400,000 ms)
-    const ONE_DAY = 24 * 60 * 60 * 1000;
+    // Prune expired strikes older than 24 hours.
     const now = Date.now();
-    this.nuclearStrikes = this.nuclearStrikes.filter((s) => s.id !== strike.id && (now - s.time) < ONE_DAY);
+    this.nuclearStrikes = this.nuclearStrikes.filter((s) => s.id !== strike.id && (now - s.time) < NUCLEAR_STRIKE_MAX_AGE_MS);
     this.nuclearStrikes.push(strike);
 
     this.activeExplosions.push({
@@ -1811,20 +1864,22 @@ export class WorldSimulationEngine {
   }
 
   handleRemoteUndoPixel(countryId, x, y, prevOwner, batchMode = false) {
-    if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
-    const idx = y * MAP_W + x;
-    this.owners[idx] = prevOwner;
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
+    if (!Number.isInteger(countryId) || !Number.isInteger(prevOwner) || prevOwner < 0) return;
     const c = this.countryMap.get(countryId);
-    if (c) {
-      c.landCount = Math.max(0, c.landCount - 1);
-      this._recalculateDerivedStats(c);
-    }
-    if (prevOwner > 0) {
-      const pc = this.countryMap.get(prevOwner);
-      if (pc) {
-        pc.landCount++;
-        this._recalculateDerivedStats(pc);
-      }
+    if (!c) return;
+    const idx = y * MAP_W + x;
+    // Ignore duplicate, stale, ocean, and post-strike undo packets. They must not
+    // change ownership or decrement territory counters a second time.
+    if (!this.worldData.isLand[idx] || this.isWasteland[idx] || this.owners[idx] !== countryId) return;
+    const restoredOwner = prevOwner > 0 && this.countryMap.has(prevOwner) ? prevOwner : 0;
+    this.owners[idx] = restoredOwner;
+    c.landCount = Math.max(0, c.landCount - 1);
+    this._recalculateDerivedStats(c);
+    if (restoredOwner > 0) {
+      const pc = this.countryMap.get(restoredOwner);
+      pc.landCount++;
+      this._recalculateDerivedStats(pc);
     }
     if (!batchMode) {
       this.computeCountryBounds();
@@ -2095,8 +2150,13 @@ export class WorldSimulationEngine {
   }
 
   handleRemoteNewCountry(remoteData) {
-    if (!remoteData || !remoteData.id || this.countryMap.has(remoteData.id))
-      return;
+    if (!remoteData || !Number.isInteger(remoteData.id) || remoteData.id < 10 || remoteData.id > 31909 ||
+        this.countryMap.has(remoteData.id) || !Number.isInteger(remoteData.capitalX) ||
+        !Number.isInteger(remoteData.capitalY) || remoteData.capitalX < 0 || remoteData.capitalX >= MAP_W ||
+        remoteData.capitalY < 0 || remoteData.capitalY >= MAP_H) return;
+
+    const capitalIdx = remoteData.capitalY * MAP_W + remoteData.capitalX;
+    if (!this.worldData.isLand[capitalIdx] || this.isWasteland[capitalIdx]) return;
 
     const flagUrl =
       remoteData.flagDataUrl ||
@@ -2109,7 +2169,7 @@ export class WorldSimulationEngine {
     });
 
     const idx = country.capitalY * MAP_W + country.capitalX;
-    if (this.worldData.isLand[idx]) {
+    if (this.worldData.isLand[idx] && !this.isWasteland[idx]) {
       this.owners[idx] = country.id;
     }
 
@@ -2184,7 +2244,14 @@ export class WorldSimulationEngine {
     batchMode = false,
     rleSpans = null,
   ) {
-    if (!remoteCountry || !remoteCountry.id) return;
+    if (!remoteCountry || !Number.isInteger(remoteCountry.id) || remoteCountry.id < 10 || remoteCountry.id > 31909) return;
+    if (!Number.isInteger(remoteCountry.capitalX) || !Number.isInteger(remoteCountry.capitalY) ||
+        remoteCountry.capitalX < 0 || remoteCountry.capitalX >= MAP_W ||
+        remoteCountry.capitalY < 0 || remoteCountry.capitalY >= MAP_H) return;
+
+    // Reject oversized or malformed coordinate payloads before allocating sets.
+    if (Array.isArray(rleSpans) && (rleSpans.length % 3 !== 0 || rleSpans.length > MAP_W * MAP_H * 3)) return;
+    if (Array.isArray(pts) && (pts.length % 2 !== 0 || pts.length > MAP_W * MAP_H * 2)) return;
 
     let country = this.countryMap.get(remoteCountry.id);
     if (
@@ -2225,7 +2292,9 @@ export class WorldSimulationEngine {
       }
     } else {
       if (packetTime > 0) country._lastSyncTime = packetTime;
-      if (remoteCountry.color) country.color = remoteCountry.color;
+      if (typeof remoteCountry.color === 'string' && /^#[0-9a-f]{6}$/i.test(remoteCountry.color)) {
+        country.color = remoteCountry.color;
+      }
 
       // Never overwrite an existing custom flag with an empty/fallback flag!
       if (remoteCountry.flagDataUrl && remoteCountry.flagDataUrl !== country.flagDataUrl) {
@@ -2242,24 +2311,31 @@ export class WorldSimulationEngine {
             .catch(() => {});
         }
       }
-      if (remoteCountry.upgrades) {
-        country.upgrades = { ...DEFAULT_UPGRADES, ...remoteCountry.upgrades };
+      if (remoteCountry.upgrades && typeof remoteCountry.upgrades === 'object' && !Array.isArray(remoteCountry.upgrades)) {
+        const safeUpgrades = { ...DEFAULT_UPGRADES };
+        for (const key of Object.keys(DEFAULT_UPGRADES)) {
+          const level = remoteCountry.upgrades[key];
+          safeUpgrades[key] = Number.isFinite(level) ? Math.max(0, Math.min(25, Math.floor(level))) : country.upgrades[key] || 0;
+        }
+        country.upgrades = safeUpgrades;
       }
     }
 
     if (batchMode || country.id !== this.myCountryId) {
-      if (typeof remoteCountry.troops === "number")
-        country.troops = remoteCountry.troops;
-      if (typeof remoteCountry.gold === "number")
-        country.gold = remoteCountry.gold;
-      if (typeof remoteCountry.population === "number")
-        country.population = remoteCountry.population;
-      if (remoteCountry.inventory)
-        country.inventory = { ...remoteCountry.inventory };
+      if (Number.isFinite(remoteCountry.troops))
+        country.troops = Math.max(0, Math.min(1_000_000_000, remoteCountry.troops));
+      if (Number.isFinite(remoteCountry.gold))
+        country.gold = Math.max(0, Math.min(1_000_000_000_000_000, remoteCountry.gold));
+      if (Number.isFinite(remoteCountry.population))
+        country.population = Math.max(10, Math.min(1_000_000_000_000, remoteCountry.population));
+      if (remoteCountry.inventory && typeof remoteCountry.inventory === 'object') {
+        const nukes = remoteCountry.inventory.nukes;
+        country.inventory = { nukes: Number.isFinite(nukes) ? Math.max(0, Math.min(100000, Math.floor(nukes))) : country.inventory?.nukes || 0 };
+      }
     }
 
     const idxCap = country.capitalY * MAP_W + country.capitalX;
-    if (this.worldData.isLand[idxCap] && this.owners[idxCap] === 0) {
+    if (this.worldData.isLand[idxCap] && !this.isWasteland[idxCap] && this.owners[idxCap] === 0) {
       this.owners[idxCap] = country.id;
     }
 
@@ -2272,19 +2348,19 @@ export class WorldSimulationEngine {
           const py = rleSpans[i];
           const xStart = rleSpans[i + 1];
           const len = rleSpans[i + 2];
-          if (py >= 0 && py < MAP_H) {
-            const row = py * MAP_W;
-            const endX = Math.min(MAP_W, xStart + len);
-            for (let px = Math.max(0, xStart); px < endX; px++) {
-              validPtsSet.add(row + px);
-            }
+          if (!Number.isInteger(py) || !Number.isInteger(xStart) || !Number.isInteger(len) ||
+              py < 0 || py >= MAP_H || len <= 0 || xStart < 0 || xStart >= MAP_W) continue;
+          const row = py * MAP_W;
+          const endX = Math.min(MAP_W, xStart + len);
+          for (let px = xStart; px < endX; px++) {
+            validPtsSet.add(row + px);
           }
         }
       } else {
         for (let i = 0; i < pts.length; i += 2) {
           const px = pts[i];
           const py = pts[i + 1];
-          if (px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
+          if (Number.isInteger(px) && Number.isInteger(py) && px >= 0 && px < MAP_W && py >= 0 && py < MAP_H) {
             validPtsSet.add(py * MAP_W + px);
           }
         }
@@ -2338,11 +2414,15 @@ export class WorldSimulationEngine {
   }
 
   handleRemoteConquerPixel(countryId, x, y, cost = 1) {
-    if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
+    if (!Number.isInteger(countryId) || !Number.isFinite(cost) || cost < 0 || cost > 100000) return;
     const country = this.countryMap.get(countryId);
     if (!country) return; // Ignore orphaned pixel packets for unknown countries
 
     const idx = y * MAP_W + x;
+    // A remote packet may only claim habitable land; never let malformed packets
+    // create territory in the ocean or reclaim radioactive wasteland.
+    if (!this.worldData.isLand[idx] || this.isWasteland[idx]) return;
     const prevOwner = this.owners[idx];
     if (prevOwner === countryId) return;
 
@@ -2379,30 +2459,46 @@ export class WorldSimulationEngine {
     stats,
     packetTime = 0,
     forceInit = false,
+    isAdminOverride = false,
   ) {
-    if (!forceInit && countryId === this.myCountryId) return;
+    if (!forceInit && !isAdminOverride && countryId === this.myCountryId) return;
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
     if (
+      !isAdminOverride &&
       packetTime > 0 &&
       country._lastStatsTime &&
       packetTime < country._lastStatsTime
     )
       return;
     if (packetTime > 0) country._lastStatsTime = packetTime;
-    if (stats.color) {
+    if (isAdminOverride) {
+      country._lastAdminOverrideTime = Date.now();
+    }
+    if (typeof stats.color === 'string' && /^#[0-9a-f]{6}$/i.test(stats.color)) {
       country.color = stats.color;
       this.dirtyPixels = true;
     }
-    if (typeof stats.gold === "number") country.gold = stats.gold;
-    if (typeof stats.population === "number")
-      country.population = stats.population;
-    if (typeof stats.troops === "number") country.troops = stats.troops;
-    if (stats.upgrades)
-      country.upgrades = { ...DEFAULT_UPGRADES, ...stats.upgrades };
-    if (stats.inventory)
-      country.inventory = { ...stats.inventory };
+    if (Number.isFinite(stats.gold)) country.gold = Math.max(0, Math.min(1_000_000_000_000_000, stats.gold));
+    if (Number.isFinite(stats.population)) country.population = Math.max(10, Math.min(1_000_000_000_000, stats.population));
+    if (Number.isFinite(stats.troops)) country.troops = Math.max(0, Math.min(1_000_000_000, stats.troops));
+    if (stats.upgrades && typeof stats.upgrades === 'object' && !Array.isArray(stats.upgrades)) {
+      const incoming = { ...DEFAULT_UPGRADES };
+      for (const key of Object.keys(DEFAULT_UPGRADES)) {
+        const level = stats.upgrades[key];
+        incoming[key] = Number.isFinite(level) ? Math.max(0, Math.min(25, Math.floor(level))) : country.upgrades[key] || 0;
+      }
+      country.upgrades = incoming;
+    }
+    if (stats.inventory && typeof stats.inventory === 'object') {
+      const nukes = stats.inventory.nukes;
+      country.inventory = { nukes: Number.isFinite(nukes) ? Math.max(0, Math.min(100000, Math.floor(nukes))) : country.inventory?.nukes || 0 };
+      if (countryId === this.myCountryId) {
+        this._persistCountryInventory(country);
+      }
+    }
     this._recalculateDerivedStats(country);
+    this.saveState();
   }
 
   // Update country flag / custom image dynamically in real-time
@@ -3024,6 +3120,7 @@ export class WorldSimulationEngine {
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
       countryId: c.id,
+      isAdminOverride: true,
       stats: {
         troops: Number(c.troops.toFixed(1)),
         gold: Math.floor(c.gold),
@@ -3054,6 +3151,7 @@ export class WorldSimulationEngine {
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
       countryId: c.id,
+      isAdminOverride: true,
       stats: {
         troops: Number(c.troops.toFixed(1)),
         gold: Math.floor(c.gold),
@@ -3078,6 +3176,7 @@ export class WorldSimulationEngine {
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
       countryId: c.id,
+      isAdminOverride: true,
       stats: {
         troops: Number(c.troops.toFixed(1)),
         gold: Math.floor(c.gold),
@@ -3102,6 +3201,7 @@ export class WorldSimulationEngine {
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
       countryId: c.id,
+      isAdminOverride: true,
       stats: {
         troops: Number(c.troops.toFixed(1)),
         gold: Math.floor(c.gold),
@@ -3150,6 +3250,7 @@ export class WorldSimulationEngine {
         this.sync.broadcast({
           type: "SYNC_COUNTRY_STATS",
           countryId: c.id,
+          isAdminOverride: true,
           stats: {
             troops: Number(c.troops.toFixed(1)),
             gold: Math.floor(c.gold),
@@ -3177,6 +3278,7 @@ export class WorldSimulationEngine {
         this.sync.broadcast({
           type: "SYNC_COUNTRY_STATS",
           countryId: c.id,
+          isAdminOverride: true,
           stats: {
             troops: Number(c.troops.toFixed(1)),
             gold: Math.floor(c.gold),
@@ -3206,6 +3308,7 @@ export class WorldSimulationEngine {
         this.sync.broadcast({
           type: "SYNC_COUNTRY_STATS",
           countryId: c.id,
+          isAdminOverride: true,
           stats: {
             troops: Number(c.troops.toFixed(1)),
             gold: Math.floor(c.gold),
@@ -3242,15 +3345,29 @@ export class WorldSimulationEngine {
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
 
     let conquered = 0;
+    const conqueredPts = [];
     for (let i = 0; i < pixelsCount; i++) {
       const res = this.findSmartExpandTarget(countryId, true);
       if (!res.ok) break;
       const move = this.conquerPixel(countryId, res.x, res.y);
-      if (move.ok) conquered++;
-      else break;
+      if (move.ok) {
+        conquered++;
+        conqueredPts.push(res.x, res.y);
+      } else {
+        break;
+      }
     }
     this.autoFillInternalCavities(countryId);
     this.saveState();
+
+    if (conqueredPts.length > 0) {
+      this.sync.broadcast({
+        type: 'CONQUER_BATCH',
+        countryId,
+        pts: conqueredPts,
+      });
+    }
+
     this.onSound("pencil");
     this.onEvent(`[ADMIN] ${c.name} devletinin sınırları +${conquered} boş piksel otomatik genişletildi!`);
     return { ok: true, conquered };
@@ -3276,9 +3393,11 @@ export class WorldSimulationEngine {
       c.upgrades[def.key] = def.maxLevel;
     }
     this._recalculateDerivedStats(c);
+    this.saveState();
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
       countryId: c.id,
+      isAdminOverride: true,
       stats: {
         troops: Number(c.troops.toFixed(1)),
         gold: Math.floor(c.gold),

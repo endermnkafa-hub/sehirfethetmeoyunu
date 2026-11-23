@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 
+// Keep the APK's native version exactly aligned with public/version.json.
+def appVersion = new groovy.json.JsonSlurper().parse(rootProject.file('../public/version.json'))
+
 android {
     namespace = "com.sehirfethetme.oyunu"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +10,8 @@ android {
         applicationId "com.sehirfethetme.oyunu"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.1"
+        versionCode (appVersion.versionCode as int)
+        versionName appVersion.versionName.toString()
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

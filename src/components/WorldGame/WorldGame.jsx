@@ -93,6 +93,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
   // VPN Block Modal & Mandatory Version Update
   const [vpnBlocked, setVpnBlocked] = useState(false);
   const [mandatoryUpdate, setMandatoryUpdate] = useState(null);
+  const [optionalAppUpdate, setOptionalAppUpdate] = useState(null);
   const [webUpdateAvailable, setWebUpdateAvailable] = useState(false);
 
   // Modes & UI
@@ -244,8 +245,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
     });
   }
 
-  // Clean up cloud sync intervals & EventSource on unmount
+  // Start cloud sync after mount, not in the render-time engine constructor.
+  // This keeps React StrictMode's development mount/cleanup/remount cycle safe.
   useEffect(() => {
+    engineRef.current?.ensureSync?.();
     return () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
       engineRef.current?.sync?.destroy?.();
@@ -293,7 +296,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
     checkAppVersion().then((ver) => {
       if (ver.isMandatory) {
         setMandatoryUpdate(ver);
-      } else if (ver.needsUpdate) {
+      } else if (ver.isNative && ver.isOptionalUpdate) {
+        setOptionalAppUpdate(ver);
+      } else if (ver.needsUpdate && !ver.isNative) {
         setWebUpdateAvailable(true);
       }
     });
@@ -2577,6 +2582,23 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <RefreshCw size={10} />
             <span>Yenile</span>
           </button>
+        </div>
+      )}
+
+      {/* OPTIONAL ANDROID UPDATE BANNER */}
+      {optionalAppUpdate && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 border border-emerald-500/60 text-emerald-100 px-3.5 py-2 rounded-2xl shadow-2xl text-[11px] font-bold flex items-center gap-3">
+          <span>İsteğe bağlı APK güncellemesi: v{optionalAppUpdate.remoteVersion}</span>
+          <a
+            href={optionalAppUpdate.apkUrl}
+            target="_system"
+            rel="noreferrer"
+            onClick={() => window.open(optionalAppUpdate.apkUrl, "_system")}
+            className="px-2 py-1 rounded-lg bg-emerald-500 text-slate-950 font-black"
+          >
+            İndir
+          </a>
+          <button onClick={() => setOptionalAppUpdate(null)} aria-label="Güncelleme bildirimini kapat" className="text-slate-400 hover:text-white">✕</button>
         </div>
       )}
 

@@ -37,64 +37,98 @@ export function isAdminIp(ip) {
   return false;
 }
 
-// Helper to read/write persistent cookies as robust backup for localStorage (Chrome on mobile)
+// Storage adapters are intentionally isolated: privacy settings, WebViews, or
+// browser policies can disable localStorage while sessionStorage/cookies still work.
 function getCookie(name) {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp('(^|;\\s*)(' + name + ')=([^;]*)'));
-  return match ? decodeURIComponent(match[3]) : null;
-}
-
-function setCookie(name, val) {
-  if (typeof document === 'undefined') return;
   try {
-    const oneYear = 60 * 60 * 24 * 365;
-    document.cookie = `${name}=${encodeURIComponent(val)}; max-age=${oneYear}; path=/; SameSite=Lax`;
-  } catch {}
-}
-
-export function getOrCreateDeviceId() {
-  try {
-    let id = localStorage.getItem(DEVICE_ID_KEY) || sessionStorage.getItem(DEVICE_ID_KEY) || getCookie(DEVICE_ID_KEY);
-    if (!id) {
-      id = 'dev_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now().toString(36);
-    }
-    localStorage.setItem(DEVICE_ID_KEY, id);
-    try { sessionStorage.setItem(DEVICE_ID_KEY, id); } catch {}
-    setCookie(DEVICE_ID_KEY, id);
-    return id;
-  } catch {
-    return 'dev_' + Math.random().toString(36).substring(2, 12);
-  }
-}
-
-export function getMyCountryId() {
-  try {
-    const id = localStorage.getItem(MY_COUNTRY_KEY) || sessionStorage.getItem(MY_COUNTRY_KEY) || getCookie(MY_COUNTRY_KEY);
-    if (id) {
-      try { localStorage.setItem(MY_COUNTRY_KEY, id); } catch {}
-      try { sessionStorage.setItem(MY_COUNTRY_KEY, id); } catch {}
-      setCookie(MY_COUNTRY_KEY, id);
-    }
-    return id;
+    if (typeof document === 'undefined') return null;
+    const match = document.cookie.match(new RegExp('(^|;\\s*)(' + name + ')=([^;]*)'));
+    return match ? decodeURIComponent(match[3]) : null;
   } catch {
     return null;
   }
 }
 
-export function saveMyCountryId(countryId) {
+function setCookie(name, val) {
   try {
-    if (countryId) {
-      localStorage.setItem(MY_COUNTRY_KEY, String(countryId));
-      try { sessionStorage.setItem(MY_COUNTRY_KEY, String(countryId)); } catch {}
-      setCookie(MY_COUNTRY_KEY, String(countryId));
-    } else {
-      localStorage.removeItem(MY_COUNTRY_KEY);
-      try { sessionStorage.removeItem(MY_COUNTRY_KEY); } catch {}
-      setCookie(MY_COUNTRY_KEY, '');
-    }
-  } catch (e) {
-    console.warn('Could not save country ID:', e);
+    if (typeof document === 'undefined') return false;
+    const oneYear = 60 * 60 * 24 * 365;
+    document.cookie = `${name}=${encodeURIComponent(val)}; max-age=${oneYear}; path=/; SameSite=Lax`;
+    return true;
+  } catch {
+    return false;
   }
+}
+
+function readStorage(storageName, key) {
+  try {
+    const storage = globalThis[storageName];
+    const value = storage?.getItem(key);
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPersistentValue(key) {
+  return readStorage('localStorage', key) ||
+    readStorage('sessionStorage', key) ||
+    getCookie(key);
+}
+
+function writePersistentValue(key, value) {
+  let persisted = false;
+  try {
+    globalThis.localStorage?.setItem(key, value);
+    persisted = true;
+  } catch {}
+  try {
+    globalThis.sessionStorage?.setItem(key, value);
+    persisted = true;
+  } catch {}
+  if (setCookie(key, value)) persisted = true;
+  return persisted;
+}
+
+function removePersistentValue(key) {
+  try { globalThis.localStorage?.removeItem(key); } catch {}
+  try { globalThis.sessionStorage?.removeItem(key); } catch {}
+  setCookie(key, '');
+}
+
+function createDeviceId() {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+      return `dev_${globalThis.crypto.randomUUID()}`;
+    }
+  } catch {}
+  return 'dev_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now().toString(36);
+}
+
+export function getOrCreateDeviceId() {
+  const existing = readPersistentValue(DEVICE_ID_KEY);
+  if (existing) {
+    writePersistentValue(DEVICE_ID_KEY, existing);
+    return existing;
+  }
+
+  const id = createDeviceId();
+  writePersistentValue(DEVICE_ID_KEY, id);
+  return id;
+}
+
+export function getMyCountryId() {
+  const id = readPersistentValue(MY_COUNTRY_KEY);
+  if (id) writePersistentValue(MY_COUNTRY_KEY, id);
+  return id;
+}
+
+export function saveMyCountryId(countryId) {
+  if (countryId === null || countryId === undefined || countryId === '') {
+    removePersistentValue(MY_COUNTRY_KEY);
+    return;
+  }
+  writePersistentValue(MY_COUNTRY_KEY, String(countryId));
 }
 
 // Check IP and detect VPN/Proxy
@@ -102,20 +136,23 @@ export async function checkNetworkAndSecurity() {
   let clientIp = '127.0.0.1';
   let isVpnOrProxy = false;
   let providerName = '';
+  let needsFallback = true;
 
   try {
-    // Fast check via ipwho.is with timeout to never block world map load
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch('https://ipwho.is/', { cache: 'no-store', signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.success !== false) {
-        clientIp = data.ip || clientIp;
-        providerName = data.connection?.isp || data.connection?.org || '';
+    let res;
+    try {
+      res = await fetch('https://ipwho.is/', { cache: 'no-store', signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
-        // Known datacenter/hosting/VPN keywords in ISP or Org
+    if (res?.ok) {
+      const data = await res.json();
+      if (data && data.success !== false && typeof data.ip === 'string' && data.ip.trim()) {
+        clientIp = data.ip.trim();
+        providerName = data.connection?.isp || data.connection?.org || '';
         const lowerIsp = (providerName + ' ' + (data.connection?.org || '')).toLowerCase();
         const vpnKeywords = [
           'vpn', 'proxy', 'tor', 'hosting', 'datacenter', 'digitalocean', 'm247',
@@ -123,41 +160,43 @@ export async function checkNetworkAndSecurity() {
           'cloudflare', 'nordvpn', 'expressvpn', 'surfshark', 'privateinternetaccess',
           'cyberghost', 'zenmate', 'protonvpn', 'mullvad', 'windscribe'
         ];
-
-        for (const kw of vpnKeywords) {
-          if (lowerIsp.includes(kw)) {
-            isVpnOrProxy = true;
-            break;
-          }
-        }
-
-        if (data.security?.vpn || data.security?.proxy || data.security?.tor) {
-          isVpnOrProxy = true;
-        }
+        isVpnOrProxy = vpnKeywords.some((keyword) => lowerIsp.includes(keyword)) ||
+          Boolean(data.security?.vpn || data.security?.proxy || data.security?.tor);
+        needsFallback = false;
       }
     }
   } catch (_err) {
-    // Fallback IP check with timeout
+    // The fallback endpoint below is deliberately independent of the first request.
+  }
+
+  if (needsFallback) {
     try {
-      const controller2 = new AbortController();
-      const timeoutId2 = setTimeout(() => controller2.abort(), 1500);
-      const r2 = await fetch('https://api.ipify.org?format=json', { cache: 'no-store', signal: controller2.signal });
-      clearTimeout(timeoutId2);
-      const d2 = await r2.json();
-      if (d2?.ip) clientIp = d2.ip;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1500);
+      let response;
+      try {
+        response = await fetch('https://api.ipify.org?format=json', {
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      if (response?.ok) {
+        const data = await response.json();
+        if (typeof data?.ip === 'string' && data.ip.trim()) clientIp = data.ip.trim();
+      }
     } catch {}
   }
 
-  // Device country check
   const existingCountryId = getMyCountryId();
-  const hasExistingCountry = Boolean(existingCountryId);
-
   return {
     clientIp,
     isVpnOrProxy,
     isAdmin: isAdminIp(clientIp),
     providerName,
-    hasExistingCountry,
+    hasExistingCountry: Boolean(existingCountryId),
     deviceId: getOrCreateDeviceId(),
   };
 }
