@@ -141,6 +141,8 @@ export class WorldSimulationEngine {
     this.countryMap = new Map();
     this.ships = []; // Active naval expeditions sailing across water
     this.treaties = []; // Diplomatic treaties & tribute agreements (İttifak & Haraç)
+    this.wars = [];
+    this._radiationClearedAt = 0;
     this.onTreatyUpdate = null;
     this._lastTributeCheck = 0;
     this.chatMessages = [];
@@ -1025,6 +1027,7 @@ export class WorldSimulationEngine {
   _applyNuclearWastelandOnly(strike) {
     strike = normalizeNuclearStrike(strike);
     if (!strike) return;
+    if (this._radiationClearedAt && strike.time <= this._radiationClearedAt) return;
     const { x, y, radius } = strike;
 
     if (!this.nuclearStrikes.some((s) => s.id === strike.id)) {
@@ -1060,6 +1063,7 @@ export class WorldSimulationEngine {
   _detonateNuclearStrike(strike, isLocal = false) {
     strike = normalizeNuclearStrike(strike);
     if (!strike) return;
+    if (this._radiationClearedAt && strike.time <= this._radiationClearedAt) return;
     const { x, y, radius } = strike;
 
     // Prune expired strikes older than 24 hours.
@@ -3216,7 +3220,7 @@ export class WorldSimulationEngine {
     return { ok: true, nukes: c.inventory.nukes };
   }
 
-  adminClearRadiation(broadcast = true) {
+  adminClearRadiation(broadcast = true, clearedAt = null) {
     const total = MAP_W * MAP_H;
     let clearedCount = 0;
     if (this.isWasteland) {
@@ -3229,11 +3233,15 @@ export class WorldSimulationEngine {
     }
     this.nuclearStrikes = [];
     this.nuclearMissiles = [];
+    this.activeExplosions = [];
+    // Havadaki füzeler temizlikten sonra patlayıp radyasyonu geri getirmesin
+    this._radiationClearedAt = Number.isFinite(clearedAt) && clearedAt > 0 ? clearedAt : Date.now();
     this._persistNuclearStrikes();
     this.dirtyPixels = true;
+    this.dirtyRegions = true;
     this.saveState();
 
-    if (broadcast) {
+    if (broadcast && this.sync) {
       this.sync.broadcast({ type: "ADMIN_CLEAR_RADIATION" });
       this.onSound("celebration");
       this.onEvent(`[ADMIN] Tüm nükleer radyasyon ve çorak araziler temizlendi! (${clearedCount} piksel rehabilite edildi)`);
@@ -3327,45 +3335,76 @@ export class WorldSimulationEngine {
     return { ok: true, count };
   }
 
-  adminBreakCountryTreaties(countryId) {
+  adminBreakCountryTreaties(countryId, broadcast = true) {
     const c = this.countryMap.get(countryId);
-    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
-    const beforeCount = this.treaties.length;
-    this.treaties = this.treaties.filter((t) => t.fromId !== countryId && t.toId !== countryId);
-    this.wars = this.wars.filter((w) => w.fromId !== countryId && w.toId !== countryId);
+    const beforeCount = (this.treaties || []).length;
+    this.treaties = (this.treaties || []).filter((t) => t.fromId !== countryId && t.toId !== countryId);
+    this.wars = (this.wars || []).filter((w) => w.fromId !== countryId && w.toId !== countryId);
     this.saveState();
     if (this.onTreatyUpdate) this.onTreatyUpdate();
-    this.sync.broadcast({ type: "ADMIN_RESET_TREATIES" });
-    this.onEvent(`[ADMIN] ${c.name} devletinin tüm anlaşmaları ve savaşları bozuldu!`);
+    if (broadcast && this.sync) {
+      // Sadece bu devletin anlaşmalarını boz (eskiden herkesin anlaşmasını siliyordu)
+      this.sync.broadcast({ type: "ADMIN_BREAK_COUNTRY_TREATIES", countryId });
+      this.onEvent(`[ADMIN] ${c?.name || "Devlet"} devletinin tüm anlaşmaları ve savaşları bozuldu!`);
+    }
     return { ok: true, removedCount: beforeCount - this.treaties.length };
   }
 
   adminAutoExpand(countryId, pixelsCount = 25) {
     const c = this.countryMap.get(countryId);
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    const limit = Math.max(0, Math.min(5000, Math.floor(Number(pixelsCount) || 0)));
+    if (limit === 0) return { ok: false, reason: "Geçersiz piksel sayısı." };
 
-    let conquered = 0;
-    const conqueredPts = [];
-    for (let i = 0; i < pixelsCount; i++) {
-      const res = this.findSmartExpandTarget(countryId, true);
-      if (!res.ok) break;
-      const move = this.conquerPixel(countryId, res.x, res.y);
-      if (move.ok) {
-        conquered++;
-        conqueredPts.push(res.x, res.y);
-      } else {
-        break;
+    // Asker harcamadan, sınıra komşu boş (sahipsiz, radyasyonsuz) karaları BFS ile ekle
+    const total = MAP_W * MAP_H;
+    const queue = [];
+    const seen = new Uint8Array(total);
+    for (let i = 0; i < total; i++) {
+      if (this.owners[i] === countryId) {
+        queue.push(i);
+        seen[i] = 1;
       }
     }
-    this.autoFillInternalCavities(countryId);
+    const pts = [];
+    let head = 0;
+    while (head < queue.length && pts.length < limit) {
+      const idx = queue[head++];
+      const x = idx % MAP_W;
+      const y = (idx / MAP_W) | 0;
+      const neighbors = [
+        x > 0 ? idx - 1 : -1,
+        x < MAP_W - 1 ? idx + 1 : -1,
+        y > 0 ? idx - MAP_W : -1,
+        y < MAP_H - 1 ? idx + MAP_W : -1,
+      ];
+      for (const n of neighbors) {
+        if (n < 0 || seen[n]) continue;
+        seen[n] = 1;
+        if (!this.worldData.isLand[n] || this.isWasteland[n] || this.owners[n] !== 0) continue;
+        this.owners[n] = countryId;
+        c.landCount++;
+        c.population += 3;
+        const nx = n % MAP_W;
+        const ny = (n / MAP_W) | 0;
+        this._expandCountryBound(countryId, nx, ny);
+        pts.push(nx, ny);
+        queue.push(n);
+        if (pts.length / 2 >= limit) break;
+      }
+    }
+
+    const conquered = pts.length / 2;
+    this._recalculateDerivedStats(c);
+    this.dirtyPixels = true;
+    this.dirtyRegions = true;
     this.saveState();
 
-    if (conqueredPts.length > 0) {
-      this.sync.broadcast({
-        type: 'CONQUER_BATCH',
-        countryId,
-        pts: conqueredPts,
-      });
+    // ntfy 4KB limitini aşmamak için parça parça gönder
+    if (this.sync) {
+      for (let i = 0; i < pts.length; i += 400) {
+        this.sync.broadcast({ type: "CONQUER_BATCH", countryId, pts: pts.slice(i, i + 400) });
+      }
     }
 
     this.onSound("pencil");
@@ -3378,7 +3417,7 @@ export class WorldSimulationEngine {
     this.wars = [];
     this.saveState();
     if (this.onTreatyUpdate) this.onTreatyUpdate();
-    if (broadcast) {
+    if (broadcast && this.sync) {
       this.sync.broadcast({ type: "ADMIN_RESET_TREATIES" });
       this.sync.sendChatMessage(` [BARIŞ İLANI] Admin tüm diplomatik savaşları ve anlaşmaları sıfırladı. Tüm devletler barışa kavuştu!`, true);
       this.onEvent(`[ADMIN] Tüm anlaşmalar ve savaşlar sıfırlandı!`);
@@ -3424,15 +3463,16 @@ export class WorldSimulationEngine {
     this.ships = this.ships.filter((s) => s.countryId !== countryId);
     if (this.myCountryId === countryId) {
       this.myCountryId = null;
-      try {
-        localStorage.removeItem("sf_my_country_id");
-      } catch {}
+      saveMyCountryId(null);
     }
     this.computeCountryBounds();
     this.dirtyRegions = false;
     this.dirtyPixels = true;
+    this.treaties = (this.treaties || []).filter((t) => t.fromId !== countryId && t.toId !== countryId);
+    this.saveState();
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
 
-    if (broadcast) {
+    if (broadcast && this.sync) {
       this.sync.broadcast({
         type: "ADMIN_DELETE_COUNTRY",
         countryId,
@@ -3444,32 +3484,40 @@ export class WorldSimulationEngine {
   adminClearChat(broadcast = true) {
     this.chatMessages = [];
     this.onChat([]);
-    if (broadcast) {
+    if (broadcast && this.sync) {
       this.sync.broadcast({ type: "ADMIN_CLEAR_CHAT" });
       this.onEvent("[ADMIN] Global Sohbet temizlendi!");
     }
   }
 
-  adminResetWorld(broadcast = true) {
+  adminResetWorld(broadcast = true, clearIdentity = true) {
     const total = MAP_W * MAP_H;
     for (let i = 0; i < total; i++) {
       this.owners[i] = this.worldData.isLand[i] ? 0 : -1;
     }
+    if (this.isWasteland) this.isWasteland.fill(0);
+    this.nuclearStrikes = [];
+    this.nuclearMissiles = [];
+    this.activeExplosions = [];
+    this._radiationClearedAt = Date.now();
+    this._persistNuclearStrikes();
+    this.treaties = [];
+    this.wars = [];
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
     this.countries = [];
     this.countryMap.clear();
     this.ships = [];
     this.chatMessages = [];
     this.undoStack = [];
     this.myCountryId = null;
-    try {
-      localStorage.removeItem("sf_my_country_id");
-    } catch {}
+    if (clearIdentity) saveMyCountryId(null);
     this.computeCountryBounds();
     this.dirtyRegions = false;
     this.dirtyPixels = true;
     this.onChat([]);
+    this.saveState();
 
-    if (broadcast) {
+    if (broadcast && this.sync) {
       this.sync.broadcast({ type: "ADMIN_RESET_WORLD" });
       this.onEvent("[ADMIN] Tüm Dünya Haritası sıfırlandı!");
     }

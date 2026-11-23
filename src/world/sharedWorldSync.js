@@ -230,11 +230,27 @@ export class SharedWorldSync {
     // 1. Find latest ADMIN_RESET_WORLD & ADMIN_CLEAR_CHAT index
     let lastResetIdx = -1;
     let lastChatClearIdx = -1;
+    let lastRadiationClearIdx = -1;
+    let lastTreatyResetIdx = -1;
     for (let i = 0; i < payloads.length; i++) {
       const p = payloads[i];
       if (p._msgId) this.seenMsgIds.add(p._msgId);
       if (p.type === 'ADMIN_RESET_WORLD') lastResetIdx = i;
       if (p.type === 'ADMIN_CLEAR_CHAT') lastChatClearIdx = i;
+      if (p.type === 'ADMIN_CLEAR_RADIATION') lastRadiationClearIdx = i;
+      if (p.type === 'ADMIN_RESET_TREATIES') lastTreatyResetIdx = i;
+    }
+
+    // Sunucudaki admin sıfırlamalarını yerel önbelleğe de uygula (yoksa eski veri geri geliyor)
+    if (lastResetIdx >= 0) {
+      this.engine.adminResetWorld(false, false);
+    }
+    if (lastRadiationClearIdx > lastResetIdx) {
+      const p = payloads[lastRadiationClearIdx];
+      this.engine.adminClearRadiation(false, p._sentAt || p._envTime || 0);
+    }
+    if (lastTreatyResetIdx > lastResetIdx) {
+      this.engine.adminResetTreaties(false);
     }
 
     const startIdx = lastResetIdx + 1;
@@ -265,7 +281,10 @@ export class SharedWorldSync {
       } else if (p.type === 'CONQUER_BATCH' || p.type === 'CONQUER_PIXEL' || p.type === 'UNDO_PIXEL') {
         pixelOps.push({ idx: i, data: p });
       } else if (p.type === 'NUCLEAR_STRIKE' && p.strike) {
-        nuclearStrikes.push(p.strike);
+        // Radyasyon temizlendiyse öncesindeki nükleer saldırıları tekrar uygulama
+        if (i > lastRadiationClearIdx) nuclearStrikes.push(p.strike);
+      } else if (p.type === 'ADMIN_BREAK_COUNTRY_TREATIES' && p.countryId) {
+        if (i > lastTreatyResetIdx) treatyOps.push(p);
       } else if (
         p.type === 'TREATY_PROPOSAL' ||
         p.type === 'TREATY_ACCEPT' ||
@@ -277,7 +296,7 @@ export class SharedWorldSync {
         p.type === 'TREATY_TERMINATION_ACCEPT' ||
         p.type === 'TREATY_TERMINATION_REJECT'
       ) {
-        treatyOps.push(p);
+        if (i > lastTreatyResetIdx) treatyOps.push(p);
       }
     }
 
@@ -380,6 +399,17 @@ export class SharedWorldSync {
         this.engine.handleRemoteTreatyTerminationAccept(p.treatyId);
       } else if (p.type === 'TREATY_TERMINATION_REJECT' && p.treatyId) {
         this.engine.handleRemoteTreatyTerminationReject(p.treatyId);
+      } else if (p.type === 'ADMIN_BREAK_COUNTRY_TREATIES' && p.countryId) {
+        this.engine.adminBreakCountryTreaties(p.countryId, false);
+      }
+    }
+
+    // Admin tarafından silinen devletleri yerel önbellekten de kaldır
+    for (const [cid, delIdx] of deletedCountries.entries()) {
+      const newIdx = newCountries.get(cid)?.idx ?? -1;
+      const snapIdx = latestSnapshot.get(cid)?.idx ?? -1;
+      if (delIdx > newIdx && delIdx > snapIdx && this.engine.countryMap.has(cid)) {
+        this.engine.adminDeleteCountry(cid, false);
       }
     }
 
@@ -722,7 +752,10 @@ export class SharedWorldSync {
       this.engine.adminClearChat(false);
       this.onRemoteUpdate();
     } else if (data.type === 'ADMIN_CLEAR_RADIATION') {
-      this.engine.adminClearRadiation(false);
+      this.engine.adminClearRadiation(false, data._sentAt || data._envTime || 0);
+      this.onRemoteUpdate();
+    } else if (data.type === 'ADMIN_BREAK_COUNTRY_TREATIES' && data.countryId) {
+      this.engine.adminBreakCountryTreaties(data.countryId, false);
       this.onRemoteUpdate();
     } else if (data.type === 'ADMIN_RESET_TREATIES') {
       this.engine.adminResetTreaties(false);
