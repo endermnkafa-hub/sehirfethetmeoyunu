@@ -309,6 +309,11 @@ export class SharedWorldSync {
       }
     }
 
+    // Replay Nuclear Strikes (radioactive wastelands without re-triggering explosion animations)
+    for (const strike of nuclearStrikes) {
+      this.engine.handleRemoteNuclearStrike(strike, false, true);
+    }
+
     // 2. Apply active countries (skip any deleted AFTER their last creation/sync)
     for (const [cid, entry] of newCountries.entries()) {
       const delIdx = deletedCountries.get(cid);
@@ -411,11 +416,6 @@ export class SharedWorldSync {
       if (delIdx > newIdx && delIdx > snapIdx && this.engine.countryMap.has(cid)) {
         this.engine.adminDeleteCountry(cid, false);
       }
-    }
-
-    // Replay Nuclear Strikes (radioactive wastelands without re-triggering explosion animations)
-    for (const strike of nuclearStrikes) {
-      this.engine.handleRemoteNuclearStrike(strike, false, true);
     }
 
     // 6. Compute exact country bounds ONCE for the entire map
@@ -579,6 +579,12 @@ export class SharedWorldSync {
       setTimeout(() => {
         this.publishMyCountrySnapshot();
       }, 500);
+      return;
+    }
+
+    // Critical events like Nuclear Strike and Admin World Reset must never be delayed behind rate-limited conquest queues!
+    if (data.type === 'NUCLEAR_STRIKE' || data.type === 'ADMIN_RESET_WORLD' || data.type === 'ADMIN_CLEAR_RADIATION' || data.type === 'ADMIN_DELETE_COUNTRY') {
+      this._sendToCloudImmediately(packet);
       return;
     }
 

@@ -960,29 +960,32 @@ export class WorldSimulationEngine {
     // Save wasteland and strikes locally so refresh never wipes nuclear fallout
     this._persistNuclearStrikes();
 
+    // Broadcast nuclear strike immediately to cloud and all tabs
+    if (this.sync) {
+      this.sync.broadcast({
+        type: "NUCLEAR_STRIKE",
+        strike,
+      });
+
+      this.sync.broadcast({
+        type: "SYNC_COUNTRY_STATS",
+        countryId: c.id,
+        stats: {
+          gold: Math.round(c.gold),
+          population: Math.round(c.population),
+          troops: Number(c.troops.toFixed(1)),
+          upgrades: c.upgrades,
+          inventory: c.inventory,
+        },
+      });
+    }
+
     // Immediately publish our country's updated inventory & territory
     if (this.sync && typeof this.sync.publishMyCountrySnapshot === "function") {
       setTimeout(() => {
         this.sync.publishMyCountrySnapshot();
       }, 500);
     }
-
-    this.sync.broadcast({
-      type: "NUCLEAR_STRIKE",
-      strike,
-    });
-
-    this.sync.broadcast({
-      type: "SYNC_COUNTRY_STATS",
-      countryId: c.id,
-      stats: {
-        gold: Math.round(c.gold),
-        population: Math.round(c.population),
-        troops: Number(c.troops.toFixed(1)),
-        upgrades: c.upgrades,
-        inventory: c.inventory,
-      },
-    });
 
     return { ok: true, strike, remainingNukes: c.inventory.nukes };
   }
