@@ -201,6 +201,27 @@ export function LogoPan({ size = 18, className = '' }) {
   );
 }
 
+export function LogoNuclear({ size = 18, className = '' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" className={className}>
+      <defs>
+        <radialGradient id="nukeGrad" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#FEF08A" />
+          <stop offset="70%" stopColor="#F59E0B" />
+          <stop offset="100%" stopColor="#DC2626" />
+        </radialGradient>
+      </defs>
+      <circle cx="16" cy="16" r="14" fill="#18181B" stroke="#F59E0B" strokeWidth="1.8" />
+      {/* 3 Radioactive Trefoil blades */}
+      <path d="M16 16 L12 6 A11 11 0 0 1 20 6 Z" fill="url(#nukeGrad)" />
+      <path d="M16 16 L6 22 A11 11 0 0 1 8 13 Z" fill="url(#nukeGrad)" />
+      <path d="M16 16 L26 22 A11 11 0 0 0 24 13 Z" fill="url(#nukeGrad)" />
+      {/* Center core */}
+      <circle cx="16" cy="16" r="3.2" fill="#18181B" stroke="#FEF08A" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
 export function LogoPalette({ size = 18, className = '' }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="none" className={className}>

@@ -21,6 +21,7 @@ import {
   LogoPan,
   LogoPalette,
   LogoCitadel,
+  LogoNuclear,
   UpgradeLogo,
 } from "./GameLogos";
 import { soundManager } from "../../utils/audio";
@@ -148,6 +149,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
   // Nuclear Strike Weapon State
   const [isTargetingNuke, setIsTargetingNuke] = useState(false);
   const [nukeConfirmModal, setNukeConfirmModal] = useState(null); // { x, y }
+
+  // Admin Custom Value State
+  const [adminCustomTroops, setAdminCustomTroops] = useState(100);
+  const [adminCustomGold, setAdminCustomGold] = useState(5000);
+  const [adminCustomNukes, setAdminCustomNukes] = useState(1);
+  const [adminCustomLand, setAdminCustomLand] = useState(25);
+  const [adminGlobalGold, setAdminGlobalGold] = useState(10000);
+  const [adminGlobalTroops, setAdminGlobalTroops] = useState(100);
+  const [adminGlobalNukes, setAdminGlobalNukes] = useState(1);
+  const [adminTargetCountryId, setAdminTargetCountryId] = useState("");
+  const [adminTargetTroops, setAdminTargetTroops] = useState(100);
+  const [adminTargetGold, setAdminTargetGold] = useState(5000);
+  const [adminTargetNukes, setAdminTargetNukes] = useState(1);
+  const [adminTargetLand, setAdminTargetLand] = useState(20);
 
   // Real-time HUD state
   const [hud, setHud] = useState({
@@ -2159,159 +2174,353 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </button>
             </div>
 
-            <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
-              {/* Self Boost Controls */}
+            <div className="space-y-3.5 max-h-[72vh] overflow-y-auto pr-1">
+              {/* 1. SELF BOOST CONTROLS WITH CUSTOM NUMBER INPUTS */}
               {myCountry && (
-                <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-2">
+                <div className="p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-3">
                   <div className="text-xs font-black text-amber-300 flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
-                      <Zap size={14} />
-                      <span>Kendi Devletini Güçlendir ({myCountry.name})</span>
+                      <Zap size={15} />
+                      <span>Kendi Devletini Yönet & Güçlendir ({myCountry.name})</span>
                     </div>
-                    <span className="text-[10px] text-amber-400 font-bold">Depo Nükleer: {myCountry.inventory?.nukes || 0}</span>
+                    <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30">
+                      Depo: {myCountry.inventory?.nukes || 0} Nükleer
+                    </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+
+                  {/* Asker & Altın Ekleme (Elle Sayı Gir) */}
+                  <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-700/60 space-y-2">
+                    <div className="text-[11px] font-bold text-slate-300 flex items-center justify-between">
+                      <span>Asker & Altın Takviyesi</span>
+                      <span className="text-[10px] text-slate-400">Mevcut: {Math.floor(myCountry.troops)} Asker / {Math.floor(myCountry.gold).toLocaleString()} Altın</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          value={adminCustomTroops}
+                          onChange={(e) => setAdminCustomTroops(parseInt(e.target.value) || 0)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-white font-bold text-xs"
+                          placeholder="Asker sayısı"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveResources(myCountry.id, adminCustomTroops, 0)}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shrink-0"
+                        >
+                          +Asker
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          value={adminCustomGold}
+                          onChange={(e) => setAdminCustomGold(parseInt(e.target.value) || 0)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-white font-bold text-xs"
+                          placeholder="Altın sayısı"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveResources(myCountry.id, 0, adminCustomGold)}
+                          className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shrink-0"
+                        >
+                          +Altın
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Nükleer & Toprak Ekleme (Elle Sayı Gir) */}
+                  <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-700/60 space-y-2">
+                    <div className="text-[11px] font-bold text-slate-300 flex items-center justify-between">
+                      <span>Nükleer Başlık & Toprak Genişletme</span>
+                      <span className="text-[10px] text-slate-400">Mevcut: {myCountry.landCount} Piksel</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          value={adminCustomNukes}
+                          onChange={(e) => setAdminCustomNukes(parseInt(e.target.value) || 0)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-white font-bold text-xs"
+                          placeholder="Nükleer adedi"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveNuclear(myCountry.id, adminCustomNukes)}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-xs shrink-0 flex items-center gap-1"
+                        >
+                          <LogoNuclear size={14} />
+                          <span>+Nükleer</span>
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          value={adminCustomLand}
+                          onChange={(e) => setAdminCustomLand(parseInt(e.target.value) || 0)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-white font-bold text-xs"
+                          placeholder="Toprak pikseli"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminAutoExpand(myCountry.id, adminCustomLand)}
+                          className="px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-black text-xs shrink-0"
+                        >
+                          +Toprak
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Hızlı Butonlar */}
+                  <div className="grid grid-cols-2 gap-2 pt-1">
                     <button
-                      onClick={() =>
-                        engineRef.current?.adminGiveResources(
-                          myCountry.id,
-                          100,
-                          5000,
-                        )
-                      }
-                      className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                      onClick={() => engineRef.current?.adminMaxUpgrades(myCountry.id)}
+                      className="py-2 px-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs transition shadow flex items-center justify-center gap-1.5"
                     >
-                      +100 Asker & +5K Altın
-                    </button>
-                    <button
-                      onClick={() =>
-                        engineRef.current?.adminGiveResources(
-                          myCountry.id,
-                          500,
-                          50000,
-                        )
-                      }
-                      className="py-2 px-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-[11px] transition shadow"
-                    >
-                      +500 Asker & +50K Altın
-                    </button>
-                    <button
-                      onClick={() =>
-                        engineRef.current?.adminGiveNuclear(myCountry.id, 1)
-                      }
-                      className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] transition shadow"
-                    >
-                      +1 Nükleer Başlık Ekle
-                    </button>
-                    <button
-                      onClick={() =>
-                        engineRef.current?.adminGiveNuclear(myCountry.id, 5)
-                      }
-                      className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] transition shadow"
-                    >
-                      +5 Nükleer Başlık Ekle
-                    </button>
-                    <button
-                      onClick={() =>
-                        engineRef.current?.adminAutoExpand(myCountry.id, 25)
-                      }
-                      className="py-2 px-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-black text-[11px] transition shadow"
-                    >
-                      +25 Toprak Genişlet
-                    </button>
-                    <button
-                      onClick={() =>
-                        engineRef.current?.adminMaxUpgrades(myCountry.id)
-                      }
-                      className="py-2 px-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-[11px] transition shadow"
-                    >
-                      Tüm Geliştirmeler Sv.25
+                      <LogoCitadel size={15} />
+                      <span>Tüm Geliştirmeleri 25 Yap</span>
                     </button>
                     <button
                       onClick={() => updateFlagInputRef.current?.click()}
-                      className="col-span-2 py-2 px-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] transition shadow flex items-center justify-center gap-1.5"
+                      className="py-2 px-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-black text-xs transition shadow flex items-center justify-center gap-1.5"
                     >
-                      <Upload size={13} />
+                      <Upload size={14} />
                       <span>Resim / Bayrak Değiştir</span>
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* Active Countries Moderation */}
-              <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-2">
-                <div className="text-xs font-black text-white">
-                  Haritadaki Devletleri Yönet ({hud.totalCountriesCount})
+              {/* 2. HARİTADAKİ DİĞER DEVLETLERİ YÖNETME (TÜM AYARLARI DÜZENLEME) */}
+              <div className="p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-3">
+                <div className="text-xs font-black text-white flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Globe size={15} className="text-indigo-400" />
+                    <span>Haritadaki Devletleri Yönet ({hud.totalCountriesCount})</span>
+                  </div>
                 </div>
-                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                  {(hud.allCountries || [])
-                    .slice()
-                    .sort((a, b) => b.landCount - a.landCount)
-                    .map((c) => (
-                      <div
-                        key={c.id}
-                        className="p-2 rounded-xl bg-slate-900/90 border border-slate-700/70 flex items-center justify-between gap-2"
-                      >
-                        <div className="min-w-0">
-                          <div className="text-xs font-black text-white truncate flex items-center gap-1.5">
-                            <span
-                              className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
-                              style={{ backgroundColor: c.color }}
-                            />
-                            <span>{c.name}</span>
-                          </div>
-                          <div className="text-[10px] text-slate-400">
-                            {c.landCount}px • {Math.floor(c.troops)} Asker • {Math.floor(c.gold).toLocaleString()} Altın
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            onClick={() =>
-                              engineRef.current?.adminGiveResources(c.id, 100, 10000)
-                            }
-                            className="px-2 py-1 rounded-lg bg-amber-500/80 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition"
-                            title="+100 Asker & +10K Altın Gönder"
-                          >
-                            +Yardım
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `"${c.name}" devletini haritadan tamamen silmek istiyor musun?`,
-                                )
-                              ) {
-                                engineRef.current?.adminDeleteCountry(c.id, true);
-                              }
-                            }}
-                            className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] flex items-center gap-1 transition"
-                          >
-                            <Trash2 size={12} />
-                            <span>Sil</span>
-                          </button>
-                        </div>
-                      </div>
+
+                {/* Hedef Devlet Seçimi */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                    İşlem Yapılacak Devleti Seç:
+                  </label>
+                  <select
+                    value={adminTargetCountryId}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setAdminTargetCountryId(val);
+                      const target = (hud.allCountries || []).find((c) => String(c.id) === String(val));
+                      if (target) {
+                        setAdminTargetTroops(Math.floor(target.troops));
+                        setAdminTargetGold(Math.floor(target.gold));
+                        setAdminTargetNukes(target.inventory?.nukes || 0);
+                      }
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold text-xs"
+                  >
+                    <option value="">-- Devlet Seçin --</option>
+                    {(hud.allCountries || []).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.landCount} px • {Math.floor(c.troops)} Asker • {Math.floor(c.gold).toLocaleString()} Altın • {c.inventory?.nukes || 0} Nükleer)
+                      </option>
                     ))}
-                  {(!hud.allCountries || hud.allCountries.length === 0) && (
-                    <div className="text-[11px] text-slate-500 text-center py-2">
-                      Aktif devlet yok.
-                    </div>
-                  )}
+                  </select>
                 </div>
+
+                {/* Seçili Devleti Yönetim Paneli */}
+                {adminTargetCountryId && (() => {
+                  const targetCountry = (hud.allCountries || []).find((c) => String(c.id) === String(adminTargetCountryId));
+                  if (!targetCountry) return null;
+
+                  return (
+                    <div className="p-3 rounded-xl bg-slate-900/90 border border-indigo-500/40 space-y-3 text-xs">
+                      <div className="flex items-center justify-between font-black text-white">
+                        <span className="flex items-center gap-1.5">
+                          <span className="w-3 h-3 rounded-full" style={{ backgroundColor: targetCountry.color }} />
+                          <span>{targetCountry.name}</span>
+                        </span>
+                        <span className="text-[11px] text-indigo-300">{targetCountry.landCount} Piksel</span>
+                      </div>
+
+                      {/* Asker Düzenleme */}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-300 font-bold shrink-0">Asker:</span>
+                        <input
+                          type="number"
+                          value={adminTargetTroops}
+                          onChange={(e) => setAdminTargetTroops(parseInt(e.target.value) || 0)}
+                          className="flex-1 px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-white font-bold text-xs"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveResources(targetCountry.id, adminTargetTroops, 0)}
+                          className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px]"
+                          title="Üzerine ekle"
+                        >
+                          +Ekle
+                        </button>
+                        <button
+                          onClick={() => engineRef.current?.adminSetResources(targetCountry.id, adminTargetTroops, null)}
+                          className="px-2 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-[11px]"
+                          title="Tam bu sayıya eşitle"
+                        >
+                          Ayarla
+                        </button>
+                      </div>
+
+                      {/* Altın Düzenleme */}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-300 font-bold shrink-0">Altın:</span>
+                        <input
+                          type="number"
+                          value={adminTargetGold}
+                          onChange={(e) => setAdminTargetGold(parseInt(e.target.value) || 0)}
+                          className="flex-1 px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-white font-bold text-xs"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveResources(targetCountry.id, 0, adminTargetGold)}
+                          className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px]"
+                          title="Altın gönder"
+                        >
+                          +Gönder
+                        </button>
+                        <button
+                          onClick={() => engineRef.current?.adminSetResources(targetCountry.id, null, adminTargetGold)}
+                          className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-[11px]"
+                          title="Tam bu miktara eşitle"
+                        >
+                          Ayarla
+                        </button>
+                      </div>
+
+                      {/* Nükleer Düzenleme */}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-300 font-bold shrink-0">Nükleer:</span>
+                        <input
+                          type="number"
+                          value={adminTargetNukes}
+                          onChange={(e) => setAdminTargetNukes(parseInt(e.target.value) || 0)}
+                          className="flex-1 px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-white font-bold text-xs"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveNuclear(targetCountry.id, adminTargetNukes)}
+                          className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px]"
+                          title="Nükleer ver"
+                        >
+                          +Ver
+                        </button>
+                        <button
+                          onClick={() => engineRef.current?.adminSetNuclear(targetCountry.id, adminTargetNukes)}
+                          className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-600 text-white font-bold text-[11px]"
+                          title="Tam bu sayıya eşitle"
+                        >
+                          Ayarla
+                        </button>
+                      </div>
+
+                      {/* Toprak Büyütme */}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-300 font-bold shrink-0">Toprak:</span>
+                        <input
+                          type="number"
+                          value={adminTargetLand}
+                          onChange={(e) => setAdminTargetLand(parseInt(e.target.value) || 0)}
+                          className="flex-1 px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-white font-bold text-xs"
+                          placeholder="Piksel"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminAutoExpand(targetCountry.id, adminTargetLand)}
+                          className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[11px]"
+                        >
+                          Toprağını Büyüt
+                        </button>
+                      </div>
+
+                      {/* Aksiyonlar: Anlaşmaları Boz & Devleti Sil */}
+                      <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800">
+                        <button
+                          onClick={() => engineRef.current?.adminBreakCountryTreaties(targetCountry.id)}
+                          className="py-1.5 px-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-black text-[11px] transition"
+                        >
+                          Anlaşmalarını Boz
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`"${targetCountry.name}" devletini haritadan tamamen silmek istiyor musun?`)) {
+                              engineRef.current?.adminDeleteCountry(targetCountry.id, true);
+                              setAdminTargetCountryId("");
+                            }
+                          }}
+                          className="py-1.5 px-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] flex items-center justify-center gap-1 transition"
+                        >
+                          <Trash2 size={12} />
+                          <span>Devleti Sil</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
-              {/* Server Maintenance & Global Events */}
-              <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/40 space-y-2">
-                <div className="text-xs font-black text-rose-300">
-                  Global Sunucu Olayları & Bakım
+              {/* 3. GLOBAL SUNUCU AYARLARI & TOPLU İŞLEMLER */}
+              <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/40 space-y-3">
+                <div className="text-xs font-black text-rose-300 flex items-center gap-1.5">
+                  <ShieldAlert size={15} />
+                  <span>Global Sunucu Yönetimi & Toplu Dağıtımlar</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+
+                {/* Herkese Altın Dağıt */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={adminGlobalGold}
+                    onChange={(e) => setAdminGlobalGold(parseInt(e.target.value) || 0)}
+                    className="flex-1 px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-white font-bold text-xs"
+                    placeholder="Altın miktarı"
+                  />
                   <button
-                    onClick={() => engineRef.current?.adminGiveAllPlayersGold(10000)}
-                    className="py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition shadow"
+                    onClick={() => engineRef.current?.adminGiveAllPlayersGold(adminGlobalGold)}
+                    className="py-1.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shrink-0 transition"
                   >
-                    Herkese +10K Altın Dağıt
+                    Herkese Altın Ver
                   </button>
+                </div>
+
+                {/* Herkese Asker Dağıt */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={adminGlobalTroops}
+                    onChange={(e) => setAdminGlobalTroops(parseInt(e.target.value) || 0)}
+                    className="flex-1 px-3 py-1.5 rounded-xl bg-slate-900 border border-emerald-500/40 text-white font-bold text-xs"
+                    placeholder="Asker miktarı"
+                  />
+                  <button
+                    onClick={() => engineRef.current?.adminGiveAllPlayersTroops(adminGlobalTroops)}
+                    className="py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shrink-0 transition"
+                  >
+                    Herkese Asker Gönder
+                  </button>
+                </div>
+
+                {/* Herkese Nükleer Dağıt */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={adminGlobalNukes}
+                    onChange={(e) => setAdminGlobalNukes(parseInt(e.target.value) || 0)}
+                    className="flex-1 px-3 py-1.5 rounded-xl bg-slate-900 border border-rose-500/40 text-white font-bold text-xs"
+                    placeholder="Nükleer adedi"
+                  />
+                  <button
+                    onClick={() => engineRef.current?.adminGiveAllPlayersNukes(adminGlobalNukes)}
+                    className="py-1.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs shrink-0 transition flex items-center gap-1"
+                  >
+                    <LogoNuclear size={14} />
+                    <span>Millete Nükleer Ver</span>
+                  </button>
+                </div>
+
+                {/* Radyasyon, Sohbet & Wipe Butonları */}
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-rose-900/40">
                   <button
                     onClick={() => engineRef.current?.adminClearRadiation(true)}
                     className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] transition shadow"
@@ -2330,11 +2539,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   </button>
                   <button
                     onClick={() => {
-                      if (
-                        window.confirm(
-                          "Global sohbetteki tüm mesajları herkesten silmek istiyor musun?",
-                        )
-                      ) {
+                      if (window.confirm("Global sohbetteki tüm mesajları herkesten silmek istiyor musun?")) {
                         engineRef.current?.adminClearChat(true);
                       }
                     }}
@@ -2344,16 +2549,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   </button>
                   <button
                     onClick={() => {
-                      if (
-                        window.confirm(
-                          "DİKKAT! Tüm devletler, topraklar ve sohbet herkesten sıfırlanacak. Onaylıyor musun?",
-                        )
-                      ) {
+                      if (window.confirm("DİKKAT! Tüm devletler, topraklar ve sohbet herkesten sıfırlanacak. Onaylıyor musun?")) {
                         engineRef.current?.adminResetWorld(true);
                         setShowAdminModal(false);
                       }
                     }}
-                    className="col-span-2 py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow"
+                    className="py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow"
                   >
                     Tüm Haritayı Sıfırla (Wipe)
                   </button>
@@ -2925,8 +3126,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
                         <div>
                           <label className="block text-[11px] font-bold text-amber-300 uppercase tracking-wider mb-1">
-                            Dakikalık Altın Miktarı ({tributeAmount} Altın / dk)
+                            Dakikalık Altın Miktarı (Altın / dk)
                           </label>
+                          <div className="flex items-center gap-2 mb-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="1000000"
+                              value={tributeAmount}
+                              onChange={(e) => setTributeAmount(Math.max(1, parseInt(e.target.value) || 0))}
+                              className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-amber-500/50 text-white font-black text-xs focus:outline-none focus:border-amber-400"
+                              placeholder="Örn: 250"
+                            />
+                            <span className="text-xs font-black text-amber-400 shrink-0">Altın / dk</span>
+                          </div>
                           <div className="grid grid-cols-4 gap-1.5">
                             {[50, 100, 250, 500].map((amt) => (
                               <button
@@ -2952,8 +3165,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-3">
                         <div>
                           <label className="block text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
-                            Satın Alınacak Toprak Miktarı ({landPixelCount} Piksel)
+                            Satın Alınacak Toprak Miktarı (Piksel Sayısı)
                           </label>
+                          <div className="flex items-center gap-2 mb-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="5000"
+                              value={landPixelCount}
+                              onChange={(e) => setLandPixelCount(Math.max(1, parseInt(e.target.value) || 0))}
+                              className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-emerald-500/50 text-white font-black text-xs focus:outline-none focus:border-emerald-400"
+                              placeholder="Örn: 50"
+                            />
+                            <span className="text-xs font-black text-emerald-400 shrink-0">Piksel (px)</span>
+                          </div>
                           <div className="grid grid-cols-4 gap-1.5">
                             {[10, 25, 50, 100].map((pxCount) => (
                               <button
@@ -2974,8 +3199,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
                         <div>
                           <label className="block text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
-                            Piksel Başına Teklif ({landPricePerPixel} Altın / piksel)
+                            Piksel Başına Teklif (Altın / Piksel)
                           </label>
+                          <div className="flex items-center gap-2 mb-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="100000"
+                              value={landPricePerPixel}
+                              onChange={(e) => setLandPricePerPixel(Math.max(1, parseInt(e.target.value) || 0))}
+                              className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-emerald-500/50 text-white font-black text-xs focus:outline-none focus:border-emerald-400"
+                              placeholder="Örn: 100"
+                            />
+                            <span className="text-xs font-black text-amber-400 shrink-0">Altın / px</span>
+                          </div>
                           <div className="grid grid-cols-4 gap-1.5">
                             {[25, 50, 100, 250].map((price) => (
                               <button
@@ -3007,8 +3244,20 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     {treatyType !== "LAND_PURCHASE" && (
                       <div>
                         <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
-                          Anlaşma İhlal / Fesih Cezası ({penaltyAmount} Altın)
+                          Anlaşma İhlal / Fesih Cezası
                         </label>
+                        <div className="flex items-center gap-2 mb-2">
+                          <input
+                            type="number"
+                            min="0"
+                            max="5000000"
+                            value={penaltyAmount}
+                            onChange={(e) => setPenaltyAmount(Math.max(0, parseInt(e.target.value) || 0))}
+                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-rose-500/50 text-white font-black text-xs focus:outline-none focus:border-rose-400"
+                            placeholder="Örn: 5000"
+                          />
+                          <span className="text-xs font-black text-rose-400 shrink-0">Altın Tazminat</span>
+                        </div>
                         <div className="grid grid-cols-4 gap-1.5">
                           {[1000, 2500, 5000, 10000].map((amt) => (
                             <button
@@ -3113,7 +3362,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
       {/* NUCLEAR TARGETING ACTIVE BANNER */}
       {isTargetingNuke && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 bg-rose-950/95 border-2 border-rose-500 text-rose-100 px-4 py-2 rounded-2xl shadow-2xl text-xs font-black flex items-center gap-3 animate-bounce">
-          <ShieldAlert size={16} className="text-rose-400" />
+          <LogoNuclear size={20} className="text-rose-400" />
           <span>HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!</span>
           <button
             onClick={() => setIsTargetingNuke(false)}
@@ -3129,7 +3378,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
         <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none">
           <div className="w-full max-w-sm bg-slate-900 border-2 border-rose-600 rounded-3xl p-5 shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95">
             <div className="w-16 h-16 rounded-2xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center mx-auto text-xs font-black shadow-lg shadow-rose-600/30">
-              <ShieldAlert size={32} />
+              <LogoNuclear size={36} />
             </div>
 
             <div>
@@ -3150,7 +3399,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 <span>Depodan 1 Adet Taktik Nükleer</span>
               </div>
               <p className="text-[11px] text-rose-200">
-                22 piksel yarıçapındaki tüm topraklar ve ordular yok edilecek. Bölge kalıcı olarak radyoaktif, yaşanamaz ve fethedilemez alana dönüşecektir!
+                22 piksel yarıçapındaki tüm topraklar ve ordular yok edilecek. Bölge 1 gün boyunca radyoaktif ve fethedilemez çorak alana dönüşecektir!
               </p>
             </div>
 
@@ -3308,7 +3557,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 rounded-xl bg-rose-600/20 border border-rose-500/50 text-rose-400 flex items-center justify-center text-xs font-black">
-                          <ShieldAlert size={18} />
+                          <LogoNuclear size={20} />
                         </div>
                         <div>
                           <div className="text-xs font-black text-rose-300">
@@ -3325,7 +3574,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     </div>
 
                     <p className="text-[11px] text-slate-300 leading-relaxed">
-                      Satın alındığında <strong className="text-amber-400">envanterinizde depolanır</strong>. Dilediğiniz zaman "Sahip Oldukların" sekmesine gelip haritadaki herhangi bir noktaya fırlatabilirsiniz. Vurulan bölge tamamen yok edilir ve kalıcı radyasyon alanına dönüşür.
+                      Satın alındığında <strong className="text-amber-400">envanterinizde depolanır</strong>. Dilediğiniz zaman "Sahip Oldukların" sekmesine gelip haritadaki herhangi bir noktaya fırlatabilirsiniz. Vurulan bölge tamamen yok edilir ve 1 gün boyunca radyasyon alanına dönüşür.
                     </p>
 
                     <button
@@ -3338,7 +3587,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
                       }`}
                     >
-                      <ShieldAlert size={15} />
+                      <LogoNuclear size={16} />
                       <span>Satın Al ve Depola (-65.000 Altın)</span>
                     </button>
                   </div>
@@ -3351,7 +3600,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5">
                         <div className="w-10 h-10 rounded-2xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center text-xs font-black shadow">
-                          <ShieldAlert size={20} />
+                          <LogoNuclear size={24} />
                         </div>
                         <div>
                           <div className="text-xs font-black text-white">
@@ -3381,7 +3630,6 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       onClick={() => {
                         setShowMarket(false);
                         setIsTargetingNuke(true);
-                        showToast("HEDEF SEÇİMİ: Haritada nükleer başlığı vurmak istediğin noktaya dokun!");
                       }}
                       className={`w-full py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition active:scale-95 ${
                         myCountry.inventory?.nukes > 0

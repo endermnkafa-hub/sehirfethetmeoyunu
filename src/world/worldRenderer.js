@@ -427,7 +427,90 @@ export class WorldMapRenderer {
         }
       }
 
-      // 4.6. Real-time Nuclear Detonations & Supersonic Shockwave Animations
+      // 4.5. In-flight Parabolic Ballistic Nuclear Missiles with Dashed Trajectory
+      if (Array.isArray(engine.nuclearMissiles) && engine.nuclearMissiles.length > 0) {
+        const now = Date.now();
+        for (const m of engine.nuclearMissiles) {
+          const elapsed = now - m.startTime;
+          if (elapsed < 0) continue;
+          const progress = Math.min(1.0, elapsed / m.duration);
+
+          const fromSx = (m.fromX + 0.5) * scale;
+          const fromSy = (m.fromY + 0.5) * scale;
+          const toSx = (m.toX + 0.5) * scale;
+          const toSy = (m.toY + 0.5) * scale;
+
+          // Parabolic arc height
+          const dist = Math.hypot(toSx - fromSx, toSy - fromSy);
+          const arcHeight = Math.min(120, Math.max(30, dist * 0.35));
+
+          // Draw dashed trajectory path
+          ctx.save();
+          ctx.strokeStyle = "rgba(244, 63, 94, 0.75)";
+          ctx.lineWidth = Math.max(1.5, scale * 0.35);
+          ctx.setLineDash([6, 5]);
+          ctx.beginPath();
+          ctx.moveTo(fromSx, fromSy);
+          const cpX = (fromSx + toSx) / 2;
+          const cpY = Math.min(fromSy, toSy) - arcHeight;
+          ctx.quadraticCurveTo(cpX, cpY, toSx, toSy);
+          ctx.stroke();
+          ctx.restore();
+
+          // Calculate current missile coordinates along bezier curve
+          const t = progress;
+          const curX = (1 - t) * (1 - t) * fromSx + 2 * (1 - t) * t * cpX + t * t * toSx;
+          const curY = (1 - t) * (1 - t) * fromSy + 2 * (1 - t) * t * cpY + t * t * toSy;
+
+          // Tangent angle
+          const tangentX = 2 * (1 - t) * (cpX - fromSx) + 2 * t * (toSx - cpX);
+          const tangentY = 2 * (1 - t) * (cpY - fromSy) + 2 * t * (toSy - cpY);
+          const angle = Math.atan2(tangentY, tangentX);
+
+          // Draw missile warhead icon & jet flame
+          ctx.save();
+          ctx.translate(curX, curY);
+          ctx.rotate(angle);
+
+          // Jet flame trail
+          ctx.fillStyle = "rgba(251, 146, 60, 0.85)";
+          ctx.beginPath();
+          ctx.moveTo(-10, 0);
+          ctx.lineTo(-20, -3.5);
+          ctx.lineTo(-24, 0);
+          ctx.lineTo(-20, 3.5);
+          ctx.closePath();
+          ctx.fill();
+
+          // Missile rocket body
+          ctx.fillStyle = "#E2E8F0";
+          ctx.strokeStyle = "#DC2626";
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(10, 0);
+          ctx.lineTo(2, -4);
+          ctx.lineTo(-10, -4);
+          ctx.lineTo(-10, 4);
+          ctx.lineTo(2, 4);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // Red warhead tip
+          ctx.fillStyle = "#EF4444";
+          ctx.beginPath();
+          ctx.moveTo(10, 0);
+          ctx.lineTo(2, -4);
+          ctx.lineTo(2, 4);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.restore();
+        }
+        engine.nuclearMissiles = engine.nuclearMissiles.filter((m) => now - m.startTime < m.duration + 100);
+      }
+
+      // 4.6. Real-time Nuclear Detonations, Realistic Mushroom Cloud & Shockwave
       if (Array.isArray(engine.activeExplosions) && engine.activeExplosions.length > 0) {
         const now = Date.now();
         for (const exp of engine.activeExplosions) {
@@ -442,16 +525,53 @@ export class WorldMapRenderer {
           ctx.save();
           ctx.translate(sx, sy);
 
-          // 1. Initial atomic flash
-          if (progress < 0.22) {
-            const flashAlpha = 1.0 - progress / 0.22;
-            ctx.fillStyle = `rgba(255, 255, 240, ${flashAlpha * 0.9})`;
+          // 1. Initial blinding flash (0 to 15%)
+          if (progress < 0.15) {
+            const flashAlpha = 1.0 - progress / 0.15;
+            ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha * 0.95})`;
             ctx.beginPath();
-            ctx.arc(0, 0, currentR * 1.6, 0, Math.PI * 2);
+            ctx.arc(0, 0, currentR * 1.8, 0, Math.PI * 2);
             ctx.fill();
           }
 
-          // 2. Fiery nuclear blast core
+          // 2. Rising Mushroom Cloud Stem and Cap (0.10 to 0.90)
+          if (progress >= 0.08 && progress < 0.92) {
+            const cloudProgress = (progress - 0.08) / 0.84;
+            const cloudAlpha = Math.max(0, Math.sin(cloudProgress * Math.PI));
+            const stemHeight = currentR * 1.35 * Math.min(1.0, cloudProgress * 1.8);
+            const capRadius = currentR * 0.85;
+
+            // Mushroom stem
+            ctx.fillStyle = `rgba(180, 83, 9, ${cloudAlpha * 0.55})`;
+            ctx.beginPath();
+            ctx.moveTo(-currentR * 0.18, 0);
+            ctx.lineTo(-currentR * 0.28, -stemHeight * 0.85);
+            ctx.lineTo(currentR * 0.28, -stemHeight * 0.85);
+            ctx.lineTo(currentR * 0.18, 0);
+            ctx.closePath();
+            ctx.fill();
+
+            // Mushroom cap (multi-lobed cauliflower cloud head)
+            ctx.save();
+            ctx.translate(0, -stemHeight);
+            const capGrad = ctx.createRadialGradient(0, -capRadius * 0.2, capRadius * 0.1, 0, 0, capRadius);
+            capGrad.addColorStop(0, `rgba(254, 240, 138, ${cloudAlpha * 0.95})`);
+            capGrad.addColorStop(0.35, `rgba(249, 115, 22, ${cloudAlpha * 0.85})`);
+            capGrad.addColorStop(0.7, `rgba(220, 38, 38, ${cloudAlpha * 0.75})`);
+            capGrad.addColorStop(1, `rgba(67, 20, 7, ${cloudAlpha * 0.4})`);
+            ctx.fillStyle = capGrad;
+
+            // Cap lobes
+            ctx.beginPath();
+            ctx.arc(0, -capRadius * 0.3, capRadius * 0.65, 0, Math.PI * 2);
+            ctx.arc(-capRadius * 0.5, 0, capRadius * 0.55, 0, Math.PI * 2);
+            ctx.arc(capRadius * 0.5, 0, capRadius * 0.55, 0, Math.PI * 2);
+            ctx.arc(0, 0, capRadius * 0.7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // 3. Ground Fireball Core
           const fireAlpha = Math.max(0, 1.0 - progress);
           const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, currentR);
           grad.addColorStop(0, `rgba(255, 255, 255, ${fireAlpha})`);
@@ -463,19 +583,19 @@ export class WorldMapRenderer {
           ctx.arc(0, 0, currentR, 0, Math.PI * 2);
           ctx.fill();
 
-          // 3. Shockwave ring
+          // 4. Supersonic shockwave ring
           ctx.strokeStyle = `rgba(251, 191, 36, ${fireAlpha * 0.95})`;
           ctx.lineWidth = Math.max(2, 6 * (1 - progress));
           ctx.beginPath();
           ctx.arc(0, 0, currentR, 0, Math.PI * 2);
           ctx.stroke();
 
-          // 4. Toxic fallout smoke
-          if (progress > 0.3) {
-            const smokeAlpha = (1 - progress) * 0.5;
+          // 5. Toxic radioactive fallout aura
+          if (progress > 0.25) {
+            const smokeAlpha = (1 - progress) * 0.65;
             ctx.fillStyle = `rgba(34, 197, 94, ${smokeAlpha})`;
             ctx.beginPath();
-            ctx.arc(0, 0, currentR * 0.6, 0, Math.PI * 2);
+            ctx.arc(0, 0, currentR * 0.75, 0, Math.PI * 2);
             ctx.fill();
           }
 

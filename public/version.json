@@ -1,8 +1,8 @@
 {
-  "versionCode": 8,
-  "versionName": "1.7",
-  "minVersionCode": 8,
+  "versionCode": 9,
+  "versionName": "1.8",
+  "minVersionCode": 9,
   "apkUrl": "https://github.com/endermnkafa-hub/sehirfethetmeoyunu/releases/download/v1.0-latest/sehir-fethetme-oyunu.apk",
-  "releaseNotes": "Ekonomi dengelendi (250 Altın/asker, 65.000 Altın nükleer), admin panel erişimi güncellendi, devlet çalma kapatıldı.",
+  "releaseNotes": "Gelişmiş Admin Yönetim Paneli, elle girilebilir diplomasi/haraç/toprak satın alma, güdümlü nükleer füze animasyonu ve mantar bulutu.",
   "updatedAt": "2026-11-23"
 }
