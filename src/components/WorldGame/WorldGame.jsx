@@ -94,7 +94,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
   // Founding Modal State (when player clicks an unclaimed pixel)
   const [foundingModal, setFoundingModal] = useState(null); // { x, y }
   const [foundName, setFoundName] = useState("");
-  const [foundColor, setFoundColor] = useState("#E11D48");
+  const [foundColor, setFoundColor] = useState(() => {
+    const palette = [
+      "#E11D48", "#2563EB", "#10B981", "#F59E0B", "#8B5CF6",
+      "#EC4899", "#06B6D4", "#84CC16", "#F97316", "#14B8A6",
+    ];
+    return palette[Math.floor(Math.random() * palette.length)];
+  });
   const [foundFlagDataUrl, setFoundFlagDataUrl] = useState(null);
 
   // VPN Block Modal & Mandatory Version Update & Server Maintenance/Connection Block
@@ -106,6 +112,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   // Modes & UI
   const [toolMode, setToolMode] = useState("CONQUER"); // 'CONQUER' | 'PAN'
+  const toolModeRef = useRef("CONQUER");
+  useEffect(() => {
+    toolModeRef.current = toolMode;
+  }, [toolMode]);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [showRules, setShowRules] = useState(false);
   const [showUpgrades, setShowUpgrades] = useState(false);
@@ -162,6 +172,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
   // Nuclear Strike Weapon State
   const [isTargetingNuke, setIsTargetingNuke] = useState(false);
+  const isTargetingNukeRef = useRef(false);
+  useEffect(() => {
+    isTargetingNukeRef.current = isTargetingNuke;
+  }, [isTargetingNuke]);
   const [nukeConfirmModal, setNukeConfirmModal] = useState(null); // { x, y }
 
   // Admin Custom Value State
@@ -976,6 +990,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
           {
             hoveredMapPos: hoveredPosRef.current,
             timeSec: now / 1000,
+            toolMode: toolModeRef.current,
+            isTargetingNuke: isTargetingNukeRef.current,
           },
         );
       }
@@ -1364,20 +1380,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
           {myCountry && (
             <button
-              onClick={() => setShowUpgrades(true)}
-              className="px-2.5 sm:px-3 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-[11px] sm:text-xs flex items-center gap-1 shadow-xl transition"
-              title="Devlet Geliştirmeleri & Araştırma"
-            >
-              <LogoCitadel size={15} />
-              <span className="hidden xs:inline sm:inline">Geliştir</span>
-            </button>
-          )}
-
-          {myCountry && (
-            <button
-              onClick={() => setShowMarket(true)}
+              onClick={() => {
+                setMarketTab("STORE");
+                setShowMarket(true);
+              }}
               className="relative px-2.5 sm:px-3 h-9 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 text-white font-black text-[11px] sm:text-xs flex items-center gap-1.5 shadow-xl transition"
-              title="Market: Paralı Asker Kiralama & Nükleer Cephanelik"
+              title="Market, Geliştirmeler & Envanter"
             >
               <ShoppingBag size={15} />
               <span className="hidden xs:inline sm:inline">Market</span>
@@ -4279,30 +4287,42 @@ export default function WorldGame({ onReturnToModeSelect }) {
             </div>
 
             {/* Tabs */}
-            <div className="grid grid-cols-2 gap-2 mb-3 bg-slate-950/60 p-1 rounded-2xl border border-slate-800">
+            <div className="grid grid-cols-3 gap-1.5 mb-3 bg-slate-950/60 p-1 rounded-2xl border border-slate-800">
               <button
                 type="button"
                 onClick={() => setMarketTab("STORE")}
-                className={`py-2 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition ${
+                className={`py-2 rounded-xl text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition ${
                   marketTab === "STORE"
                     ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/30"
                     : "text-slate-400 hover:text-white"
                 }`}
               >
                 <ShoppingBag size={14} />
-                <span>Market (Satın Al)</span>
+                <span>Market</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMarketTab("UPGRADES")}
+                className={`py-2 rounded-xl text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition ${
+                  marketTab === "UPGRADES"
+                    ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <LogoCitadel size={14} />
+                <span>Geliştir</span>
               </button>
               <button
                 type="button"
                 onClick={() => setMarketTab("OWNED")}
-                className={`py-2 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition relative ${
+                className={`py-2 rounded-xl text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition relative ${
                   marketTab === "OWNED"
                     ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
                     : "text-slate-400 hover:text-white"
                 }`}
               >
                 <Package size={14} />
-                <span>Sahip Oldukların</span>
+                <span>Envanter</span>
                 {(myCountry.inventory?.nukes || 0) > 0 && (
                   <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black">
                     {myCountry.inventory.nukes}
@@ -4313,7 +4333,63 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
             {/* TAB CONTENT */}
             <div className="flex-1 overflow-y-auto space-y-3 pr-0.5 custom-scrollbar">
-              {marketTab === "STORE" ? (
+              {marketTab === "UPGRADES" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {UPGRADE_DEFINITIONS.map((u) => {
+                    const lvl = myCountry.upgrades?.[u.key] || 0;
+                    const isMax = lvl >= u.maxLevel;
+                    const cost = Math.round(u.baseCost * Math.pow(u.costScale, lvl));
+                    const canAfford = (myCountry.gold || 0) >= cost;
+                    return (
+                      <div
+                        key={u.key}
+                        className="p-3 rounded-2xl bg-slate-800/70 border border-slate-700/80 flex flex-col justify-between gap-2"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <div className="flex items-center gap-1.5 font-black text-xs text-white">
+                              <LogoCitadel size={14} className="text-amber-400 shrink-0" />
+                              <span>{u.name}</span>
+                            </div>
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-black">
+                              Sv.{lvl}/{u.maxLevel}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-relaxed">{u.desc}</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isMax || !canAfford}
+                          onClick={() => {
+                            const res = engineRef.current?.buyUpgrade(myCountry.id, u.key);
+                            if (!res?.ok) {
+                              showToast(res?.reason || "Geliştirme yapılamadı.");
+                            } else {
+                              showToast(`${u.name} Seviye ${lvl + 1} oldu!`);
+                            }
+                          }}
+                          className={`w-full py-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1.5 transition ${
+                            isMax
+                              ? "bg-slate-700 text-slate-400 cursor-not-allowed"
+                              : canAfford
+                                ? "bg-amber-500 hover:bg-amber-400 text-slate-950 active:scale-95"
+                                : "bg-slate-700/80 text-slate-400 cursor-not-allowed"
+                          }`}
+                        >
+                          {isMax ? (
+                            <span>MAKSİMUM</span>
+                          ) : (
+                            <>
+                              <LogoGold size={13} />
+                              <span>Yükselt ({cost.toLocaleString()} Altın)</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : marketTab === "STORE" ? (
                 <>
                   {/* MERCENARIES (PARALI ASKER) */}
                   <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 to-yellow-500/5 border border-amber-500/30 space-y-2.5">

@@ -157,8 +157,9 @@ export class WorldMapRenderer {
   }
 
   // Draw 60 FPS viewport frame (Zero Path2D clipping during pan/zoom!)
-  renderFrame(ctx, viewW, viewH, camera, engine) {
+  renderFrame(ctx, viewW, viewH, camera, engine, opts = {}) {
     if (!ctx || !engine) return null;
+    const { hoveredMapPos = null, toolMode = "CONQUER", isTargetingNuke = false } = opts || {};
 
     // Sanitize camera to prevent any NaN poisoning that causes black screen
     if (!camera || !Number.isFinite(camera.zoom) || camera.zoom <= 0) {
@@ -211,8 +212,9 @@ export class WorldMapRenderer {
       this.crestHitboxes = [];
 
       // 3. Crisp High-Resolution Country Crest / Emblem Banner in Territory
-      // Displays the player's full uncompressed, anti-aliased image / flag right at their capital or core territory!
-      for (const country of engine.countries) {
+      // Only show center flag preview in PAN mode (hidden in CONQUER and NUKE targeting modes so it never blocks clicks!)
+      const showCenterCrests = toolMode === "PAN" && !isTargetingNuke;
+      for (const country of (showCenterCrests ? engine.countries : [])) {
         if (country.landCount <= 0) continue;
         const b = bounds.get(country.id);
         if (!b || b.count === 0) continue;
@@ -421,11 +423,53 @@ export class WorldMapRenderer {
           ctx.lineWidth = 1.6;
           ctx.stroke();
 
-          // Icon glyph
-          ctx.font = `${Math.round(radius * 1.15)}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(glyph, 0, 1);
+          // Custom vector logos (zero emojis!)
+          const ir = radius * 0.56;
+          ctx.fillStyle = accent;
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = Math.max(1.2, radius * 0.14);
+          if (node.type === "GOLD") {
+            // Custom Gold Ingot / Diamond Emblem
+            ctx.beginPath();
+            ctx.moveTo(0, -ir);
+            ctx.lineTo(ir * 0.85, 0);
+            ctx.lineTo(0, ir);
+            ctx.lineTo(-ir * 0.85, 0);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = "#FEF3C7";
+            ctx.beginPath();
+            ctx.moveTo(0, -ir * 0.55);
+            ctx.lineTo(ir * 0.35, 0);
+            ctx.lineTo(0, ir * 0.55);
+            ctx.lineTo(-ir * 0.35, 0);
+            ctx.closePath();
+            ctx.fill();
+          } else if (node.type === "OIL") {
+            // Custom Oil Drop Emblem
+            ctx.beginPath();
+            ctx.moveTo(0, -ir);
+            ctx.bezierCurveTo(ir * 0.9, -ir * 0.1, ir * 0.85, ir, 0, ir);
+            ctx.bezierCurveTo(-ir * 0.85, ir, -ir * 0.9, -ir * 0.1, 0, -ir);
+            ctx.closePath();
+            ctx.fill();
+          } else {
+            // Custom Historic Capital Crown / Star Emblem
+            ctx.beginPath();
+            for (let k = 0; k < 5; k++) {
+              const outerAngle = -Math.PI / 2 + (k * 2 * Math.PI) / 5;
+              const innerAngle = outerAngle + Math.PI / 5;
+              const ox = Math.cos(outerAngle) * ir;
+              const oy = Math.sin(outerAngle) * ir;
+              const ix = Math.cos(innerAngle) * (ir * 0.45);
+              const iy = Math.sin(innerAngle) * (ir * 0.45);
+              if (k === 0) ctx.moveTo(ox, oy);
+              else ctx.lineTo(ox, oy);
+              ctx.lineTo(ix, iy);
+            }
+            ctx.closePath();
+            ctx.fill();
+          }
 
           // Show name label when zoomed in
           if (scale >= 3.2) {
@@ -447,6 +491,36 @@ export class WorldMapRenderer {
 
           ctx.restore();
         }
+      }
+
+      // 3.6. Tactical Nuclear Blast Radius Flashing Red Preview when targeting
+      if (isTargetingNuke && hoveredMapPos && Number.isFinite(hoveredMapPos.x) && Number.isFinite(hoveredMapPos.y)) {
+        const nx = (hoveredMapPos.x + 0.5) * scale;
+        const ny = (hoveredMapPos.y + 0.5) * scale;
+        const nukeRadiusPx = 6 * scale; // Matches 6-pixel blast radius in worldEngine
+        const flash = 0.5 + 0.5 * Math.sin(Date.now() / 130);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(nx, ny, nukeRadiusPx, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(239, 68, 68, ${0.18 + flash * 0.24})`;
+        ctx.fill();
+        ctx.lineWidth = Math.max(2, 2.5);
+        ctx.strokeStyle = `rgba(248, 113, 113, ${0.55 + flash * 0.45})`;
+        ctx.setLineDash([6, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Crosshair center
+        ctx.beginPath();
+        ctx.moveTo(nx - 8, ny);
+        ctx.lineTo(nx + 8, ny);
+        ctx.moveTo(nx, ny - 8);
+        ctx.lineTo(nx, ny + 8);
+        ctx.strokeStyle = "#FCA5A5";
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+        ctx.restore();
       }
 
       const myCountry = engine.getMyCountry();

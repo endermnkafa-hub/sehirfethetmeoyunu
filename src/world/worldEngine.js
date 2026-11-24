@@ -285,51 +285,6 @@ export class WorldSimulationEngine {
         localStorage.removeItem("sf_nuclear_strikes_v1");
       }
     } catch {}
-    return;
-  }
-
-  _legacyLoadNuclearStrikesUnused() {
-    try {
-      if (typeof localStorage !== "undefined") {
-        const raw = localStorage.getItem("sf_nuclear_strikes_v1");
-        if (raw) {
-          const list = JSON.parse(raw);
-          if (Array.isArray(list)) {
-            const now = Date.now();
-            let ownershipChanged = false;
-            for (const rawStrike of list) {
-              const strike = normalizeNuclearStrike(rawStrike, now);
-              if (strike && !this.nuclearStrikes.some((s) => s.id === strike.id)) {
-                this.nuclearStrikes.push(strike);
-                const { x, y, radius } = strike;
-                const r2 = radius * radius;
-                for (let dy = -radius; dy <= radius; dy++) {
-                  const cy = y + dy;
-                  if (cy < 0 || cy >= MAP_H) continue;
-                  const row = cy * MAP_W;
-                  for (let dx = -radius; dx <= radius; dx++) {
-                    const cx = x + dx;
-                    if (cx < 0 || cx >= MAP_W) continue;
-                    if (dx * dx + dy * dy > r2) continue;
-                    const idx = row + cx;
-                    if (this.worldData.isLand[idx]) {
-                      this.isWasteland[idx] = 1;
-                      if (this.owners[idx] > 0) {
-                        this.owners[idx] = 0;
-                        ownershipChanged = true;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            // The local snapshot may predate a strike; recompute territory counts
-            // from the resulting owner map instead of trusting stale saved counts.
-            if (ownershipChanged) this.computeCountryBounds();
-          }
-        }
-      }
-    } catch {}
   }
 
   restoreMyCountryFromServer(clientIp = null) {
@@ -428,9 +383,6 @@ export class WorldSimulationEngine {
     if (!c || c.id !== pkg.countryId) return false;
 
     const now = Date.now();
-    try {
-      localStorage.setItem(`sf_last_active_${c.id}`, String(now));
-    } catch {}
     c.lastActiveTime = now;
 
     if (pkg.troops > 0) {
@@ -445,7 +397,7 @@ export class WorldSimulationEngine {
 
     this.onSound("celebration");
     this.onEvent(
-      `🎁 Çevrimdışı Paket Toplandı (${pkg.timeStr}): +${pkg.troops} Asker, +${pkg.gold} Altın hazinene eklendi!`,
+      `Çevrimdışı Paket Toplandı (${pkg.timeStr}): +${pkg.troops} Asker, +${pkg.gold} Altın hazinene eklendi!`,
     );
 
     this.sync.broadcast({
@@ -463,6 +415,9 @@ export class WorldSimulationEngine {
         lastInputTime: this.lastInputTime || now,
       },
     });
+    if (this.sync && this.sync.publishMyCountrySnapshot) {
+      this.sync.publishMyCountrySnapshot();
+    }
 
     this.saveState();
     return true;
@@ -1314,8 +1269,13 @@ export class WorldSimulationEngine {
         color: c.color,
         upgrades: c.upgrades,
         inventory: c.inventory,
+        quests: c.quests,
+        _rewardGoldPool: Math.floor(c._rewardGoldPool || 0),
       },
     });
+    if (this.sync && this.sync.publishMyCountrySnapshot) {
+      this.sync.publishMyCountrySnapshot();
+    }
 
     this.saveState();
     return { rewardGold, rewardTroops: 0 };
@@ -1340,6 +1300,12 @@ export class WorldSimulationEngine {
       specialTroops: c.specialTroops,
     };
     if (countryId === this.myCountryId) {
+      const rewardDebt = c._rewardGoldPool || 0;
+      const effectiveSpend = Math.max(0, cost - rewardDebt);
+      c._rewardGoldPool = Math.max(0, rewardDebt - cost);
+      if (effectiveSpend > 0) {
+        this.progressQuest("GOLD", effectiveSpend);
+      }
       this._persistCountryInventory(c);
     }
 
@@ -1388,6 +1354,14 @@ export class WorldSimulationEngine {
       };
     }
     c.gold -= COST;
+    if (countryId === this.myCountryId) {
+      const rewardDebt = c._rewardGoldPool || 0;
+      const effectiveSpend = Math.max(0, COST - rewardDebt);
+      c._rewardGoldPool = Math.max(0, rewardDebt - COST);
+      if (effectiveSpend > 0) {
+        this.progressQuest("GOLD", effectiveSpend);
+      }
+    }
     c.inventory = c.inventory || { nukes: 0 };
     c.inventory.nukes = (c.inventory.nukes || 0) + 1;
     this._persistCountryInventory(c);
@@ -2837,18 +2811,14 @@ export class WorldSimulationEngine {
 
       // Never overwrite an existing custom flag with an empty/fallback flag!
       if (remoteCountry.flagDataUrl && remoteCountry.flagDataUrl !== country.flagDataUrl) {
-        // If this is my country and I have a local HD flag, protect it
-        const isMyCountry = country.id === this.myCountryId;
-        const localFlag = isMyCountry && typeof localStorage !== 'undefined' ? localStorage.getItem('sf_my_country_flag') : null;
-        if (!localFlag) {
-          country.flagDataUrl = remoteCountry.flagDataUrl;
-          loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl)
-            .then((res) => {
-              country.flagRgba = res.rgba;
-              this.dirtyPixels = true;
-            })
-            .catch(() => {});
-        }
+        // Server-authoritative flag sync (no browser localStorage flag override)
+        country.flagDataUrl = remoteCountry.flagDataUrl;
+        loadDataUrlToFlagBuffer(remoteCountry.flagDataUrl)
+          .then((res) => {
+            country.flagRgba = res.rgba;
+            this.dirtyPixels = true;
+          })
+          .catch(() => {});
       }
       if (remoteCountry.upgrades && typeof remoteCountry.upgrades === 'object' && !Array.isArray(remoteCountry.upgrades)) {
         const safeUpgrades = { ...DEFAULT_UPGRADES };
@@ -2869,7 +2839,29 @@ export class WorldSimulationEngine {
         country.population = Math.max(10, Math.min(1_000_000_000_000, remoteCountry.population));
       if (remoteCountry.inventory && typeof remoteCountry.inventory === 'object') {
         const nukes = remoteCountry.inventory.nukes;
-        country.inventory = { nukes: Number.isFinite(nukes) ? Math.max(0, Math.min(100000, Math.floor(nukes))) : country.inventory?.nukes || 0 };
+        const specialTroops = remoteCountry.inventory.specialTroops;
+        country.specialTroops = Number.isFinite(specialTroops)
+          ? Math.max(0, Math.floor(specialTroops))
+          : country.specialTroops || 0;
+        country.inventory = {
+          nukes: Number.isFinite(nukes) ? Math.max(0, Math.min(100000, Math.floor(nukes))) : country.inventory?.nukes || 0,
+          specialTroops: country.specialTroops,
+        };
+      }
+      if (["BALANCED", "MERCHANT", "WARLORD", "FORTRESS"].includes(remoteCountry.doctrine)) {
+        country.doctrine = remoteCountry.doctrine;
+      }
+      if (Number.isFinite(remoteCountry.dailyStreak)) {
+        country.dailyStreak = Math.max(country.dailyStreak || 0, Math.floor(remoteCountry.dailyStreak));
+      }
+      if (typeof remoteCountry.lastDailyClaimDay === "string" && remoteCountry.lastDailyClaimDay) {
+        country.lastDailyClaimDay = remoteCountry.lastDailyClaimDay;
+      }
+      if (Array.isArray(remoteCountry.quests) && remoteCountry.quests.length > 0) {
+        country.quests = remoteCountry.quests;
+      }
+      if (Number.isFinite(remoteCountry._rewardGoldPool)) {
+        country._rewardGoldPool = Math.max(0, Math.floor(remoteCountry._rewardGoldPool));
       }
     }
 
@@ -3066,6 +3058,12 @@ export class WorldSimulationEngine {
     }
     if (typeof stats.lastDailyClaimDay === "string" && stats.lastDailyClaimDay) {
       country.lastDailyClaimDay = stats.lastDailyClaimDay;
+    }
+    if (Array.isArray(stats.quests) && stats.quests.length > 0) {
+      country.quests = stats.quests;
+    }
+    if (Number.isFinite(stats._rewardGoldPool)) {
+      country._rewardGoldPool = Math.max(0, Math.floor(stats._rewardGoldPool));
     }
     this._recalculateDerivedStats(country);
     this.saveState();
