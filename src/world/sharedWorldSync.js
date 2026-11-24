@@ -181,6 +181,7 @@ export class SharedWorldSync {
               color: myC.color,
               upgrades: myC.upgrades,
               inventory: myC.inventory || { nukes: 0 },
+              popBoostUntil: myC.popBoostUntil || 0,
               lastActiveTime: now,
               lastHeartbeatTime: now,
               lastInputTime: this.engine.lastInputTime || myC.lastInputTime || now,
@@ -351,10 +352,10 @@ export class SharedWorldSync {
       if (snap && idx <= snap.idx) continue;
 
       if (data.type === 'CONQUER_PIXEL') {
-        this.engine.handleRemoteConquerPixel(cid, data.x, data.y, data.cost);
+        this.engine.handleRemoteConquerPixel(cid, data.x, data.y, data.cost, true, data.wasEnemy ?? null);
       } else if (data.type === 'CONQUER_BATCH' && Array.isArray(data.pts)) {
         for (let k = 0; k < data.pts.length; k += 2) {
-          this.engine.handleRemoteConquerPixel(cid, data.pts[k], data.pts[k + 1], 0);
+          this.engine.handleRemoteConquerPixel(cid, data.pts[k], data.pts[k + 1], 0, true, false);
         }
       } else if (data.type === 'UNDO_PIXEL') {
         this.engine.handleRemoteUndoPixel(cid, data.x, data.y, data.prevOwner, true);
@@ -480,6 +481,7 @@ export class SharedWorldSync {
       lastDailyClaimDay: myC.lastDailyClaimDay || '',
       quests: Array.isArray(myC.quests) ? myC.quests : null,
       _rewardGoldPool: Math.floor(myC._rewardGoldPool || 0),
+      popBoostUntil: myC.popBoostUntil || 0,
       lastActiveTime: myC.lastActiveTime || Date.now(),
       creatorIp: myC.creatorIp,
       deviceId: myC.deviceId,
@@ -693,11 +695,11 @@ export class SharedWorldSync {
       }
       this.onRemoteUpdate();
     } else if (data.type === 'CONQUER_PIXEL') {
-      this.engine.handleRemoteConquerPixel(data.countryId, data.x, data.y, data.cost);
+      this.engine.handleRemoteConquerPixel(data.countryId, data.x, data.y, data.cost, false, data.wasEnemy ?? null);
       this.onRemoteUpdate();
     } else if (data.type === 'CONQUER_BATCH' && Array.isArray(data.pts)) {
       for (let i = 0; i < data.pts.length; i += 2) {
-        this.engine.handleRemoteConquerPixel(data.countryId, data.pts[i], data.pts[i + 1], 0);
+        this.engine.handleRemoteConquerPixel(data.countryId, data.pts[i], data.pts[i + 1], 0, false, false);
       }
       this.engine.computeCountryBounds();
       this.engine.dirtyPixels = true;

@@ -10,6 +10,8 @@ import {
   WorldSimulationEngine,
   UPGRADE_DEFINITIONS,
   DOCTRINE_DEFINITIONS,
+  POP_SUPPORT_TIERS,
+  getPopSupportCost,
 } from "../../world/worldEngine";
 import { WorldMapRenderer } from "../../world/worldRenderer";
 import { checkNetworkAndSecurity } from "../../world/networkSecurity";
@@ -1120,6 +1122,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
     }
   }, [myCountry, showToast]);
 
+  const handleBuyPopulationSupport = useCallback((tierKey) => {
+    const eng = engineRef.current;
+    if (!eng || !myCountry) return;
+    const res = eng.buyPopulationSupport(myCountry.id, tierKey);
+    if (res.ok) {
+      showToast(`Halka Nüfus Desteği (${res.tier.label}) aktif! Nüfus hızı +%50 arttı. (-${res.cost.toLocaleString()} Altın)`);
+    } else {
+      showToast(res.reason || "Nüfus desteği satın alınamadı.");
+    }
+  }, [myCountry, showToast]);
+
   const handleBuyNuclear = useCallback(() => {
     const eng = engineRef.current;
     if (!eng || !myCountry) return;
@@ -2074,6 +2087,14 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     <div className="text-[10px] text-slate-400 font-bold">Halk Nüfusu</div>
                     <div className="text-sm sm:text-base font-black text-sky-300">
                       {Math.floor(myCountry.population || 15)} <span className="text-[10px] text-slate-400">/ {myCountry.maxPopulation}</span>
+                    </div>
+                    <div className="text-[10px] font-bold text-emerald-400 mt-0.5">
+                      +{(myCountry.popGrowthRate || 0).toFixed(2)} /sn
+                      {myCountry.popBoostUntil > Date.now() && (
+                        <span className="ml-1 px-1 py-0.2 rounded bg-sky-500/20 text-sky-300 text-[9px]">
+                          +%50 Destek
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
@@ -4649,6 +4670,65 @@ export default function WorldGame({ onReturnToModeSelect }) {
                             }`}
                           >
                             <span className="text-xs font-black">+{count} Asker</span>
+                            <span className="text-[10px] font-bold opacity-90">
+                              {cost.toLocaleString()} Altın
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* POPULATION SUPPORT BOOST (HALKA NÜFUS DESTEĞİ) */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-sky-500/10 to-cyan-500/5 border border-sky-500/35 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <LogoPopulation size={20} className="text-sky-400 shrink-0" />
+                        <div>
+                          <div className="text-xs font-black text-sky-300">
+                            Halka Nüfus Desteği Ver
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            Seçilen süre boyunca nüfus artış hızını +%50 artırır (Fiyat nüfusuna göre ölçeklenir)
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-black text-sky-300 bg-sky-500/20 px-2 py-0.5 rounded-full border border-sky-500/30 shrink-0">
+                        +%50 Hız
+                      </span>
+                    </div>
+
+                    {myCountry.popBoostUntil > Date.now() && (() => {
+                      const remSec = Math.max(0, Math.ceil((myCountry.popBoostUntil - Date.now()) / 1000));
+                      const h = Math.floor(remSec / 3600);
+                      const m = Math.floor((remSec % 3600) / 60);
+                      const s = remSec % 60;
+                      const remText = h > 0 ? `${h} sa ${m} dk` : m > 0 ? `${m} dk ${s} sn` : `${s} sn`;
+                      return (
+                        <div className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold text-emerald-300 flex items-center justify-between">
+                          <span>Aktif Nüfus Desteği (+%50)</span>
+                          <span className="font-black text-white">Kalan: {remText}</span>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="grid grid-cols-3 gap-2 pt-1">
+                      {POP_SUPPORT_TIERS.map((tier) => {
+                        const cost = getPopSupportCost(myCountry.population, tier.baseCost);
+                        const canAfford = myCountry.gold >= cost;
+                        return (
+                          <button
+                            key={tier.key}
+                            type="button"
+                            disabled={!canAfford}
+                            onClick={() => handleBuyPopulationSupport(tier.key)}
+                            className={`py-2 px-1.5 rounded-xl text-center flex flex-col items-center justify-center transition active:scale-95 ${
+                              canAfford
+                                ? "bg-sky-500 hover:bg-sky-400 text-slate-950 font-black shadow-md cursor-pointer"
+                                : "bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed"
+                            }`}
+                          >
+                            <span className="text-xs font-black">{tier.label}</span>
                             <span className="text-[10px] font-bold opacity-90">
                               {cost.toLocaleString()} Altın
                             </span>

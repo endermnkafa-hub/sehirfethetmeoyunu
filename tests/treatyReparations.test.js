@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorldSimulationEngine } from '../src/world/worldEngine.js';
+import {
+  WorldSimulationEngine,
+  POP_SUPPORT_TIERS,
+  getPopSupportCost,
+} from '../src/world/worldEngine.js';
 
 function createMockEngine() {
   const worldData = { isLand: new Uint8Array(1000 * 500) };
@@ -270,4 +274,102 @@ test('nuclear strike hitting treaty partner territory breaks treaty and pays pen
   assert.equal(c1.gold, 0, 'NuclearState pays 150 upfront gold');
   assert.equal(c2.gold, 160, 'VictimAlly receives 150 upfront gold (10 + 150)');
   assert.equal(alliance.remainingDebt, 450, 'Remaining debt must be 450');
+});
+
+test('population growth rate is >= 1/sec, faster for small & rapidly growing states, and +50% with Market support', () => {
+  const engine = createMockEngine();
+  const smallState = {
+    id: 1,
+    name: 'SmallState',
+    gold: 50000,
+    landCount: 15,
+    population: 1000,
+    upgrades: {},
+  };
+  const largeState = {
+    id: 2,
+    name: 'LargeState',
+    gold: 50000,
+    landCount: 500,
+    population: 9000,
+    upgrades: {},
+  };
+  engine.countries = [smallState, largeState];
+  engine.countryMap.set(1, smallState);
+  engine.countryMap.set(2, largeState);
+  engine.myCountryId = 1;
+
+  engine._recalculateDerivedStats(smallState);
+  engine._recalculateDerivedStats(largeState);
+
+  assert.equal(smallState.popGrowthRate >= 1.0, true, 'Base pop growth must be >= 1/sec');
+  assert.equal(largeState.popGrowthRate >= 1.0, true, 'Large state pop growth must be >= 1/sec');
+  assert.equal(smallState.popGrowthRate > largeState.popGrowthRate, true, 'Small state gets catch-up speed bonus');
+
+  // Rapid growth momentum bonus
+  const beforeMomentum = smallState.popGrowthRate;
+  engine._recordConquestMomentum(smallState, 10);
+  engine._recalculateDerivedStats(smallState);
+  assert.equal(smallState.popGrowthRate > beforeMomentum * 1.4, true, 'Rapidly conquering state grows faster');
+
+  // Market Population Support pricing scales with population (1k = 1x, 9k = 9x)
+  const tier5m = POP_SUPPORT_TIERS.find((t) => t.key === '5m');
+  const tier10m = POP_SUPPORT_TIERS.find((t) => t.key === '10m');
+  assert.equal(getPopSupportCost(1000, tier5m.baseCost), 1000);
+  assert.equal(getPopSupportCost(1000, tier10m.baseCost), 1900);
+  assert.equal(getPopSupportCost(9000, tier5m.baseCost), 9000);
+  assert.equal(getPopSupportCost(9000, tier10m.baseCost), 17100);
+
+  // Buying Population Support boosts popGrowthRate by +50%
+  const rateBeforeBoost = smallState.popGrowthRate;
+  const buyRes = engine.buyPopulationSupport(1, '5m');
+  assert.equal(buyRes.ok, true);
+  assert.equal(buyRes.cost, 1000);
+  assert.equal(smallState.popBoostActive, true);
+  assert.ok(Math.abs(smallState.popGrowthRate - rateBeforeBoost * 1.5) < 0.01, 'Support boost must give exact +50% speed');
+});
+
+test('remote neutral-pixel race does not trigger false attack alert or break treaty; genuine attack does', () => {
+  let attackAlerts = 0;
+  const worldData = { isLand: new Uint8Array(1000 * 500) };
+  const engine = new WorldSimulationEngine(worldData, {
+    onUnderAttack: () => {
+      attackAlerts++;
+    },
+  });
+  engine.sync = { broadcast: () => {} };
+
+  const me = { id: 1, name: 'Me', gold: 100, landCount: 10, troops: 20, upgrades: {} };
+  const friend = { id: 2, name: 'Friend', gold: 500, landCount: 10, troops: 20, upgrades: {} };
+  engine.countries = [me, friend];
+  engine.countryMap.set(1, me);
+  engine.countryMap.set(2, friend);
+  engine.myCountryId = 1;
+
+  const alliance = {
+    id: 'tr_friend_1',
+    fromId: 1,
+    toId: 2,
+    type: 'ALLIANCE',
+    penalty: 1000,
+    status: 'ACTIVE',
+  };
+  engine.treaties = [alliance];
+
+  const idx = 40 * 1000 + 40;
+  engine.worldData.isLand[idx] = 1;
+  engine.owners[idx] = 1; // I just conquered this pixel
+
+  // 1. Simultaneous neutral click race (wasEnemy === false) -> ignored, NO false alert, treaty stays ACTIVE!
+  engine.handleRemoteConquerPixel(2, 40, 40, 1, false, false);
+  assert.equal(engine.owners[idx], 1, 'Ally neutral-pixel race must not overwrite my pixel');
+  assert.equal(attackAlerts, 0, 'Must not trigger false attack notification');
+  assert.equal(alliance.status, 'ACTIVE', 'Treaty must remain active');
+
+  // 2. Genuine enemy attack (wasEnemy === true) -> breaks treaty, pays upfront gold + debt, triggers alert!
+  engine.handleRemoteConquerPixel(2, 40, 40, 1, false, true);
+  assert.equal(alliance.status, 'BROKEN', 'Genuine attack must break treaty');
+  assert.equal(me.gold, 600, 'Victim receives friend upfront 500 gold (100 + 500)');
+  assert.equal(alliance.remainingDebt, 500, 'Remaining 500 debt recorded');
+  assert.equal(attackAlerts, 1, 'Genuine attack triggers attack notification');
 });

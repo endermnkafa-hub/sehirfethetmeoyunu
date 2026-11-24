@@ -105,6 +105,23 @@ export const DEFAULT_UPGRADES = {
   siege: 0,
 };
 
+// Market: Halka Nüfus Desteği (+50% Nüfus Artış Hızı)
+// Fiyatlar 1.000 (1k) nüfuslu bir devlet için taban fiyatlardır; devletin mevcut nüfusuna göre doğru orantılı ölçeklenir.
+export const POP_SUPPORT_TIERS = [
+  { key: "5m", label: "5 Dakika", durationMs: 5 * 60 * 1000, baseCost: 1000 },
+  { key: "10m", label: "10 Dakika", durationMs: 10 * 60 * 1000, baseCost: 1900 },
+  { key: "15m", label: "15 Dakika", durationMs: 15 * 60 * 1000, baseCost: 2750 },
+  { key: "30m", label: "30 Dakika", durationMs: 30 * 60 * 1000, baseCost: 5200 },
+  { key: "1h", label: "1 Saat", durationMs: 60 * 60 * 1000, baseCost: 9800 },
+  { key: "1d", label: "1 Gün", durationMs: 24 * 60 * 60 * 1000, baseCost: 195000 },
+];
+
+export function getPopSupportCost(population, baseCost) {
+  const pop = Math.max(250, Number(population) || 0);
+  const scale = pop / 1000;
+  return Math.max(100, Math.round(baseCost * scale));
+}
+
 // State Doctrines (Multi-axis strategy: Economy vs Military vs Fortress)
 export const DOCTRINE_DEFINITIONS = [
   {
@@ -832,10 +849,29 @@ export class WorldSimulationEngine {
     c.maxPopulation = Math.floor(
       c.landCount * 15 * (1 + (up.housing || 0) * 0.07),
     );
+    const nowMs = Date.now();
+    // Küçük devletlere ekstra büyüme desteği
+    const smallCountryPopMult =
+      c.landCount < 40 ? 1.6 : c.landCount < 120 ? 1.3 : c.landCount < 300 ? 1.15 : 1.0;
+    // Hızlı büyüyen (son 60 saniyede fetih yapan) devletlere büyüme ivmesi (+%100'e kadar)
+    let rapidGrowthMult = 1.0;
+    if (Array.isArray(c._recentConquestTimes) && c._recentConquestTimes.length > 0) {
+      const cutoff = nowMs - 60000;
+      c._recentConquestTimes = c._recentConquestTimes.filter((t) => t >= cutoff);
+      rapidGrowthMult = 1 + Math.min(1.0, c._recentConquestTimes.length * 0.05);
+    }
+    // Market: Halka Nüfus Desteği (+%50 nüfus artış hızı)
+    const hasPopBoost = Boolean(c.popBoostUntil && c.popBoostUntil > nowMs);
+    c.popBoostActive = hasPopBoost;
+    const popSupportMult = hasPopBoost ? 1.5 : 1.0;
+
     c.popGrowthRate =
-      (0.12 + 0.03 * Math.log(c.landCount + 1)) *
+      (1.0 + 0.25 * Math.log(c.landCount + 1)) *
+      smallCountryPopMult *
+      rapidGrowthMult *
       (1 + (up.housing || 0) * 0.07) *
-      docPopMult;
+      docPopMult *
+      popSupportMult;
 
     const popBonus = 1 + Math.min(0.25, (c.population || 15) / 3500);
     c.goldIncome =
@@ -1047,8 +1083,10 @@ export class WorldSimulationEngine {
         x: ship.toX,
         y: ship.toY,
         cost: 0,
+        wasEnemy: prevOwner > 0,
       });
     }
+    this._recordConquestMomentum(country, 1);
 
     this.scheduleSave();
   }
@@ -1356,6 +1394,77 @@ export class WorldSimulationEngine {
     return { ok: true, count, cost };
   }
 
+  _recordConquestMomentum(country, count = 1) {
+    if (!country || count <= 0) return;
+    const now = Date.now();
+    if (!Array.isArray(country._recentConquestTimes)) {
+      country._recentConquestTimes = [];
+    }
+    const addCount = Math.min(25, Math.floor(count));
+    for (let i = 0; i < addCount; i++) {
+      country._recentConquestTimes.push(now);
+    }
+    const cutoff = now - 60000;
+    if (country._recentConquestTimes.length > 40) {
+      country._recentConquestTimes = country._recentConquestTimes
+        .filter((t) => t >= cutoff)
+        .slice(-30);
+    }
+  }
+
+  // Market: Halka Nüfus Desteği Ver (+%50 Nüfus Artış Hızı)
+  buyPopulationSupport(countryId, tierKey) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    const tier = POP_SUPPORT_TIERS.find((t) => t.key === tierKey);
+    if (!tier) return { ok: false, reason: "Geçersiz destek paketi." };
+
+    const cost = getPopSupportCost(c.population, tier.baseCost);
+    if ((c.gold || 0) < cost) {
+      return {
+        ok: false,
+        reason: `Yetersiz altın! ${tier.label} nüfus desteği için ${cost.toLocaleString()} Altın gereklidir.`,
+      };
+    }
+
+    c.gold -= cost;
+    const now = Date.now();
+    c.popBoostUntil = Math.max(now, c.popBoostUntil || 0) + tier.durationMs;
+
+    if (countryId === this.myCountryId) {
+      const rewardDebt = c._rewardGoldPool || 0;
+      const effectiveSpend = Math.max(0, cost - rewardDebt);
+      c._rewardGoldPool = Math.max(0, rewardDebt - cost);
+      if (effectiveSpend > 0) {
+        this.progressQuest("GOLD", effectiveSpend);
+      }
+    }
+
+    this._recalculateDerivedStats(c);
+    this.saveState();
+    this.onSound("celebration");
+    this.onEvent(
+      `👥 Halka Nüfus Desteği (${tier.label}) aktif edildi! Nüfus artış hızı +%50 arttı. (-${cost.toLocaleString()} Altın)`,
+    );
+
+    if (this.sync) {
+      this.sync.broadcast({
+        type: "SYNC_COUNTRY_STATS",
+        countryId: c.id,
+        stats: {
+          gold: Math.round(c.gold || 0),
+          population: Math.round(c.population || 0),
+          troops: Number((c.troops || 0).toFixed(1)),
+          upgrades: c.upgrades,
+          popBoostUntil: c.popBoostUntil,
+          _rewardGoldPool: Math.floor(c._rewardGoldPool || 0),
+        },
+      });
+    }
+
+    return { ok: true, tier, cost, popBoostUntil: c.popBoostUntil, country: c };
+  }
+
   // Detect the richest country in the world for prestige title [En Zengin]
   getRichestCountry() {
     let best = null;
@@ -1463,9 +1572,9 @@ export class WorldSimulationEngine {
         type: "SYNC_COUNTRY_STATS",
         countryId: c.id,
         stats: {
-          gold: Math.round(c.gold),
-          population: Math.round(c.population),
-          troops: Number(c.troops.toFixed(1)),
+          gold: Math.round(c.gold || 0),
+          population: Math.round(c.population || 0),
+          troops: Number((c.troops || 0).toFixed(1)),
           upgrades: c.upgrades,
           inventory: c.inventory,
         },
@@ -1773,6 +1882,7 @@ export class WorldSimulationEngine {
               countryId,
               x: px,
               y: py,
+              wasEnemy: false,
             });
           }
         }
@@ -2208,6 +2318,7 @@ export class WorldSimulationEngine {
           countryId,
           x: px,
           y: py,
+          wasEnemy: false,
         });
       }
     }
@@ -2227,6 +2338,7 @@ export class WorldSimulationEngine {
       this.undoStack = this.undoStack.filter((u) => u.time >= cutoff);
     }
 
+    this._recordConquestMomentum(country, 1 + filledCavities.length);
     this._recalculateDerivedStats(country);
 
     this.dirtyPixels = true;
@@ -2248,6 +2360,7 @@ export class WorldSimulationEngine {
       x,
       y,
       cost: check.cost,
+      wasEnemy: prevOwner > 0,
     });
 
     // Automatically seal any remaining tiny cavities so borders stay completely solid
@@ -2934,6 +3047,9 @@ export class WorldSimulationEngine {
       if (Number.isFinite(remoteCountry._rewardGoldPool)) {
         country._rewardGoldPool = Math.max(0, Math.floor(remoteCountry._rewardGoldPool));
       }
+      if (Number.isFinite(remoteCountry.popBoostUntil)) {
+        country.popBoostUntil = Math.max(country.popBoostUntil || 0, remoteCountry.popBoostUntil);
+      }
     }
 
     if (remoteCountry.lastHeartbeatTime) country.lastHeartbeatTime = remoteCountry.lastHeartbeatTime;
@@ -3020,7 +3136,7 @@ export class WorldSimulationEngine {
     this._recalculateDerivedStats(country);
   }
 
-  handleRemoteConquerPixel(countryId, x, y, cost = 1) {
+  handleRemoteConquerPixel(countryId, x, y, cost = 1, isReplay = false, wasEnemy = null) {
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return;
     if (!Number.isInteger(countryId) || !Number.isFinite(cost) || cost < 0 || cost > 100000) return;
     const country = this.countryMap.get(countryId);
@@ -3033,6 +3149,20 @@ export class WorldSimulationEngine {
     const prevOwner = this.owners[idx];
     if (prevOwner === countryId) return;
 
+    // Treaty protection & simultaneous neutral-pixel race guard:
+    if (!isReplay && prevOwner > 0 && prevOwner !== countryId) {
+      const activeTreaty = this.getActiveTreatyBetween(countryId, prevOwner);
+      if (activeTreaty) {
+        if (wasEnemy === false) {
+          // Friend clicked or auto-filled a pixel that was neutral on their screen (simultaneous click race condition).
+          // Do NOT overwrite ally's pixel, do NOT trigger false attack alarm, and do NOT break treaty!
+          return;
+        }
+        // Genuine attack on an ally while treaty is still ACTIVE -> break treaty authoritatively & transfer penalty/debt!
+        this.breakTreaty(activeTreaty.id, countryId, "SALDIRI");
+      }
+    }
+
     this.owners[idx] = countryId;
 
     country.landCount++;
@@ -3040,20 +3170,6 @@ export class WorldSimulationEngine {
     this._recalculateDerivedStats(country);
 
     if (prevOwner > 0) {
-      if (prevOwner !== countryId) {
-        const activeTreaty = this.getActiveTreatyBetween(countryId, prevOwner);
-        if (activeTreaty) {
-          this.handleRemoteTreatyBreak(
-            activeTreaty.id,
-            countryId,
-            activeTreaty.penalty,
-            null,
-            null,
-            "SALDIRI",
-            false,
-          );
-        }
-      }
       const prevC = this.countryMap.get(prevOwner);
       if (prevC) {
         prevC.landCount = Math.max(0, prevC.landCount - 1);
@@ -3061,8 +3177,8 @@ export class WorldSimulationEngine {
       }
       this.dirtyRegions = true;
 
-      // Eğer saldırıya uğrayan benim devletimse, anında acil durum saldırı alarmı tetikle!
-      if (prevOwner === this.myCountryId && countryId !== this.myCountryId) {
+      // Eğer saldırıya uğrayan benim devletimse (ve geçmiş tekrarı değilse), anında acil durum saldırı alarmı tetikle!
+      if (!isReplay && prevOwner === this.myCountryId && countryId !== this.myCountryId) {
         this.onUnderAttack({
           attackerId: countryId,
           attackerName: country.name || "Düşman",
@@ -3158,6 +3274,9 @@ export class WorldSimulationEngine {
     }
     if (Array.isArray(stats.quests) && stats.quests.length > 0) {
       country.quests = stats.quests;
+    }
+    if (Number.isFinite(stats.popBoostUntil)) {
+      country.popBoostUntil = Math.max(country.popBoostUntil || 0, stats.popBoostUntil);
     }
     if (Number.isFinite(stats._rewardGoldPool)) {
       country._rewardGoldPool = Math.max(0, Math.floor(stats._rewardGoldPool));
@@ -3332,6 +3451,7 @@ export class WorldSimulationEngine {
       this.treaties.find(
         (t) =>
           t.status === "ACTIVE" &&
+          t.type !== "LAND_PURCHASE" &&
           ((t.fromId === c1Id && t.toId === c2Id) ||
             (t.fromId === c2Id && t.toId === c1Id)),
       ) || null
@@ -3788,16 +3908,22 @@ export class WorldSimulationEngine {
   handleRemoteTreatyAccept(treatyId, activatedAt, isReplay = false) {
     const treaty = this.treaties.find((t) => t.id === treatyId);
     if (!treaty) return;
-    treaty.status = "ACTIVE";
+    treaty.status = treaty.type === "LAND_PURCHASE" ? "COMPLETED" : "ACTIVE";
     treaty.activatedAt = activatedAt || Date.now();
     treaty.lastPaymentTime = treaty.activatedAt;
 
     const involvesMe = this.myCountryId && (treaty.fromId === this.myCountryId || treaty.toId === this.myCountryId);
     if (!isReplay && involvesMe) {
       this.onSound("celebration");
-      this.onEvent(
-        ` ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması yürürlüğe girdi!`,
-      );
+      if (treaty.type === "LAND_PURCHASE") {
+        this.onEvent(
+          ` ${treaty.fromName} ve ${treaty.toName} arasındaki Toprak Satışı tamamlandı!`,
+        );
+      } else {
+        this.onEvent(
+          ` ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması yürürlüğe girdi!`,
+        );
+      }
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
