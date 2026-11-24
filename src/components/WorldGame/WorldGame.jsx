@@ -1547,7 +1547,17 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     Henüz mesaj yok. İlk mesajı sen gönder!
                   </div>
                 ) : (
-                  chatMessages.map((msg) => (
+                  chatMessages.map((msg) => {
+                    const liveCountry = msg.countryId
+                      ? engineRef.current?.countryMap.get(msg.countryId)
+                      : null;
+                    const liveRank = liveCountry
+                      ? engineRef.current?.getCountryTitle(liveCountry)
+                      : null;
+                    const titleText = msg.countryTitle || liveRank?.title || null;
+                    const titleBadge = msg.countryTitleBadge || liveRank?.badge || "";
+
+                    return (
                     <div
                       key={msg.id}
                       className={`p-1.5 rounded-xl border flex flex-col gap-0.5 ${
@@ -1557,7 +1567,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1 text-[10px]">
-                        <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                           {msg.flagDataUrl ? (
                             <img
                               src={msg.flagDataUrl}
@@ -1586,6 +1596,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
                               <span>En Zengin</span>
                             </span>
                           )}
+                          {titleText && (
+                            <span className="px-1.5 py-0.2 rounded-md bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 font-extrabold text-[8px] flex items-center gap-0.5 shrink-0">
+                              <span>{titleBadge}</span>
+                              <span>{titleText}</span>
+                            </span>
+                          )}
                           <span
                             className="font-black truncate max-w-[120px]"
                             style={{ color: msg.countryColor || "#FBBF24" }}
@@ -1607,7 +1623,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         {msg.text}
                       </div>
                     </div>
-                  ))
+                    );
+                  })
                 )}
                 <div ref={chatBottomRef} />
               </div>

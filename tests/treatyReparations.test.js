@@ -373,3 +373,52 @@ test('remote neutral-pixel race does not trigger false attack alert or break tre
   assert.equal(alliance.remainingDebt, 500, 'Remaining 500 debt recorded');
   assert.equal(attackAlerts, 1, 'Genuine attack triggers attack notification');
 });
+
+test('auto-conquer rotates evenly across multiple disconnected territories/colonies', () => {
+  const engine = createMockEngine();
+  const c1 = {
+    id: 1,
+    name: 'Empire',
+    gold: 1000,
+    landCount: 2,
+    troops: 100,
+    capacity: 100,
+    upgrades: {},
+  };
+  engine.countries = [c1];
+  engine.countryMap.set(1, c1);
+  engine.myCountryId = 1;
+
+  // Create two separate continents far apart: Region A around (50,50), Region B around (300,300)
+  for (let dy = -3; dy <= 3; dy++) {
+    for (let dx = -3; dx <= 3; dx++) {
+      const idxA = (50 + dy) * 1000 + (50 + dx);
+      const idxB = (300 + dy) * 1000 + (300 + dx);
+      engine.worldData.isLand[idxA] = 1;
+      engine.owners[idxA] = 0;
+      engine.worldData.isLand[idxB] = 1;
+      engine.owners[idxB] = 0;
+    }
+  }
+  engine.owners[50 * 1000 + 50] = 1;
+  engine.owners[300 * 1000 + 300] = 1;
+  engine.computeCountryBounds();
+
+  // Run 4 auto-conquer ticks -> both Region A and Region B must grow!
+  for (let i = 0; i < 4; i++) {
+    const res = engine.conquerNextBorderPixel(1, true);
+    assert.equal(res.ok, true);
+  }
+
+  let regionACount = 0;
+  let regionBCount = 0;
+  for (let dy = -3; dy <= 3; dy++) {
+    for (let dx = -3; dx <= 3; dx++) {
+      if (engine.owners[(50 + dy) * 1000 + (50 + dx)] === 1) regionACount++;
+      if (engine.owners[(300 + dy) * 1000 + (300 + dx)] === 1) regionBCount++;
+    }
+  }
+
+  assert.equal(regionACount > 1, true, 'Region A must expand via auto-conquer');
+  assert.equal(regionBCount > 1, true, 'Region B must also expand via auto-conquer');
+});

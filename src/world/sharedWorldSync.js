@@ -781,12 +781,15 @@ export class SharedWorldSync {
     const myC = this.engine.getMyCountry();
     const richest = this.engine.getRichestCountry();
     const isRichest = Boolean(myC && richest && myC.id === richest.id && myC.gold >= 500);
+    const rankInfo = myC ? this.engine.getCountryTitle(myC) : null;
 
     const chat = {
       id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       countryId: myC?.id || 0,
       countryName: myC?.name || (isAdmin ? 'Admin' : 'Gezgin'),
       countryColor: isAdmin ? '#FBBF24' : myC?.color || '#38BDF8',
+      countryTitle: rankInfo?.title || null,
+      countryTitleBadge: rankInfo?.badge || null,
       flagDataUrl: myC ? this.getCompactFlagFromCountry(myC) : null,
       isAdmin: Boolean(isAdmin),
       isRichest,

@@ -2207,6 +2207,14 @@ export class WorldSimulationEngine {
     const country = this.countryMap.get(countryId);
     if (!country) return { ok: false, reason: "Devlet bulunamadı." };
 
+    // Oto-fethet kesinlikle başka ülkelerin topraklarına saldıramaz; sadece sahipsiz (tarafsız) toprakları fetheder!
+    if (isAutoConquer && x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) {
+      const targetOwner = this.owners[y * MAP_W + x];
+      if (targetOwner > 0 && targetOwner !== countryId) {
+        return { ok: false, reason: "Oto-fethet başka ülkelerin topraklarını fethedemez." };
+      }
+    }
+
     const check = this.canExpandToPixel(countryId, x, y);
     if (!check.valid) return { ok: false, reason: check.reason };
 
@@ -2643,16 +2651,12 @@ export class WorldSimulationEngine {
     const b = this.countryBounds.get(countryId);
     if (!b || b.count === 0) return { ok: false, reason: "Toprak bulunamadı." };
 
-    const centerX = b.sumX / b.count;
-    const centerY = b.sumY / b.count;
-
     const minX = Math.max(0, b.minX - 1);
     const maxX = Math.min(MAP_W - 1, b.maxX + 1);
     const minY = Math.max(0, b.minY - 1);
     const maxY = Math.min(MAP_H - 1, b.maxY + 1);
 
-    let bestCandidate = null;
-    let bestScore = Infinity;
+    const candidates = [];
 
     for (let y = minY; y <= maxY; y++) {
       const row = y * MAP_W;
@@ -2678,28 +2682,102 @@ export class WorldSimulationEngine {
         if (ownedNeighbors === 0) continue;
         if (this.isSnakingConquest(countryId, x, y)) continue;
 
-        // Massive priority bonus to fill internal holes (3 or 4 owned neighbors) first before expanding outward!
-        const cavityBonus =
-          ownedNeighbors >= 3 ? -300 : ownedNeighbors === 2 ? -75 : 0;
-        const isEnemy = this.owners[idx] > 0;
-        const dist =
-          Math.hypot(x - centerX, y - centerY) +
-          (isEnemy ? 25 : 0) +
-          cavityBonus;
-        if (dist < bestScore) {
-          bestScore = dist;
-          bestCandidate = { x, y };
-        }
+        candidates.push({
+          x,
+          y,
+          ownedNeighbors,
+          isEnemy: this.owners[idx] > 0,
+        });
       }
     }
 
-    if (!bestCandidate) {
+    if (candidates.length === 0) {
       return {
         ok: false,
         reason: onlyNeutral
           ? "Sınırında fethedilecek boş (tarafsız) toprak kalmadı!"
           : "Komşu kara sınırı kalmadı! Karşı kıyılara gemi gönder.",
       };
+    }
+
+    // Group candidates into disconnected territory clusters using 16x16 spatial buckets
+    // so auto-conquer rotates fairly across ALL colonies/regions instead of only 1!
+    const bucketMap = new Map();
+    for (const cand of candidates) {
+      const bx = cand.x >> 4;
+      const by = cand.y >> 4;
+      const key = `${bx},${by}`;
+      let list = bucketMap.get(key);
+      if (!list) {
+        list = { bx, by, items: [] };
+        bucketMap.set(key, list);
+      }
+      list.items.push(cand);
+    }
+
+    const visitedBuckets = new Set();
+    const clusters = [];
+    for (const [startKey, startBucket] of bucketMap.entries()) {
+      if (visitedBuckets.has(startKey)) continue;
+      visitedBuckets.add(startKey);
+      const queue = [startBucket];
+      const clusterItems = [];
+      let sumX = 0;
+      let sumY = 0;
+      let cMinX = Infinity;
+      let cMinY = Infinity;
+
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        for (const item of cur.items) {
+          clusterItems.push(item);
+          sumX += item.x;
+          sumY += item.y;
+          if (item.x < cMinX) cMinX = item.x;
+          if (item.y < cMinY) cMinY = item.y;
+        }
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nKey = `${cur.bx + dx},${cur.by + dy}`;
+            if (!visitedBuckets.has(nKey) && bucketMap.has(nKey)) {
+              visitedBuckets.add(nKey);
+              queue.push(bucketMap.get(nKey));
+            }
+          }
+        }
+      }
+
+      clusters.push({
+        items: clusterItems,
+        centerX: sumX / clusterItems.length,
+        centerY: sumY / clusterItems.length,
+        minX: cMinX,
+        minY: cMinY,
+      });
+    }
+
+    // Deterministic ordering so round-robin visits every separate territory evenly
+    clusters.sort((a, c2) => (a.minY !== c2.minY ? a.minY - c2.minY : a.minX - c2.minX));
+
+    if (!this._autoConquerRegionCursor) this._autoConquerRegionCursor = 0;
+    const chosenCluster = clusters[this._autoConquerRegionCursor % clusters.length];
+    this._autoConquerRegionCursor = (this._autoConquerRegionCursor + 1) % 1000000;
+
+    let bestCandidate = null;
+    let bestScore = Infinity;
+    for (const cand of chosenCluster.items) {
+      // Massive priority bonus to fill internal holes (3 or 4 owned neighbors) first before expanding outward!
+      const cavityBonus =
+        cand.ownedNeighbors >= 3 ? -300 : cand.ownedNeighbors === 2 ? -75 : 0;
+      const dist =
+        Math.hypot(cand.x - chosenCluster.centerX, cand.y - chosenCluster.centerY) +
+        (cand.isEnemy ? 25 : 0) +
+        cavityBonus;
+      if (dist < bestScore) {
+        bestScore = dist;
+        bestCandidate = cand;
+      }
     }
 
     return this.conquerPixel(countryId, bestCandidate.x, bestCandidate.y, true);
