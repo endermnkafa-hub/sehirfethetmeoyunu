@@ -10,7 +10,13 @@ import {
 } from "./networkSecurity";
 import { SharedWorldSync } from "./sharedWorldSync";
 
-export const WORLD_SAVE_KEY = "sf_shared_world_v9_clean";
+const IS_DEV_SANDBOX =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1");
+export const WORLD_SAVE_KEY = IS_DEV_SANDBOX
+  ? "sf_shared_world_dev_sandbox_v1"
+  : "sf_shared_world_v9_clean";
 
 export const UPGRADE_DEFINITIONS = [
   {
@@ -99,6 +105,74 @@ export const DEFAULT_UPGRADES = {
   siege: 0,
 };
 
+// State Doctrines (Multi-axis strategy: Economy vs Military vs Fortress)
+export const DOCTRINE_DEFINITIONS = [
+  {
+    key: "BALANCED",
+    name: "Dengeli Yönetim",
+    icon: "⚖️",
+    shortDesc: "Standart dengeli büyüme, ceza yok.",
+    pros: ["Tüm alanlarda dengeli gelişim"],
+    cons: ["Özel uzmanlık bonusu yok"],
+    color: "#94A3B8",
+  },
+  {
+    key: "MERCHANT",
+    name: "Tüccar Cumhuriyeti",
+    icon: "💰",
+    shortDesc: "Yüksek altın geliri ve ucuz özel asker.",
+    pros: ["+%35 Altın Geliri", "-%20 Özel Asker Maliyeti (200 Altın)"],
+    cons: ["-%12 Normal Asker Kapasitesi"],
+    color: "#FBBF24",
+  },
+  {
+    key: "WARLORD",
+    name: "Savaş İmparatorluğu",
+    icon: "⚔️",
+    shortDesc: "Yüksek saldırı gücü ve hızlı fetih.",
+    pros: ["+%22 Saldırı Gücü", "-%10 Fetih Asker Maliyeti"],
+    cons: ["-%15 Altın Geliri"],
+    color: "#F43F5E",
+  },
+  {
+    key: "FORTRESS",
+    name: "Kale Devleti",
+    icon: "🛡️",
+    shortDesc: "Aşılmaz savunma ve hızlı nüfus artışı.",
+    pros: ["+%28 Savunma Dayanıklılığı", "+%20 Nüfus Büyümesi"],
+    cons: ["-%10 Saldırı Gücü"],
+    color: "#38BDF8",
+  },
+];
+
+// Deterministic Strategic Resource & Historic Capital Coordinates (1000x500 Equirectangular World)
+// Automatically snapped to nearest valid land pixel on engine initialization
+export const RAW_STRATEGIC_NODES = [
+  // Historic Capitals / Wonders (+8% Attack & +8% Defense each, capped at +32%)
+  { id: "cap_istanbul", type: "WONDER", name: "İstanbul", x: 580, y: 136 },
+  { id: "cap_rome", type: "WONDER", name: "Roma", x: 535, y: 134 },
+  { id: "cap_cairo", type: "WONDER", name: "Kahire", x: 586, y: 166 },
+  { id: "cap_beijing", type: "WONDER", name: "Pekin", x: 823, y: 139 },
+  { id: "cap_newyork", type: "WONDER", name: "New York", x: 294, y: 137 },
+  { id: "cap_london", type: "WONDER", name: "Londra", x: 499, y: 107 },
+
+  // Gold Mines (+12% Gold Income each, capped at +48%)
+  { id: "gold_safrica", type: "GOLD", name: "Witwatersrand Altın Madeni", x: 577, y: 322 },
+  { id: "gold_alaska", type: "GOLD", name: "Klondike Altın Madeni", x: 112, y: 74 },
+  { id: "gold_andes", type: "GOLD", name: "And Altın Madeni", x: 302, y: 285 },
+  { id: "gold_oz", type: "GOLD", name: "Kalgoorlie Altın Madeni", x: 836, y: 335 },
+  { id: "gold_siberia", type: "GOLD", name: "Sibirya Altın Madeni", x: 760, y: 82 },
+  { id: "gold_ghana", type: "GOLD", name: "Batı Afrika Altın Madeni", x: 496, y: 228 },
+
+  // Oil & Industrial Hubs (+12% Troop Production each, capped at +48%)
+  { id: "oil_gulf", type: "OIL", name: "Basra Petrol Havzası", x: 632, y: 170 },
+  { id: "oil_texas", type: "OIL", name: "Teksas Petrol Havzası", x: 225, y: 163 },
+  { id: "oil_caspian", type: "OIL", name: "Hazar Petrol Havzası", x: 638, y: 137 },
+  { id: "oil_venezuela", type: "OIL", name: "Orinoco Petrol Havzası", x: 318, y: 226 },
+  { id: "oil_northsea", type: "OIL", name: "Kuzey Avrupa Sanayisi", x: 528, y: 106 },
+  { id: "oil_manchuria", type: "OIL", name: "Doğu Asya Sanayisi", x: 845, y: 120 },
+];
+
 const NUCLEAR_STRIKE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const NUCLEAR_STRIKE_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const NUCLEAR_STRIKE_MAX_RADIUS = 22;
@@ -152,6 +226,9 @@ export class WorldSimulationEngine {
 
     this.dirtyPixels = true;
     this.dirtyRegions = true;
+
+    // Initialize deterministic strategic nodes snapped strictly to valid land pixels
+    this.strategicNodes = this._initStrategicNodes();
 
     // Load local country and world cache immediately so refreshing never flashes an empty world
     this._loadLocalWorldBackup();
@@ -274,6 +351,11 @@ export class WorldSimulationEngine {
   }
 
   restoreMyCountryFromServer(clientIp = null) {
+    if (clientIp && clientIp !== "127.0.0.1" && clientIp !== "unknown") {
+      this._cachedClientIp = clientIp;
+    }
+    const effectiveIp = clientIp || this._cachedClientIp || null;
+
     const storedId = getMyCountryId();
     if (storedId) {
       const parsed = parseInt(storedId, 10);
@@ -294,13 +376,12 @@ export class WorldSimulationEngine {
       this.myCountryId = devCountry.id;
       saveMyCountryId(devCountry.id);
       this._ensureCountryInventory(devCountry);
-      this.processOfflineProgress();
       return;
     }
-    // Auto-recovery via IP address (if friend opened Chrome on mobile and cookies/localStorage were wiped)
-    if (clientIp && clientIp !== "127.0.0.1" && clientIp !== "unknown") {
+    // Auto-recovery via IP address (e.g. Instagram in-app browser -> Chrome switch)
+    if (effectiveIp && effectiveIp !== "127.0.0.1" && effectiveIp !== "unknown") {
       const ipCountry = this.countries.find(
-        (c) => c.creatorIp === clientIp && c.landCount > 0,
+        (c) => c.creatorIp === effectiveIp && c.landCount > 0,
       );
       if (ipCountry) {
         this.myCountryId = ipCountry.id;
@@ -308,15 +389,14 @@ export class WorldSimulationEngine {
         saveMyCountryId(ipCountry.id);
         this._ensureCountryInventory(ipCountry);
         this.onEvent(
-          `${ipCountry.name} devletinin yönetimi IP üzerinden Chrome'a otomatik bağlandı!`,
+          `${ipCountry.name} devletinin yönetimi IP üzerinden otomatik bağlandı!`,
         );
-        this.processOfflineProgress();
       }
     }
   }
 
-  // Process continuous offline troop, gold & population earnings up to capacity!
-  processOfflineProgress() {
+  // Check pending offline package without auto-adding, so player can claim it via an interactive reward chest!
+  getPendingOfflinePackage() {
     const c = this.getMyCountry();
     if (!c || c.landCount <= 0) return null;
 
@@ -331,70 +411,168 @@ export class WorldSimulationEngine {
       lastTime = c.lastActiveTime || c._lastStatsTime || c._lastSyncTime || now;
     }
 
-    // Cap offline time calculation to 7 days
     const elapsedSec = Math.max(
       0,
       Math.min(3600 * 24 * 7, (now - lastTime) / 1000),
     );
-    c.lastActiveTime = now;
-    try {
-      localStorage.setItem(`sf_last_active_${c.id}`, String(now));
-    } catch {}
 
-    if (elapsedSec < 15) return null; // Ignore brief page reloads under 15 seconds
+    if (elapsedSec < 30) return null; // Ignore reloads under 30s
 
     this._recalculateDerivedStats(c);
-
-    // Calculate offline troops strictly up to capacity (Zero offline gold so economy remains balanced!)
     const availableCapacity = Math.max(0, c.capacity - c.troops);
     const troopsProduced = Math.min(
       availableCapacity,
-      c.productionRate * elapsedSec,
+      c.productionRate * 0.5 * elapsedSec,
     );
+    const goldIncomePerSec = c.goldIncome || 0;
+    const goldProduced = Math.max(0, Math.floor(goldIncomePerSec * 0.5 * elapsedSec));
     const popSpace = Math.max(0, c.maxPopulation - c.population);
-    const popGrown = Math.min(popSpace, c.popGrowthRate * elapsedSec);
+    const popGrown = Math.min(popSpace, c.popGrowthRate * 0.5 * elapsedSec);
 
-    if (troopsProduced > 0.5) {
-      c.troops = Math.min(
-        c.capacity,
-        Number((c.troops + troopsProduced).toFixed(1)),
-      );
-      c.population = Math.min(
-        c.maxPopulation,
-        Math.floor(c.population + popGrown),
-      );
+    if (troopsProduced < 0.5 && goldProduced < 5) return null;
 
-      const elapsedMin = Math.floor(elapsedSec / 60);
-      const timeStr =
-        elapsedMin >= 60
-          ? `${Math.floor(elapsedMin / 60)} saat ${elapsedMin % 60} dk`
-          : `${elapsedMin} dakika`;
+    const elapsedMin = Math.floor(elapsedSec / 60);
+    const timeStr =
+      elapsedMin >= 60
+        ? `${Math.floor(elapsedMin / 60)} saat ${elapsedMin % 60} dk`
+        : `${elapsedMin} dakika`;
 
-      this.onSound("celebration");
-      this.onEvent(
-        ` Çevrimdışı Kışla Desteği (${timeStr}): Ordu kışlanda +${Math.floor(troopsProduced)} asker hazırlandı! (Asker: ${Math.floor(c.troops)}/${c.capacity})`,
-      );
+    return {
+      countryId: c.id,
+      troops: Math.floor(troopsProduced),
+      gold: goldProduced,
+      popGrown: Math.floor(popGrown),
+      elapsedSec,
+      timeStr,
+    };
+  }
 
-      this.sync.broadcast({
-        type: "SYNC_COUNTRY_STATS",
-        countryId: c.id,
-        stats: {
-          troops: Number(c.troops.toFixed(1)),
-          gold: Math.floor(c.gold),
-          population: Math.floor(c.population),
-          color: c.color,
-          upgrades: c.upgrades,
-          lastActiveTime: now,
-        },
-      });
+  // Claim the pending offline package
+  claimOfflinePackage(pkg) {
+    if (!pkg) return false;
+    const c = this.getMyCountry();
+    if (!c || c.id !== pkg.countryId) return false;
 
-      return {
-        troops: Math.floor(troopsProduced),
-        elapsedSec,
-        timeStr,
-      };
+    const now = Date.now();
+    try {
+      localStorage.setItem(`sf_last_active_${c.id}`, String(now));
+    } catch {}
+    c.lastActiveTime = now;
+
+    if (pkg.troops > 0) {
+      c.troops = Math.min(c.capacity, Number((c.troops + pkg.troops).toFixed(1)));
     }
-    return null;
+    if (pkg.gold > 0) {
+      c.gold = (c.gold || 0) + pkg.gold;
+    }
+    if (pkg.popGrown > 0) {
+      c.population = Math.min(c.maxPopulation, c.population + pkg.popGrown);
+    }
+
+    this.onSound("celebration");
+    this.onEvent(
+      `🎁 Çevrimdışı Paket Toplandı (${pkg.timeStr}): +${pkg.troops} Asker, +${pkg.gold} Altın hazinene eklendi!`,
+    );
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+        lastActiveTime: now,
+        lastHeartbeatTime: now,
+        lastInputTime: this.lastInputTime || now,
+      },
+    });
+
+    this.saveState();
+    return true;
+  }
+
+  // Daily Streak Check & Bonus (Consecutive login tracking)
+  getDailyStreakInfo() {
+    const c = this.getMyCountry();
+    if (!c) return { streak: 0, canClaim: false, bonusPercent: 0 };
+
+    const key = `sf_streak_${c.id}`;
+    let data = { streak: 0, lastClaimDay: "" };
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) data = JSON.parse(stored);
+    } catch {}
+
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterdayDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const isClaimedToday = data.lastClaimDay === today;
+    let currentStreak = data.streak || 0;
+
+    if (!isClaimedToday && data.lastClaimDay && data.lastClaimDay !== yesterdayDate) {
+      // Streak broken if missed more than 1 day
+      currentStreak = 0;
+    }
+
+    const nextStreak = isClaimedToday ? currentStreak : currentStreak + 1;
+    // Streak bonus: +3% per streak day up to +25%
+    const bonusPercent = Math.min(25, Math.max(3, currentStreak * 3));
+
+    return {
+      streak: currentStreak,
+      nextStreak,
+      isClaimedToday,
+      bonusPercent,
+      bonusGold: Math.min(2500, 200 + currentStreak * 150),
+    };
+  }
+
+  claimDailyStreak() {
+    const c = this.getMyCountry();
+    if (!c) return null;
+
+    const info = this.getDailyStreakInfo();
+    if (info.isClaimedToday) return null;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const updatedStreak = info.nextStreak;
+    const key = `sf_streak_${c.id}`;
+
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        streak: updatedStreak,
+        lastClaimDay: today,
+      }));
+    } catch {}
+
+    const goldBonus = info.bonusGold;
+    c.gold = (c.gold || 0) + goldBonus;
+
+    this.onSound("celebration");
+    this.onEvent(`🔥 ${updatedStreak}. Gün Giriş Serisi! (+${goldBonus} Altın ve +%${info.bonusPercent} Günlük Verim)`);
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+      },
+    });
+
+    this.saveState();
+    return {
+      streak: updatedStreak,
+      gold: goldBonus,
+      bonusPercent: info.bonusPercent,
+    };
   }
 
   loadChatMessages() {}
@@ -506,7 +684,6 @@ export class WorldSimulationEngine {
     saveMyCountryId(c.id);
     this.saveState();
     this.onEvent(`${c.name} devletinin yönetimi bu cihaza bağlandı!`);
-    this.processOfflineProgress();
     return { ok: true, country: c };
   }
 
@@ -595,23 +772,138 @@ export class WorldSimulationEngine {
     c.capitalY = Number.isInteger(c.capitalY) && c.capitalY >= 0 && c.capitalY < MAP_H ? c.capitalY : Math.floor(MAP_H / 2);
 
     const rawNukes = c.inventory && typeof c.inventory === 'object' ? c.inventory.nukes : 0;
-    c.inventory = { nukes: Number.isFinite(rawNukes) ? Math.max(0, Math.min(100000, Math.floor(rawNukes))) : 0 };
+    const rawSpecialTroops = c.inventory && typeof c.inventory === 'object' ? c.inventory.specialTroops : (c.specialTroops || 0);
+    c.specialTroops = Number.isFinite(rawSpecialTroops) ? Math.max(0, Math.floor(rawSpecialTroops)) : 0;
+    c.inventory = {
+      nukes: Number.isFinite(rawNukes) ? Math.max(0, Math.min(100000, Math.floor(rawNukes))) : 0,
+      specialTroops: c.specialTroops,
+    };
+    const validDoctrines = ["BALANCED", "MERCHANT", "WARLORD", "FORTRESS"];
+    c.doctrine = validDoctrines.includes(c.doctrine) ? c.doctrine : "BALANCED";
     this._recalculateDerivedStats(c);
     return c;
   }
 
+  _initStrategicNodes() {
+    const nodes = [];
+    for (const raw of RAW_STRATEGIC_NODES) {
+      let bestX = raw.x;
+      let bestY = raw.y;
+      if (!this.worldData.isLand[bestY * MAP_W + bestX]) {
+        // Spiral search up to radius 18 to snap to nearest valid land pixel
+        let found = false;
+        for (let r = 1; r <= 18 && !found; r++) {
+          for (let dy = -r; dy <= r && !found; dy++) {
+            for (let dx = -r; dx <= r && !found; dx++) {
+              const nx = bestX + dx;
+              const ny = bestY + dy;
+              if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H && this.worldData.isLand[ny * MAP_W + nx]) {
+                bestX = nx;
+                bestY = ny;
+                found = true;
+              }
+            }
+          }
+        }
+      }
+      nodes.push({
+        ...raw,
+        x: bestX,
+        y: bestY,
+        idx: bestY * MAP_W + bestX,
+      });
+    }
+    return nodes;
+  }
+
+  // Count how many strategic resources (GOLD, OIL, WONDER) a country currently controls
+  getCountryStrategicCounts(countryId) {
+    let gold = 0;
+    let oil = 0;
+    let wonder = 0;
+    const controlled = [];
+    if (!this.strategicNodes) return { gold, oil, wonder, controlled };
+    for (const node of this.strategicNodes) {
+      if (this.owners[node.idx] === countryId) {
+        if (node.type === "GOLD") gold++;
+        else if (node.type === "OIL") oil++;
+        else if (node.type === "WONDER") wonder++;
+        controlled.push(node);
+      }
+    }
+    return { gold, oil, wonder, controlled };
+  }
+
+  setCountryDoctrine(countryId, doctrineKey) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    const def = DOCTRINE_DEFINITIONS.find((d) => d.key === doctrineKey);
+    if (!def) return { ok: false, reason: "Geçersiz doktrin." };
+    if (c.doctrine === doctrineKey) return { ok: false, reason: "Zaten bu doktrindesin." };
+
+    const now = Date.now();
+    const lastChange = c.lastDoctrineChange || 0;
+    const cooldownMs = 12 * 60 * 60 * 1000; // 12 hours free change
+    const isFree = lastChange === 0 || (now - lastChange) >= cooldownMs;
+    const switchCost = isFree ? 0 : 1500;
+
+    if (switchCost > 0 && c.gold < switchCost) {
+      return { ok: false, reason: `Erken doktrin değişimi için ${switchCost.toLocaleString()} Altın gerekli!` };
+    }
+
+    if (switchCost > 0) c.gold -= switchCost;
+    c.doctrine = doctrineKey;
+    c.lastDoctrineChange = now;
+
+    this._recalculateDerivedStats(c);
+    if (c.troops > c.capacity) c.troops = c.capacity;
+    this.saveState();
+    this.onSound("celebration");
+    this.onEvent(`${def.icon} Devlet Doktrini "${def.name}" olarak değiştirildi!`);
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        troops: Number(c.troops.toFixed(1)),
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+        doctrine: c.doctrine,
+      },
+    });
+
+    return { ok: true, doctrine: def, cost: switchCost };
+  }
+
   _recalculateDerivedStats(c) {
     const up = c.upgrades || DEFAULT_UPGRADES;
+    const doc = c.doctrine || "BALANCED";
+    const strat = this.getCountryStrategicCounts(c.id);
+    c.strategicCounts = { gold: strat.gold, oil: strat.oil, wonder: strat.wonder };
 
-    // 1. Asker Kapasitesi = Toprak Sayısı * (1 + Lojistik * %8)
+    // Strategic node multipliers (capped for healthy late-game balance)
+    const stratGoldMult = 1 + Math.min(0.48, strat.gold * 0.12);
+    const stratOilMult = 1 + Math.min(0.48, strat.oil * 0.12);
+    const stratWonderBonus = Math.min(0.32, strat.wonder * 0.08);
+
+    // Doctrine multipliers
+    const docCapMult = doc === "MERCHANT" ? 0.88 : 1.0;
+    const docGoldMult = doc === "MERCHANT" ? 1.35 : doc === "WARLORD" ? 0.85 : 1.0;
+    const docPopMult = doc === "FORTRESS" ? 1.20 : 1.0;
+    const docAttackBonus = doc === "WARLORD" ? 0.22 : doc === "FORTRESS" ? -0.10 : 0;
+    const docDefenseBonus = doc === "FORTRESS" ? 0.28 : 0;
+
+    // 1. Asker Kapasitesi = Toprak Sayısı * (1 + Lojistik * %8) * Doktrin
     c.capacity = Math.max(
       1,
-      Math.floor(c.landCount * (1 + (up.logistics || 0) * 0.08)),
+      Math.floor(c.landCount * (1 + (up.logistics || 0) * 0.08) * docCapMult),
     );
 
-    // 2. Asker Üretim Hızı (Logaritmik Azalan Getiri Formülü + Seferberlik * %5)
+    // 2. Asker Üretim Hızı (Logaritmik + Seferberlik + Petrol Havzaları)
     const baseRate = (1.0 + 0.85 * Math.log(Math.max(1, c.landCount))) / 30.0;
-    c.productionRate = baseRate * (1 + (up.mobilization || 0) * 0.05);
+    c.productionRate = baseRate * (1 + (up.mobilization || 0) * 0.05) * stratOilMult;
 
     // 3. Otomatik Halk (Nüfus) & Vergi (Altın) Üretimi
     c.maxPopulation = Math.floor(
@@ -619,23 +911,42 @@ export class WorldSimulationEngine {
     );
     c.popGrowthRate =
       (0.12 + 0.03 * Math.log(c.landCount + 1)) *
-      (1 + (up.housing || 0) * 0.07);
+      (1 + (up.housing || 0) * 0.07) *
+      docPopMult;
 
     const popBonus = 1 + Math.min(0.25, (c.population || 15) / 3500);
     c.goldIncome =
       (0.04 + 0.08 * Math.log(c.landCount + 1)) *
       (1 + (up.economy || 0) * 0.05) *
-      popBonus;
+      popBonus *
+      stratGoldMult *
+      docGoldMult;
 
     // 4. Saldırı & Savunma Gücü (Tüm topraklarda eşit savunma; Başkent ayrımı yoktur!)
-    c.attackPower = 1.0 + (up.weapons || 0) * 0.06;
+    c.attackPower = Math.max(
+      0.5,
+      1.0 + (up.weapons || 0) * 0.06 + docAttackBonus + stratWonderBonus,
+    );
     const underdogBonus =
       c.landCount < 40 ? 0.35 : c.landCount < 100 ? 0.15 : 0;
+
+    // Yeni Devlet Barış Koruması (İlk 24 saat içinde yeni kurulan ülkelere +%40 geçici savunma kalkanı)
+    let newPlayerShieldBonus = 0;
+    if (c.createdAt) {
+      const ageHours = (Date.now() - c.createdAt) / (1000 * 3600);
+      if (ageHours < 24) {
+        newPlayerShieldBonus = Math.max(0, 0.40 * (1 - ageHours / 24));
+      }
+    }
+
     c.defensePower =
       1.0 +
       (up.fortification || 0) * 0.06 +
       (up.citadel || 0) * 0.08 +
-      underdogBonus;
+      underdogBonus +
+      newPlayerShieldBonus +
+      docDefenseBonus +
+      stratWonderBonus;
 
     // 5. Donanma Menzili & Gemi Hızı
     c.navalRange = 38 + (up.navy || 0) * 14;
@@ -779,6 +1090,7 @@ export class WorldSimulationEngine {
     this.dirtyRegions = true;
 
     if (ship.countryId === this.myCountryId) {
+      this.progressQuest("CONQUER", 1);
       this.onSound("celebration");
       this.onEvent(
         `Donanman karşı kıyıya çıkarma yaptı! (${ship.toX}, ${ship.toY})`,
@@ -816,6 +1128,9 @@ export class WorldSimulationEngine {
 
     country.gold -= cost;
     country.upgrades[upgradeKey] = currentLevel + 1;
+    if (country.id === this.myCountryId) {
+      this.progressQuest("GOLD", cost);
+    }
     this._recalculateDerivedStats(country);
     this.onSound("celebration");
     this.onEvent(`${def.name} Seviye ${currentLevel + 1} oldu!`);
@@ -835,27 +1150,270 @@ export class WorldSimulationEngine {
     return { ok: true, level: currentLevel + 1, cost };
   }
 
-  // Mercenary Recruitment: 1 Troop = 250 Gold
+  // Prestige / Rebirth system for max-level (Lv.25) upgrades: resets to Lv.1 with permanent +%2 star bonus
+  prestigeUpgrade(countryId, upgradeKey) {
+    const country = this.countryMap.get(countryId);
+    if (!country) return { ok: false, reason: "Devlet bulunamadı." };
+
+    const def = UPGRADE_DEFINITIONS.find((u) => u.key === upgradeKey);
+    if (!def) return { ok: false, reason: "Geliştirme bulunamadı." };
+
+    const currentLevel = country.upgrades?.[upgradeKey] || 0;
+    if (currentLevel < def.maxLevel) {
+      return { ok: false, reason: `Prestij için önce 25. Seviyeye ulaşmalısın! (Mevcut: Sv.${currentLevel})` };
+    }
+
+    const prestigeCost = 15000;
+    if (country.gold < prestigeCost) {
+      return { ok: false, reason: `Prestij için ${prestigeCost.toLocaleString()} Altın gereklidir!` };
+    }
+
+    country.gold -= prestigeCost;
+    country.upgrades[upgradeKey] = 1;
+    if (!country.prestigeStars) country.prestigeStars = {};
+    country.prestigeStars[upgradeKey] = (country.prestigeStars[upgradeKey] || 0) + 1;
+
+    this._recalculateDerivedStats(country);
+    this.onSound("celebration");
+    this.onEvent(`⭐ ${def.name} Prestij Yapıldı! (+1 Kalıcı Prestij Yıldızı kazandın)`);
+    this.saveState();
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: country.id,
+      stats: {
+        gold: country.gold,
+        population: country.population,
+        troops: country.troops,
+        upgrades: country.upgrades,
+      },
+    });
+
+    return { ok: true, stars: country.prestigeStars[upgradeKey] };
+  }
+
+  // Rank / Title calculation based on landCount, age and army
+  getCountryTitle(c) {
+    if (!c || c.landCount <= 0) return { title: "Göçebe Topluluk", badge: "🏕️", minLand: 0 };
+    const lands = c.landCount;
+    if (lands >= 500) return { title: "Cihan İmparatoru", badge: "👑", minLand: 500 };
+    if (lands >= 250) return { title: "Büyük Hakan", badge: "⚜️", minLand: 250 };
+    if (lands >= 120) return { title: "Yüce Sultan", badge: "🌟", minLand: 120 };
+    if (lands >= 60) return { title: "Krallık Hükümdarı", badge: "🏰", minLand: 60 };
+    if (lands >= 30) return { title: "Sancak Beyi", badge: "🛡️", minLand: 30 };
+    if (lands >= 10) return { title: "Derebeyi", badge: "⚔️", minLand: 10 };
+    return { title: "Beylik", badge: "🚩", minLand: 1 };
+  }
+
+  // Balanced Dynamic Quests that scale with country size (no trivial 3-pixel tasks once grown)
+  getQuests() {
+    const c = this.getMyCountry();
+    if (!c) return [];
+
+    const key = `sf_quests_${c.id}`;
+    let saved = null;
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) saved = JSON.parse(stored);
+    } catch {}
+
+    const lands = Math.max(1, c.landCount);
+    // Dynamic targets scale with player's actual progression
+    const conquerTarget = Math.max(6, Math.round(Math.min(50, lands * 0.15)));
+    const goldSpendTarget = Math.max(800, Math.round(Math.min(50000, (c.gold || 500) * 0.4 + lands * 60)));
+    const troopTarget = Math.max(15, Math.round(c.capacity * 0.7));
+
+    const defaultQuests = [
+      {
+        id: "quest_conquer",
+        title: `${conquerTarget} Yeni Piksel Fethet`,
+        desc: "Sınırlarını genişleterek vatan toprağını büyüt.",
+        type: "CONQUER",
+        target: conquerTarget,
+        current: 0,
+        rewardGold: Math.round(conquerTarget * 120),
+        rewardTroops: Math.round(conquerTarget * 0.8),
+        completed: false,
+      },
+      {
+        id: "quest_gold",
+        title: `${goldSpendTarget.toLocaleString()} Altın Harca veya Yatır`,
+        desc: "Geliştirmelere veya orduya altın yatırarak ekonomiyi canlandır.",
+        type: "GOLD",
+        target: goldSpendTarget,
+        current: 0,
+        rewardGold: Math.round(goldSpendTarget * 0.35),
+        rewardTroops: Math.max(4, Math.round(lands * 0.2)),
+        completed: false,
+      },
+      {
+        id: "quest_army",
+        title: `Ordunu ${troopTarget} Asker Gücüne Ulaştır`,
+        desc: "Kışlalarında hazır asker mevcudunu koru veya artır.",
+        type: "TROOPS",
+        target: troopTarget,
+        current: Math.floor(c.troops || 0),
+        rewardGold: Math.round(troopTarget * 35),
+        rewardTroops: Math.max(5, Math.round(troopTarget * 0.15)),
+        completed: false,
+      },
+    ];
+
+    if (!saved || !Array.isArray(saved) || saved.length === 0) {
+      try {
+        localStorage.setItem(key, JSON.stringify(defaultQuests));
+      } catch {}
+      return defaultQuests;
+    }
+
+    // Update current progress for troop quest automatically
+    for (const q of saved) {
+      if (q.type === "TROOPS") {
+        q.current = Math.floor(c.troops || 0);
+        if (q.current >= q.target && !q.completed) {
+          q.completed = true;
+        }
+      }
+    }
+
+    return saved;
+  }
+
+  // Progress quest and grant reward
+  progressQuest(type, amount = 1) {
+    const c = this.getMyCountry();
+    if (!c) return;
+    const key = `sf_quests_${c.id}`;
+    let quests = this.getQuests();
+
+    let changed = false;
+    for (const q of quests) {
+      if (q.type === type && !q.completed) {
+        q.current = (q.current || 0) + amount;
+        if (q.current >= q.target) {
+          q.completed = true;
+        }
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      try {
+        localStorage.setItem(key, JSON.stringify(quests));
+      } catch {}
+    }
+  }
+
+  // Claim completed quest reward and roll next tier quest
+  claimQuestReward(questId) {
+    const c = this.getMyCountry();
+    if (!c) return null;
+    const key = `sf_quests_${c.id}`;
+    let quests = this.getQuests();
+
+    const idx = quests.findIndex((q) => q.id === questId && q.completed);
+    if (idx === -1) return null;
+
+    const quest = quests[idx];
+    const rewardGold = quest.rewardGold || 0;
+    const rewardTroops = quest.rewardTroops || 0;
+
+    c.gold = (c.gold || 0) + rewardGold;
+    if (rewardTroops > 0) {
+      c.troops = Math.min(c.capacity, Number((c.troops + rewardTroops).toFixed(1)));
+    }
+
+    this.onSound("celebration");
+    this.onEvent(`🏆 Görev Tamamlandı (${quest.title}): +${rewardGold} Altın, +${rewardTroops} Asker kazandın!`);
+
+    // Generate refreshed higher-tier replacement quest
+    const lands = Math.max(1, c.landCount);
+    let nextTarget = Math.round(quest.target * 1.5);
+    if (quest.type === "CONQUER") {
+      nextTarget = Math.max(quest.target + 5, Math.round(lands * 0.2) + 5);
+      quests[idx] = {
+        ...quest,
+        id: "quest_conquer_" + Date.now(),
+        title: `${nextTarget} Yeni Piksel Fethet`,
+        target: nextTarget,
+        current: 0,
+        rewardGold: Math.round(nextTarget * 130),
+        rewardTroops: Math.round(nextTarget * 0.8),
+        completed: false,
+      };
+    } else if (quest.type === "GOLD") {
+      nextTarget = Math.round(quest.target * 1.6);
+      quests[idx] = {
+        ...quest,
+        id: "quest_gold_" + Date.now(),
+        title: `${nextTarget.toLocaleString()} Altın Harca veya Yatır`,
+        target: nextTarget,
+        current: 0,
+        rewardGold: Math.round(nextTarget * 0.35),
+        rewardTroops: Math.max(5, Math.round(lands * 0.25)),
+        completed: false,
+      };
+    } else {
+      nextTarget = Math.round(quest.target * 1.35) + 5;
+      quests[idx] = {
+        ...quest,
+        id: "quest_army_" + Date.now(),
+        title: `Ordunu ${nextTarget} Asker Gücüne Ulaştır`,
+        target: nextTarget,
+        current: Math.floor(c.troops || 0),
+        rewardGold: Math.round(nextTarget * 40),
+        rewardTroops: Math.max(6, Math.round(nextTarget * 0.15)),
+        completed: false,
+      };
+    }
+
+    try {
+      localStorage.setItem(key, JSON.stringify(quests));
+    } catch {}
+
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+      },
+    });
+
+    this.saveState();
+    return { rewardGold, rewardTroops };
+  }
+
+  // Special Mercenary Recruitment: Unlimited capacity, dedicated reserve pool!
   buyMercenaries(countryId, troopCount) {
     const c = this.countryMap.get(countryId);
     if (!c) return { ok: false, reason: "Devlet bulunamadı." };
     this._recalculateDerivedStats(c);
-    const maxTroops = Math.max(10, c.capacity || Math.floor(c.landCount * 1.2));
-    const availableCap = Math.max(0, maxTroops - c.troops);
-    if (availableCap <= 0.05) {
-      return { ok: false, reason: `Asker kapasiten dolu! (Maks: ${Math.floor(maxTroops)})` };
-    }
-    const count = Math.min(troopCount, availableCap);
-    const cost = Math.round(count * 250);
+
+    const count = Math.max(1, Math.floor(troopCount));
+    const unitPrice = c.doctrine === "MERCHANT" ? 200 : 250;
+    const cost = Math.round(count * unitPrice);
     if (c.gold < cost) {
-      return { ok: false, reason: `Yetersiz altın! ${Math.floor(count)} asker için ${cost.toLocaleString()} Altın gereklidir.` };
+      return { ok: false, reason: `Yetersiz altın! ${count} özel asker için ${cost.toLocaleString()} Altın gereklidir.` };
     }
     c.gold -= cost;
-    c.troops = Number((c.troops + count).toFixed(1));
+    c.specialTroops = (c.specialTroops || 0) + count;
+    c.inventory = {
+      ...(c.inventory || {}),
+      specialTroops: c.specialTroops,
+    };
+    if (countryId === this.myCountryId) {
+      this._persistCountryInventory(c);
+    }
+
     this.dirtyPixels = true;
     this.saveState();
     this.onSound("celebration");
-    this.onEvent(`${Math.floor(count)} Paralı Asker kiralandı! (-${cost.toLocaleString()} Altın)`);
+    this.onEvent(`${count} Özel Asker (Muhafız) kiralandı! (-${cost.toLocaleString()} Altın)`);
 
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
@@ -1336,7 +1894,8 @@ export class WorldSimulationEngine {
 
     if (!isEnemy) {
       const siegeLevel = attacker.upgrades?.siege || 0;
-      baseCost = Math.max(0.5, Number((1.0 - siegeLevel * 0.02).toFixed(2)));
+      const warlordMult = attacker.doctrine === "WARLORD" ? 0.9 : 1.0;
+      baseCost = Math.max(0.45, Number(((1.0 - siegeLevel * 0.02) * warlordMult).toFixed(2)));
     } else {
       // Check active diplomatic treaties (İttifak / Haraç)
       const activeTreaty = this.getActiveTreatyBetween(countryId, currentOwner);
@@ -1540,18 +2099,47 @@ export class WorldSimulationEngine {
     return neighbor3x3Support <= 2;
   }
 
+  // Helper to consume troops with Normal > Special priority (Auto-conquer only uses normal troops!)
+  _deductTroops(country, amount, allowSpecial = true) {
+    if (amount <= 0) return true;
+    const normal = country.troops || 0;
+    const special = allowSpecial ? (country.specialTroops || 0) : 0;
+    if (normal + special < amount) return false;
+
+    if (normal >= amount) {
+      country.troops = Number((normal - amount).toFixed(2));
+    } else {
+      const remainder = amount - normal;
+      country.troops = 0;
+      country.specialTroops = Math.max(0, Math.floor(special - remainder));
+      country.inventory = {
+        ...(country.inventory || {}),
+        specialTroops: country.specialTroops,
+      };
+      if (country.id === this.myCountryId) {
+        this._persistCountryInventory(country);
+      }
+    }
+    return true;
+  }
+
   // Conquer single pixel (instant on adjacent land, or dispatches a sailing Ship across the sea!)
-  conquerPixel(countryId, x, y) {
+  conquerPixel(countryId, x, y, isAutoConquer = false) {
     const country = this.countryMap.get(countryId);
     if (!country) return { ok: false, reason: "Devlet bulunamadı." };
 
     const check = this.canExpandToPixel(countryId, x, y);
     if (!check.valid) return { ok: false, reason: check.reason };
 
-    if (country.troops < check.cost) {
+    const allowSpecial = !isAutoConquer;
+    const availableTroops = (country.troops || 0) + (allowSpecial ? (country.specialTroops || 0) : 0);
+
+    if (availableTroops < check.cost) {
       return {
         ok: false,
-        reason: `Yetersiz asker! (${check.cost} asker gerekli, sende ${country.troops.toFixed(1)} var)`,
+        reason: isAutoConquer
+          ? `Oto-fethet için yetersiz normal asker! (${check.cost} gerekli)`
+          : `Yetersiz asker! (${check.cost} asker gerekli, toplamda ${availableTroops.toFixed(1)} var)`,
       };
     }
 
@@ -1568,7 +2156,7 @@ export class WorldSimulationEngine {
         };
       }
 
-      country.troops = Math.max(0, country.troops - check.cost);
+      this._deductTroops(country, check.cost, allowSpecial);
       const ship = {
         id: "ship_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
         countryId,
@@ -1608,15 +2196,8 @@ export class WorldSimulationEngine {
       Number((1.0 - siegeLevel * 0.02).toFixed(2)),
     );
 
-    if (country.troops < check.cost) {
-      return {
-        ok: false,
-        reason: `Yetersiz asker! (${check.cost} asker gerekli, sende ${country.troops.toFixed(1)} var)`,
-      };
-    }
-
-    // Deduct cost for the clicked border pixel
-    country.troops = Math.max(0, country.troops - check.cost);
+    // Deduct cost for the clicked border pixel (Priority: Normal > Special)
+    this._deductTroops(country, check.cost, allowSpecial);
     this.owners[idx] = countryId;
     country.landCount++;
     country.population += 5;
@@ -1636,8 +2217,9 @@ export class WorldSimulationEngine {
 
     const filledCavities = [];
     for (const cIdx of enclosed) {
-      if (country.troops >= costPerCavityPixel) {
-        country.troops = Math.max(0, country.troops - costPerCavityPixel);
+      const currentAvail = (country.troops || 0) + (allowSpecial ? (country.specialTroops || 0) : 0);
+      if (currentAvail >= costPerCavityPixel) {
+        this._deductTroops(country, costPerCavityPixel, allowSpecial);
         this.owners[cIdx] = countryId;
         const px = cIdx % MAP_W;
         const py = (cIdx / MAP_W) | 0;
@@ -1675,6 +2257,10 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.onSound("pencil");
 
+    if (countryId === this.myCountryId) {
+      this.progressQuest("CONQUER", 1 + filledCavities.length);
+    }
+
     if (filledCavities.length > 0) {
       this.onEvent(
         `Çevrelenen ${filledCavities.length} iç piksel ${cavityTotalCost.toFixed(1)} asker harcanarak fethedildi!`,
@@ -1702,16 +2288,19 @@ export class WorldSimulationEngine {
     this.owners[targetY * MAP_W + targetX] = countryId;
 
     const candidates = [];
-    for (let dy = -4; dy <= 4; dy++) {
-      for (let dx = -4; dx <= 4; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const nx = targetX + dx;
-        const ny = targetY + dy;
-        if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
-          const idx = ny * MAP_W + nx;
-          if (this.owners[idx] === 0 && this.worldData.isLand[idx]) {
-            candidates.push(idx);
-          }
+    const immediateDirs = [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+    for (const [dx, dy] of immediateDirs) {
+      const nx = targetX + dx;
+      const ny = targetY + dy;
+      if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
+        const idx = ny * MAP_W + nx;
+        if (this.owners[idx] === 0 && this.worldData.isLand[idx]) {
+          candidates.push(idx);
         }
       }
     }
@@ -1748,8 +2337,9 @@ export class WorldSimulationEngine {
           }
           const adjIdx = adjY * MAP_W + adjX;
           if (!this.worldData.isLand[adjIdx]) {
-            // Water/ocean is a natural boundary
-            continue;
+            // Water/ocean is NOT an enclosed interior hole (prevents filling entire peninsulas/islands!)
+            isEnclosed = false;
+            break;
           }
           const o = this.owners[adjIdx];
           if (o === countryId) {
@@ -1763,7 +2353,7 @@ export class WorldSimulationEngine {
             visitedGlobal.add(adjIdx);
             component.push(adjIdx);
             queue.push(adjIdx);
-            if (component.length > 150) {
+            if (component.length > 8) {
               isEnclosed = false;
               break;
             }
@@ -2012,7 +2602,7 @@ export class WorldSimulationEngine {
       };
     }
 
-    return this.conquerPixel(countryId, bestCandidate.x, bestCandidate.y);
+    return this.conquerPixel(countryId, bestCandidate.x, bestCandidate.y, true);
   }
 
   async foundCountry({
@@ -2341,6 +2931,11 @@ export class WorldSimulationEngine {
       }
     }
 
+    if (remoteCountry.lastHeartbeatTime) country.lastHeartbeatTime = remoteCountry.lastHeartbeatTime;
+    else if (packetTime > 0) country.lastHeartbeatTime = packetTime;
+    if (remoteCountry.lastInputTime) country.lastInputTime = remoteCountry.lastInputTime;
+    if (remoteCountry.lastActiveTime) country.lastActiveTime = remoteCountry.lastActiveTime;
+
     const idxCap = country.capitalY * MAP_W + country.capitalX;
     if (this.worldData.isLand[idxCap] && !this.isWasteland[idxCap] && this.owners[idxCap] === 0) {
       this.owners[idxCap] = country.id;
@@ -2499,10 +3094,22 @@ export class WorldSimulationEngine {
     }
     if (stats.inventory && typeof stats.inventory === 'object') {
       const nukes = stats.inventory.nukes;
-      country.inventory = { nukes: Number.isFinite(nukes) ? Math.max(0, Math.min(100000, Math.floor(nukes))) : country.inventory?.nukes || 0 };
+      const specialTroops = stats.inventory.specialTroops;
+      country.specialTroops = Number.isFinite(specialTroops) ? Math.max(0, Math.floor(specialTroops)) : country.specialTroops || 0;
+      country.inventory = {
+        nukes: Number.isFinite(nukes) ? Math.max(0, Math.min(100000, Math.floor(nukes))) : country.inventory?.nukes || 0,
+        specialTroops: country.specialTroops,
+      };
       if (countryId === this.myCountryId) {
         this._persistCountryInventory(country);
       }
+    }
+    if (stats.lastHeartbeatTime) country.lastHeartbeatTime = stats.lastHeartbeatTime;
+    else if (packetTime > 0) country.lastHeartbeatTime = packetTime;
+    if (stats.lastInputTime) country.lastInputTime = stats.lastInputTime;
+    if (stats.lastActiveTime) country.lastActiveTime = stats.lastActiveTime;
+    if (["BALANCED", "MERCHANT", "WARLORD", "FORTRESS"].includes(stats.doctrine)) {
+      country.doctrine = stats.doctrine;
     }
     this._recalculateDerivedStats(country);
     this.saveState();
@@ -3050,7 +3657,8 @@ export class WorldSimulationEngine {
     treaty.activatedAt = activatedAt || Date.now();
     treaty.lastPaymentTime = treaty.activatedAt;
 
-    if (!isReplay) {
+    const involvesMe = this.myCountryId && (treaty.fromId === this.myCountryId || treaty.toId === this.myCountryId);
+    if (!isReplay && involvesMe) {
       this.onSound("celebration");
       this.onEvent(
         ` ${treaty.fromName} ve ${treaty.toName} arasındaki ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşması yürürlüğe girdi!`,
@@ -3335,6 +3943,63 @@ export class WorldSimulationEngine {
     this.sync.sendChatMessage(` [SUNUCU ETKİNLİĞİ] Admin tüm devletlere +${nukesCount} Taktik Nükleer Silah dağıttı!`, true);
     this.onSound("celebration");
     this.onEvent(`[ADMIN] Tüm ${count} devlete +${nukesCount} Nükleer Silah dağıtıldı!`);
+    return { ok: true, count };
+  }
+
+  adminGiveSpecialTroops(countryId, amount = 50) {
+    const c = this.countryMap.get(countryId);
+    if (!c) return { ok: false, reason: "Devlet bulunamadı." };
+    const add = Math.floor(Number(amount) || 0);
+    c.specialTroops = Math.max(0, (c.specialTroops || 0) + add);
+    c.inventory = { ...(c.inventory || {}), specialTroops: c.specialTroops };
+    if (c.id === this.myCountryId) this._persistCountryInventory(c);
+    this.saveState();
+    this.sync.broadcast({
+      type: "SYNC_COUNTRY_STATS",
+      countryId: c.id,
+      isAdminOverride: true,
+      stats: {
+        troops: Number(c.troops.toFixed(1)),
+        gold: Math.floor(c.gold),
+        population: Math.floor(c.population),
+        color: c.color,
+        upgrades: c.upgrades,
+        inventory: c.inventory,
+      },
+    });
+    this.onSound("celebration");
+    this.onEvent(`[ADMIN] ${c.name} devletine ${add >= 0 ? "+" : ""}${add} Özel Asker (Muhafız) gönderildi! (Toplam: ${c.specialTroops})`);
+    return { ok: true, specialTroops: c.specialTroops };
+  }
+
+  adminGiveAllPlayersSpecialTroops(amount = 50) {
+    let count = 0;
+    const add = Math.floor(Number(amount) || 0);
+    for (const c of this.countries) {
+      if (c && c.landCount > 0) {
+        c.specialTroops = Math.max(0, (c.specialTroops || 0) + add);
+        c.inventory = { ...(c.inventory || {}), specialTroops: c.specialTroops };
+        if (c.id === this.myCountryId) this._persistCountryInventory(c);
+        count++;
+        this.sync.broadcast({
+          type: "SYNC_COUNTRY_STATS",
+          countryId: c.id,
+          isAdminOverride: true,
+          stats: {
+            troops: Number(c.troops.toFixed(1)),
+            gold: Math.floor(c.gold),
+            population: Math.floor(c.population),
+            color: c.color,
+            upgrades: c.upgrades,
+            inventory: c.inventory,
+          },
+        });
+      }
+    }
+    this.saveState();
+    this.sync.sendChatMessage(` [SUNUCU ETKİNLİĞİ] Admin tüm devletlere +${add} Özel Asker (Muhafız) gönderdi!`, true);
+    this.onSound("celebration");
+    this.onEvent(`[ADMIN] Tüm ${count} devlete +${add} Özel Asker gönderildi!`);
     return { ok: true, count };
   }
 

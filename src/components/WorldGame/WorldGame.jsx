@@ -9,6 +9,7 @@ import { MAP_W, MAP_H, getWorldRasterData } from "../../world/worldRasterizer";
 import {
   WorldSimulationEngine,
   UPGRADE_DEFINITIONS,
+  DOCTRINE_DEFINITIONS,
 } from "../../world/worldEngine";
 import { WorldMapRenderer } from "../../world/worldRenderer";
 import { checkNetworkAndSecurity } from "../../world/networkSecurity";
@@ -40,6 +41,8 @@ import {
   AlertTriangle,
   Sparkles,
   ShieldAlert,
+  WifiOff,
+  CloudOff,
   MessageSquare,
   Send,
   ChevronDown,
@@ -58,6 +61,10 @@ import {
   XCircle,
   ShoppingBag,
   Package,
+  BarChart2,
+  Award,
+  Flame,
+  Star,
 } from "lucide-react";
 import { checkAppVersion } from "../../utils/versionCheck";
 
@@ -90,8 +97,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [foundColor, setFoundColor] = useState("#E11D48");
   const [foundFlagDataUrl, setFoundFlagDataUrl] = useState(null);
 
-  // VPN Block Modal & Mandatory Version Update
+  // VPN Block Modal & Mandatory Version Update & Server Maintenance/Connection Block
   const [vpnBlocked, setVpnBlocked] = useState(false);
+  const [serverBlocked, setServerBlocked] = useState(false);
   const [mandatoryUpdate, setMandatoryUpdate] = useState(null);
   const [optionalAppUpdate, setOptionalAppUpdate] = useState(null);
   const [webUpdateAvailable, setWebUpdateAvailable] = useState(false);
@@ -102,6 +110,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
   const [showRules, setShowRules] = useState(false);
   const [showUpgrades, setShowUpgrades] = useState(false);
   const [showCountriesList, setShowCountriesList] = useState(false);
+  const [showStatsModal, setShowStatsModal] = useState(false);
+  const [photoPreviewModal, setPhotoPreviewModal] = useState(null); // { url, name }
+  const [offlinePackageModal, setOfflinePackageModal] = useState(null); // { troops, gold, popGrown, timeStr }
+  const [showQuestsModal, setShowQuestsModal] = useState(false);
+  const [dailyStreakModal, setDailyStreakModal] = useState(null); // streak info
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const hasCenteredOnMyCountryRef = useRef(false);
@@ -172,6 +185,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
     allCountries: [],
     connectedPeers: 0,
     isCloudConnected: false,
+    hasInitialSyncLoaded: false,
+    isSyncError: false,
+    lastWriteError: false,
     time: 0,
   });
 
@@ -248,12 +264,33 @@ export default function WorldGame({ onReturnToModeSelect }) {
   // Start cloud sync after mount, not in the render-time engine constructor.
   // This keeps React StrictMode's development mount/cleanup/remount cycle safe.
   useEffect(() => {
-    engineRef.current?.ensureSync?.();
+    const sync = engineRef.current?.ensureSync?.();
+    
+    // Check initial connection after a short grace period (5.5 seconds)
+    // If not connected to server after grace period, or if initial sync failed, block gameplay
+    const connTimer = setTimeout(() => {
+      const isConnected = Boolean(engineRef.current?.sync?.isCloudConnected);
+      const isLoaded = Boolean(engineRef.current?.sync?.hasInitialSyncLoaded);
+      if (!isConnected || !isLoaded) {
+        setServerBlocked(true);
+      }
+    }, 5500);
+
     return () => {
+      clearTimeout(connTimer);
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
       engineRef.current?.sync?.destroy?.();
     };
   }, []);
+
+  // Continuous monitoring: If sync errors out or a cloud write fails, immediately show server maintenance block modal
+  useEffect(() => {
+    if (hud.isSyncError || hud.lastWriteError) {
+      setServerBlocked(true);
+    } else if (hud.isCloudConnected && hud.hasInitialSyncLoaded && !hud.lastWriteError) {
+      setServerBlocked(false);
+    }
+  }, [hud.isSyncError, hud.lastWriteError, hud.isCloudConnected, hud.hasInitialSyncLoaded]);
 
   // Load initial chat messages on mount
   useEffect(() => {
@@ -360,7 +397,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
     hasCenteredOnMyCountryRef.current = true;
     const center = eng.getCountryCenter(hud.myCountry.id);
     centerOnCoords(center.x, center.y, 16.0);
-    eng.processOfflineProgress();
+
+    // Check collectible offline package
+    const offlinePkg = eng.getPendingOfflinePackage();
+    if (offlinePkg) {
+      setOfflinePackageModal(offlinePkg);
+    }
+
+    // Check daily streak
+    const streakInfo = eng.getDailyStreakInfo();
+    if (!streakInfo.isClaimedToday && !offlinePkg) {
+      setDailyStreakModal(streakInfo);
+    }
   }, [hud.myCountry, centerOnCoords]);
 
   // Handle Custom Flag Upload
@@ -410,6 +458,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
   // Found Country Confirmation
   const handleConfirmFoundCountry = useCallback(async () => {
     if (!foundingModal) return;
+    if (serverBlocked || !engineRef.current?.sync?.isCloudConnected) {
+      setServerBlocked(true);
+      showToast("Sunucuya bağlanılamadığı için ülke kurulamaz!");
+      return;
+    }
     if (networkInfo.isVpnOrProxy) {
       setVpnBlocked(true);
       return;
@@ -496,6 +549,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
   // Pointer interactions (Zero-teleport per-pointer tracking, smooth pan, incremental pinch zoom & tap-to-found)
   const handlePointerDown = useCallback(
     (e) => {
+      // Record real physical user interaction for Active/Away status tracking
+      if (engineRef.current) {
+        engineRef.current.lastInputTime = Date.now();
+        const myC = engineRef.current.getMyCountry();
+        if (myC) myC.lastInputTime = Date.now();
+      }
+
       try {
         e.currentTarget.setPointerCapture(e.pointerId);
       } catch {}
@@ -528,6 +588,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
           setNukeConfirmModal({ x: pos.x, y: pos.y });
           setIsTargetingNuke(false);
         }
+        return;
+      }
+
+      if (serverBlocked || !engineRef.current?.sync?.isCloudConnected) {
+        showToast("Sunucu bağlantısı yok! Oyun güncelleniyor veya bakım modunda.");
+        setServerBlocked(true);
+        isPaintingRef.current = false;
         return;
       }
 
@@ -717,6 +784,24 @@ export default function WorldGame({ onReturnToModeSelect }) {
       }
 
       if (wasCleanSingleTap) {
+        // First check if user tapped on a country's emblem/flag on the map to zoom in & view image
+        if (rendererRef.current && canvasRef.current) {
+          const hitCrest = rendererRef.current.getHitCrest(e.clientX, e.clientY, canvasRef.current);
+          if (hitCrest && hitCrest.flagDataUrl) {
+            setPhotoPreviewModal({
+              url: hitCrest.flagDataUrl,
+              name: hitCrest.countryName || "Devlet Resmi",
+              color: hitCrest.color,
+            });
+            return;
+          }
+        }
+
+        if (serverBlocked || !engineRef.current?.sync?.isCloudConnected) {
+          setServerBlocked(true);
+          return;
+        }
+
         const pos = getMapCoords(e.clientX, e.clientY);
         if (!pos || pos.x < 0 || pos.x >= MAP_W || pos.y < 0 || pos.y >= MAP_H)
           return;
@@ -913,6 +998,9 @@ export default function WorldGame({ onReturnToModeSelect }) {
             allCountries: activeList,
             connectedPeers: eng.sync?.getConnectedPeersCount() || 0,
             isCloudConnected: Boolean(eng.sync?.isCloudConnected),
+            hasInitialSyncLoaded: Boolean(eng.sync?.hasInitialSyncLoaded),
+            isSyncError: Boolean(eng.sync?.isSyncError),
+            lastWriteError: Boolean(eng.sync?.lastWriteError),
             canUndo: undos.length > 0,
             undoSeconds: undoSec,
             time: now,
@@ -1146,7 +1234,7 @@ export default function WorldGame({ onReturnToModeSelect }) {
         style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
         {/* Left Country Status Pill */}
-        <div className="pointer-events-auto bg-slate-900/92 border border-slate-700/80 backdrop-blur-md rounded-2xl px-2 py-1.5 shadow-2xl flex items-center gap-1.5 sm:gap-2 min-w-0 max-w-[62vw] sm:max-w-none overflow-x-auto no-scrollbar">
+        <div className="pointer-events-auto bg-slate-900/92 border border-slate-700/80 backdrop-blur-md rounded-2xl px-2 py-1.5 shadow-2xl flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             onClick={onReturnToModeSelect}
             className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 flex items-center justify-center transition shrink-0"
@@ -1156,12 +1244,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
           </button>
 
           {myCountry ? (
-            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
               {/* Flag & Country Name */}
-              <div className="flex items-center gap-1.5 pr-1.5 sm:pr-2 border-r border-slate-700/80">
+              <div className="flex items-center gap-1.5">
                 <div
                   onClick={() => updateFlagInputRef.current?.click()}
-                  className="w-6 h-4 sm:w-7 sm:h-5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950 cursor-pointer hover:scale-110 active:scale-95 transition"
+                  className="w-7 h-5 sm:w-8 sm:h-5.5 rounded overflow-hidden border-2 shadow shrink-0 bg-slate-950 cursor-pointer hover:scale-110 active:scale-95 transition"
                   style={{ borderColor: myCountry.color || "#FBBF24" }}
                   title="Resmi / Bayrağı Değiştir (Tıkla)"
                 >
@@ -1178,48 +1266,8 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     />
                   )}
                 </div>
-                <span className="text-[11px] sm:text-sm font-black text-white tracking-tight truncate max-w-[74px] sm:max-w-[140px]">
+                <span className="text-[11px] sm:text-sm font-black text-white tracking-tight truncate max-w-[90px] sm:max-w-[160px]">
                   {myCountry.name}
-                </span>
-              </div>
-
-              {/* Clean Metrics with Vector Logos */}
-              <div className="flex items-center gap-2 sm:gap-3 text-[11px] sm:text-xs font-bold">
-                <span
-                  className="text-amber-400 flex items-center gap-1"
-                  title="Mevcut Asker / Maksimum Kapasite"
-                >
-                  <LogoSwords size={14} />
-                  <span>
-                    {Math.floor(myCountry.troops)}/{myCountry.capacity}
-                  </span>
-                  <span className="text-emerald-400 text-[10px] hidden md:inline">
-                    (+{(myCountry.productionRate || 0).toFixed(2)}/sn)
-                  </span>
-                </span>
-
-                <span
-                  className="text-slate-200 flex items-center gap-1"
-                  title="Toplam Toprak (Piksel)"
-                >
-                  <LogoTerritory size={14} />
-                  <span>{myCountry.landCount}</span>
-                </span>
-
-                <span
-                  className="text-sky-300 hidden lg:flex items-center gap-1"
-                  title="Ülkende Yaşayan Halk Nüfusu"
-                >
-                  <LogoPopulation size={14} />
-                  <span>{Math.floor(myCountry.population || 15)}</span>
-                </span>
-
-                <span
-                  className="text-amber-300 flex items-center gap-1"
-                  title="Vergi Hazinesi"
-                >
-                  <LogoGold size={14} />
-                  <span>{Math.floor(myCountry.gold || 0)}</span>
                 </span>
               </div>
             </div>
@@ -1233,6 +1281,31 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
         {/* Right Compact Action Buttons */}
         <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {myCountry && (
+            <button
+              onClick={() => setShowStatsModal(true)}
+              className="px-2 sm:px-2.5 h-9 rounded-xl bg-slate-900/92 border border-sky-500/50 text-sky-300 hover:bg-slate-800 active:scale-95 font-black text-[11px] sm:text-xs flex items-center gap-1.5 shadow-xl transition"
+              title="Ayrıntılı Devlet İstatistikleri"
+            >
+              <BarChart2 size={15} />
+              <span className="hidden xs:inline sm:inline">İstatistikler</span>
+            </button>
+          )}
+
+          {myCountry && (
+            <button
+              onClick={() => setShowQuestsModal(true)}
+              className="relative px-2 sm:px-2.5 h-9 rounded-xl bg-slate-900/92 border border-amber-500/50 text-amber-300 hover:bg-slate-800 active:scale-95 font-black text-[11px] sm:text-xs flex items-center gap-1.5 shadow-xl transition"
+              title="Dinamik Görevler & Ödüller"
+            >
+              <Award size={15} />
+              <span className="hidden xs:inline sm:inline">Görevler</span>
+              {engineRef.current?.getQuests().some((q) => q.completed) && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+              )}
+            </button>
+          )}
+
           {networkInfo.isAdmin && (
             <button
               onClick={() => setShowAdminModal(true)}
@@ -1669,6 +1742,34 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   .sort((a, b) => b.landCount - a.landCount)
                   .map((c) => {
                     const isMine = myCountry && c.id === myCountry.id;
+                    const now = Date.now();
+                    const lastInput = isMine
+                      ? (engineRef.current?.lastInputTime || c.lastInputTime || now)
+                      : (c.lastInputTime || 0);
+                    const lastHeartbeat = isMine ? now : (c.lastHeartbeatTime || c._lastStatsTime || c._lastSyncTime || 0);
+
+                    // 5 minutes = 300,000 ms
+                    const isActive = (now - lastInput) < 300000;
+                    // Site open / heartbeat within last 75 seconds = connected
+                    const isSiteOpen = (now - lastHeartbeat) < 75000;
+
+                    let statusLabel = "Aktif Değil";
+                    let statusColor = "bg-slate-500 text-slate-300";
+                    let dotColor = "bg-slate-500";
+
+                    if (isActive) {
+                      statusLabel = "Aktif";
+                      statusColor = "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
+                      dotColor = "bg-emerald-400";
+                    } else if (isSiteOpen) {
+                      statusLabel = "Uzakta";
+                      statusColor = "bg-amber-500/20 text-amber-300 border border-amber-500/40";
+                      dotColor = "bg-amber-400";
+                    } else {
+                      statusLabel = "Aktif Değil";
+                      statusColor = "bg-slate-700/60 text-slate-400 border border-slate-600/50";
+                      dotColor = "bg-slate-500";
+                    }
 
                     return (
                       <div
@@ -1681,8 +1782,18 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div
-                            className="w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950"
+                            onClick={() => {
+                              if (c.flagDataUrl) {
+                                setPhotoPreviewModal({
+                                  url: c.flagDataUrl,
+                                  name: c.name,
+                                  color: c.color,
+                                });
+                              }
+                            }}
+                            className={`w-8 h-6 rounded overflow-hidden border-2 shrink-0 bg-slate-950 ${c.flagDataUrl ? "cursor-pointer hover:scale-110 active:scale-95 transition" : ""}`}
                             style={{ borderColor: c.color || "#FBBF24" }}
+                            title={c.flagDataUrl ? "Büyük Fotoğrafı Gör" : undefined}
                           >
                             {c.flagDataUrl && (
                               <img
@@ -1700,6 +1811,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
                                   SEN
                                 </span>
                               )}
+                              <span
+                                className={`text-[9px] font-black px-1.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${statusColor}`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                                {statusLabel}
+                              </span>
                             </div>
                             <div className="text-[11px] text-slate-400 font-bold">
                               {c.landCount} Piksel • {Math.floor(c.troops)}/
@@ -1734,6 +1851,508 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   dokunarak ilk devleti kur!
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DETAILED COUNTRY STATISTICS MODAL */}
+      {showStatsModal && myCountry && (
+        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700/80 rounded-3xl p-4 sm:p-6 shadow-2xl text-left max-h-[85vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-10 h-7 rounded-lg overflow-hidden border-2 shadow shrink-0 bg-slate-950"
+                  style={{ borderColor: myCountry.color || "#FBBF24" }}
+                >
+                  {myCountry.flagDataUrl ? (
+                    <img
+                      src={myCountry.flagDataUrl}
+                      alt={myCountry.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="w-full h-full"
+                      style={{ backgroundColor: myCountry.color || "#38BDF8" }}
+                    />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <span>{myCountry.name}</span>
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      Aktif
+                    </span>
+                    {(() => {
+                      const titleInfo = engineRef.current?.getCountryTitle(myCountry);
+                      if (!titleInfo) return null;
+                      return (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                          <span>{titleInfo.badge}</span>
+                          <span>{titleInfo.title}</span>
+                        </span>
+                      );
+                    })()}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Ayrıntılı Askeri, Ekonomik ve Nüfus Raporu
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowStatsModal(false)}
+                className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white flex items-center justify-center transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="space-y-4 overflow-y-auto pr-1">
+              {/* Askeri Güç & Ordu */}
+              <div className="p-3.5 bg-slate-800/60 border border-slate-700/70 rounded-2xl">
+                <div className="flex items-center gap-2 text-amber-400 font-black text-xs sm:text-sm mb-2.5">
+                  <LogoSwords size={16} />
+                  <span>Askeri Durum & Kışla</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-left">
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Mevcut Normal Asker</div>
+                    <div className="text-sm sm:text-base font-black text-amber-300">
+                      {Math.floor(myCountry.troops)} <span className="text-[10px] text-slate-400">/ {myCountry.capacity}</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-purple-500/40">
+                    <div className="text-[10px] text-purple-300 font-bold">Özel Asker (Muhafız)</div>
+                    <div className="text-sm sm:text-base font-black text-purple-400">
+                      {(myCountry.specialTroops || 0).toLocaleString()} <span className="text-[10px] text-slate-400">(Sınırsız)</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Üretim Hızı</div>
+                    <div className="text-sm sm:text-base font-black text-emerald-400">
+                      +{(myCountry.productionRate || 0).toFixed(2)} <span className="text-[10px] text-slate-400">/sn</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Çevrimdışı Hız (%50)</div>
+                    <div className="text-sm sm:text-base font-black text-sky-400">
+                      +{((myCountry.productionRate || 0) * 0.5).toFixed(2)} <span className="text-[10px] text-slate-400">/sn</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Saldırı Gücü</div>
+                    <div className="text-sm sm:text-base font-black text-rose-400">
+                      %{( (myCountry.attackPower || 1.0) * 100 ).toFixed(0)}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Savunma Dayanıklılığı</div>
+                    <div className="text-sm sm:text-base font-black text-indigo-400">
+                      %{( (myCountry.defensePower || 1.0) * 100 ).toFixed(0)}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Donanma Menzili</div>
+                    <div className="text-sm sm:text-base font-black text-cyan-400">
+                      {Math.round(myCountry.navalRange || 38)} px
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Ekonomi & Vergi */}
+              <div className="p-3.5 bg-slate-800/60 border border-slate-700/70 rounded-2xl">
+                <div className="flex items-center gap-2 text-amber-300 font-black text-xs sm:text-sm mb-2.5">
+                  <LogoGold size={16} />
+                  <span>Ekonomi & Vergi Hazinesi</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-left">
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Kasadaki Altın</div>
+                    <div className="text-sm sm:text-base font-black text-amber-300">
+                      {Math.floor(myCountry.gold || 0)}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Altın Geliri</div>
+                    <div className="text-sm sm:text-base font-black text-amber-400">
+                      +{(myCountry.goldIncome || 0).toFixed(2)} <span className="text-[10px] text-slate-400">/sn</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Çevrimdışı Altın (%50)</div>
+                    <div className="text-sm sm:text-base font-black text-sky-400">
+                      +{((myCountry.goldIncome || 0) * 0.5).toFixed(2)} <span className="text-[10px] text-slate-400">/sn</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Toprak & Nüfus */}
+              <div className="p-3.5 bg-slate-800/60 border border-slate-700/70 rounded-2xl">
+                <div className="flex items-center gap-2 text-sky-300 font-black text-xs sm:text-sm mb-2.5">
+                  <LogoPopulation size={16} />
+                  <span>Toprak & Nüfus Dağılımı</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-left">
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Toplam Toprak</div>
+                    <div className="text-sm sm:text-base font-black text-white">
+                      {myCountry.landCount} <span className="text-[10px] text-slate-400">Piksel</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Halk Nüfusu</div>
+                    <div className="text-sm sm:text-base font-black text-sky-300">
+                      {Math.floor(myCountry.population || 15)} <span className="text-[10px] text-slate-400">/ {myCountry.maxPopulation}</span>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
+                    <div className="text-[10px] text-slate-400 font-bold">Nükleer Cephane</div>
+                    <div className="text-sm sm:text-base font-black text-rose-400 flex items-center gap-1">
+                      <LogoNuclear size={14} />
+                      <span>{myCountry.inventory?.nukes || 0} Adet</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stratejik Kaynaklar & Tarihi Başkentler */}
+              <div className="p-3.5 bg-slate-800/60 border border-slate-700/70 rounded-2xl">
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2 text-purple-300 font-black text-xs sm:text-sm">
+                    <span>🏛️ Stratejik Kaynaklar & Harikalar</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-bold">Sabit Dünya Noktaları</span>
+                </div>
+                {(() => {
+                  const sc = myCountry.strategicCounts || { gold: 0, oil: 0, wonder: 0 };
+                  return (
+                    <div className="grid grid-cols-3 gap-2 text-left">
+                      <div className="p-2 rounded-xl bg-slate-900/80 border border-amber-500/30">
+                        <div className="text-[10px] text-amber-300 font-bold">🪙 Altın Madeni</div>
+                        <div className="text-sm font-black text-white">
+                          {sc.gold} <span className="text-[10px] text-emerald-400">(+%{Math.min(48, sc.gold * 12)})</span>
+                        </div>
+                      </div>
+                      <div className="p-2 rounded-xl bg-slate-900/80 border border-sky-500/30">
+                        <div className="text-[10px] text-sky-300 font-bold">⛽ Petrol Havzası</div>
+                        <div className="text-sm font-black text-white">
+                          {sc.oil} <span className="text-[10px] text-emerald-400">(+%{Math.min(48, sc.oil * 12)})</span>
+                        </div>
+                      </div>
+                      <div className="p-2 rounded-xl bg-slate-900/80 border border-purple-500/30">
+                        <div className="text-[10px] text-purple-300 font-bold">🏛️ Başkent</div>
+                        <div className="text-sm font-black text-white">
+                          {sc.wonder} <span className="text-[10px] text-emerald-400">(+%{Math.min(32, sc.wonder * 8)})</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Devlet Doktrini Seçimi */}
+              <div className="p-3.5 bg-slate-800/60 border border-slate-700/70 rounded-2xl">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-amber-300 font-black text-xs sm:text-sm">
+                    ⚖️ Devlet Doktrini (Strateji Rolü)
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-bold">12 saatte 1 ücretsiz</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {DOCTRINE_DEFINITIONS.map((doc) => {
+                    const isActive = (myCountry.doctrine || "BALANCED") === doc.key;
+                    return (
+                      <button
+                        key={doc.key}
+                        onClick={() => {
+                          if (isActive) return;
+                          const res = engineRef.current?.setCountryDoctrine(myCountry.id, doc.key);
+                          if (!res?.ok) {
+                            showToast(res?.reason || "Doktrin değiştirilemedi.");
+                          } else {
+                            showToast(`${doc.icon} ${doc.name} doktrinine geçildi!`);
+                          }
+                        }}
+                        className={`p-2.5 rounded-xl border text-left transition ${
+                          isActive
+                            ? "bg-amber-500/15 border-amber-400 shadow"
+                            : "bg-slate-900/80 border-slate-700/70 hover:border-slate-500"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-black text-xs text-white flex items-center gap-1.5">
+                            <span>{doc.icon}</span>
+                            <span>{doc.name}</span>
+                          </span>
+                          {isActive && (
+                            <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-400 text-slate-950">
+                              AKTİF
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 space-y-0.5">
+                          {doc.pros.map((p, i) => (
+                            <div key={i} className="text-[10px] text-emerald-400 font-bold">+ {p}</div>
+                          ))}
+                          {doc.cons.map((cn, i) => (
+                            <div key={i} className="text-[10px] text-rose-400 font-bold">- {cn}</div>
+                          ))}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Close */}
+            <div className="mt-4 pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                onClick={() => setShowStatsModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-bold text-xs transition"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PHOTO PREVIEW & ENLARGED MODAL */}
+      {photoPreviewModal && (
+        <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="relative max-w-lg w-full bg-slate-900 border border-slate-700/80 rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col items-center">
+            {/* Close Button "X" */}
+            <button
+              onClick={() => setPhotoPreviewModal(null)}
+              className="absolute top-3 right-3 w-9 h-9 rounded-full bg-slate-800/90 hover:bg-rose-600 active:scale-90 text-white flex items-center justify-center transition shadow-lg z-10"
+              title="Kapat"
+            >
+              <X size={20} />
+            </button>
+
+            {/* Country Title */}
+            <div className="w-full text-left mb-3 pr-10">
+              <h3 className="text-base sm:text-lg font-black text-white truncate">
+                {photoPreviewModal.name || "Devlet Bayrağı"}
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                Devletin yüklediği yüksek çözünürlüklü resmi
+              </p>
+            </div>
+
+            {/* Enlarged Photo Container */}
+            <div
+              className="w-full max-h-[65vh] flex items-center justify-center rounded-2xl overflow-hidden border-2 bg-slate-950 shadow-2xl"
+              style={{ borderColor: photoPreviewModal.color || "#FBBF24" }}
+            >
+              <img
+                src={photoPreviewModal.url}
+                alt={photoPreviewModal.name || "Devlet Resmi"}
+                className="w-full h-auto max-h-[60vh] object-contain rounded-xl"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COLLECTIBLE OFFLINE PACKAGE CHEST MODAL */}
+      {offlinePackageModal && (
+        <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="relative max-w-md w-full bg-slate-900 border-2 border-amber-500/80 rounded-3xl p-5 shadow-2xl flex flex-col items-center text-center">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border-2 border-amber-500/50 flex items-center justify-center text-3xl mb-3 shadow-inner">
+              🎁
+            </div>
+            <h3 className="text-lg sm:text-xl font-black text-white">
+              Hükümdar Hoş Geldin!
+            </h3>
+            <p className="text-xs text-slate-300 mt-1 max-w-xs">
+              Sen yokken ({offlinePackageModal.timeStr}) ordun ve halkın boş durmadı. Biriken kaynaklar sandığında toplandı!
+            </p>
+
+            <div className="w-full grid grid-cols-2 gap-3 my-4">
+              <div className="p-3 rounded-2xl bg-slate-800/90 border border-amber-500/40 text-left">
+                <div className="text-[10px] text-slate-400 font-bold flex items-center gap-1">
+                  <LogoSwords size={12} className="text-amber-400" />
+                  <span>Kışla Üretimi</span>
+                </div>
+                <div className="text-lg font-black text-amber-300 mt-0.5">
+                  +{offlinePackageModal.troops} Asker
+                </div>
+              </div>
+              <div className="p-3 rounded-2xl bg-slate-800/90 border border-amber-500/40 text-left">
+                <div className="text-[10px] text-slate-400 font-bold flex items-center gap-1">
+                  <LogoGold size={12} className="text-amber-400" />
+                  <span>Vergi Geliri</span>
+                </div>
+                <div className="text-lg font-black text-amber-400 mt-0.5">
+                  +{offlinePackageModal.gold} Altın
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                engineRef.current?.claimOfflinePackage(offlinePackageModal);
+                setOfflinePackageModal(null);
+                const streak = engineRef.current?.getDailyStreakInfo();
+                if (streak && !streak.isClaimedToday) {
+                  setDailyStreakModal(streak);
+                }
+              }}
+              className="w-full py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-95 text-slate-950 font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
+            >
+              <span>🎁 Hazineye Aktar ve Başla</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DAILY STREAK MODAL */}
+      {dailyStreakModal && !offlinePackageModal && (
+        <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="relative max-w-md w-full bg-slate-900 border-2 border-orange-500/80 rounded-3xl p-5 shadow-2xl flex flex-col items-center text-center">
+            <button
+              onClick={() => setDailyStreakModal(null)}
+              className="absolute top-3 right-3 p-1 rounded-full bg-slate-800 text-slate-400 hover:text-white"
+            >
+              <X size={18} />
+            </button>
+            <div className="w-16 h-16 rounded-2xl bg-orange-500/20 border-2 border-orange-500/50 flex items-center justify-center text-3xl mb-3 shadow-inner">
+              🔥
+            </div>
+            <h3 className="text-lg sm:text-xl font-black text-white flex items-center gap-1.5">
+              <span>Günlük Giriş Serisi</span>
+              <span className="text-orange-400">({dailyStreakModal.nextStreak}. Gün)</span>
+            </h3>
+            <p className="text-xs text-slate-300 mt-1 max-w-xs">
+              Her gün oyuna girerek serini koru, ekstra altın ve 24 saatlik verim bonusu kazan!
+            </p>
+
+            <div className="w-full p-3.5 my-4 rounded-2xl bg-slate-800/80 border border-orange-500/40 text-center">
+              <div className="text-xs font-black text-orange-300">
+                Günün Ödülü: +{dailyStreakModal.bonusGold} Altın & +%{dailyStreakModal.bonusPercent} Günlük Verim
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                engineRef.current?.claimDailyStreak();
+                setDailyStreakModal(null);
+              }}
+              className="w-full py-3 rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 active:scale-95 text-slate-950 font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
+            >
+              <Flame size={18} className="fill-current" />
+              <span>Günün Bonusunu Al</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DYNAMIC QUESTS MODAL */}
+      {showQuestsModal && myCountry && (
+        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700/80 rounded-3xl p-4 sm:p-6 shadow-2xl text-left max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/40">
+                  <Award size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white">
+                    Dinamik Hükümdar Görevleri
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Büyüdükçe hedefler ve ödüller otomatik olarak katlanır!
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowQuestsModal(false)}
+                className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white flex items-center justify-center transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3 overflow-y-auto pr-1">
+              {engineRef.current?.getQuests().map((q) => {
+                const percent = Math.min(100, Math.round(((q.current || 0) / q.target) * 100));
+
+                return (
+                  <div
+                    key={q.id}
+                    className={`p-3.5 rounded-2xl border transition ${
+                      q.completed
+                        ? "bg-emerald-950/30 border-emerald-500/60 shadow-lg"
+                        : "bg-slate-800/70 border-slate-700/80"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <div className="font-black text-xs sm:text-sm text-white">
+                        {q.title}
+                      </div>
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-amber-300">
+                        {Math.min(q.target, q.current || 0)} / {q.target}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mb-2">
+                      {q.desc}
+                    </p>
+
+                    {/* Progress Bar */}
+                    <div className="w-full h-2 rounded-full bg-slate-950 overflow-hidden mb-2.5 border border-slate-800">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          q.completed ? "bg-emerald-400" : "bg-amber-500"
+                        }`}
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-700/40">
+                      <div className="text-[11px] font-bold text-slate-300 flex items-center gap-2">
+                        <span>Ödül:</span>
+                        <span className="text-amber-400">+{q.rewardGold} Altın</span>
+                        {q.rewardTroops > 0 && (
+                          <span className="text-emerald-400">+{q.rewardTroops} Asker</span>
+                        )}
+                      </div>
+
+                      {q.completed ? (
+                        <button
+                          onClick={() => {
+                            engineRef.current?.claimQuestReward(q.id);
+                            showToast("🏆 Görev ödülü toplandı! Yeni seviye görev atandı.");
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs transition shadow animate-bounce"
+                        >
+                          Ödülü Al
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-slate-500 font-bold">
+                          Devam Ediyor
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-3 pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                onClick={() => setShowQuestsModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-bold text-xs transition"
+              >
+                Kapat
+              </button>
             </div>
           </div>
         </div>
@@ -1846,11 +2465,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
             <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
               {UPGRADE_DEFINITIONS.map((def) => {
                 const lvl = myCountry.upgrades?.[def.key] || 0;
+                const stars = myCountry.prestigeStars?.[def.key] || 0;
                 const isMax = lvl >= def.maxLevel;
                 const cost = Math.round(
                   def.baseCost * Math.pow(def.costScale, lvl),
                 );
                 const canAfford = myCountry.gold >= cost && !isMax;
+                const canPrestige = isMax && myCountry.gold >= 15000;
 
                 return (
                   <div
@@ -1869,6 +2490,12 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
                             Sv. {lvl}/{def.maxLevel}
                           </span>
+                          {stars > 0 && (
+                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 flex items-center gap-0.5">
+                              <Star size={10} className="fill-purple-400 text-purple-400" />
+                              <span>{stars}★</span>
+                            </span>
+                          )}
                         </div>
                         <p className="text-[11px] text-slate-400 mt-0.5">
                           {def.desc}
@@ -1876,26 +2503,40 @@ export default function WorldGame({ onReturnToModeSelect }) {
                       </div>
                     </div>
 
-                    <button
-                      disabled={!canAfford}
-                      onClick={() => handleBuyUpgrade(def.key)}
-                      className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 flex items-center gap-1 transition ${
-                        isMax
-                          ? "bg-emerald-950/60 text-emerald-400 border border-emerald-600/40"
-                          : canAfford
+                    {isMax ? (
+                      <button
+                        onClick={() => {
+                          const res = engineRef.current?.prestigeUpgrade(myCountry.id, def.key);
+                          if (!res.ok) {
+                            showToast(res.reason || "Prestij yapılamadı.");
+                          } else {
+                            showToast(`⭐ ${def.name} Prestij Seviyesine Yükseltildi!`);
+                          }
+                        }}
+                        className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 flex items-center gap-1 transition shadow ${
+                          canPrestige
+                            ? "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white animate-pulse"
+                            : "bg-slate-700/70 text-purple-300 border border-purple-500/40"
+                        }`}
+                        title="Seviye 25'e ulaştın! Sıfırlayıp +%2 kalıcı yıldız bonusu kazan (15.000 Altın)"
+                      >
+                        <Star size={13} className="fill-current" />
+                        <span>Prestij Yap (15k)</span>
+                      </button>
+                    ) : (
+                      <button
+                        disabled={!canAfford}
+                        onClick={() => handleBuyUpgrade(def.key)}
+                        className={`px-3 py-2 rounded-xl font-black text-xs shrink-0 flex items-center gap-1 transition ${
+                          canAfford
                             ? "bg-amber-500 hover:bg-amber-400 text-slate-950 shadow"
                             : "bg-slate-700/50 text-slate-500 cursor-not-allowed"
-                      }`}
-                    >
-                      {isMax ? (
-                        <span>Maksimum</span>
-                      ) : (
-                        <>
-                          <span>{cost}</span>
-                          <LogoGold size={14} />
-                        </>
-                      )}
-                    </button>
+                        }`}
+                      >
+                        <span>{cost}</span>
+                        <LogoGold size={14} />
+                      </button>
+                    )}
                   </div>
                 );
               })}
@@ -2025,6 +2666,54 @@ export default function WorldGame({ onReturnToModeSelect }) {
                 className="w-full py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm transition shadow-xl"
               >
                 Devletimi Kur
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SERVER MAINTENANCE / CONNECTION BLOCKED MODAL */}
+      {serverBlocked && (
+        <div className="absolute inset-0 z-50 bg-slate-950/90 backdrop-blur-lg flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-gradient-to-b from-slate-900 to-slate-950 border-2 border-amber-500/80 rounded-3xl p-6 shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
+              <WifiOff size={32} />
+            </div>
+            
+            <div>
+              <h3 className="text-lg font-black text-white tracking-tight">
+                Bağlantı Kurulamadı
+              </h3>
+              <p className="text-xs text-amber-400/90 font-bold mt-1">
+                Oyun güncelleniyor yada bakım modunda belkide internet bağlantınız kötü
+              </p>
+            </div>
+
+            <p className="text-[11px] text-slate-400 leading-relaxed bg-slate-950/60 border border-slate-800 rounded-xl p-3">
+              Yaptığınız fetihlerin ve değişikliklerin kaybolmaması için sunucuya bağlı olmanız gerekmektedir. Bağlantınız düzeldiğinde veya bakım bittiğinde otomatik açılacaktır.
+            </p>
+
+            <div className="flex flex-col gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.reload();
+                }}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition"
+              >
+                <RefreshCw size={14} />
+                <span>Tekrar Dene (Yenile)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setServerBlocked(false);
+                  onReturnToModeSelect();
+                }}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition active:scale-95"
+              >
+                Ana Menüye Dön
               </button>
             </div>
           </div>
@@ -2421,6 +3110,24 @@ export default function WorldGame({ onReturnToModeSelect }) {
                         </button>
                       </div>
 
+                      {/* Özel Asker (Muhafız) Gönder */}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-purple-300 font-bold shrink-0">Özel Asker:</span>
+                        <input
+                          type="number"
+                          value={adminTargetTroops}
+                          onChange={(e) => setAdminTargetTroops(parseInt(e.target.value) || 0)}
+                          className="flex-1 px-2.5 py-1 rounded-lg bg-slate-800 border border-purple-500/40 text-white font-bold text-xs"
+                        />
+                        <button
+                          onClick={() => engineRef.current?.adminGiveSpecialTroops(targetCountry.id, adminTargetTroops)}
+                          className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px]"
+                          title="Seçili ülkeye sınırsız kapasiteli özel asker gönder"
+                        >
+                          +Özel Ver
+                        </button>
+                      </div>
+
                       {/* Toprak Büyütme */}
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-slate-300 font-bold shrink-0">Toprak:</span>
@@ -2521,6 +3228,24 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   >
                     <LogoNuclear size={14} />
                     <span>Millete Nükleer Ver</span>
+                  </button>
+                </div>
+
+                {/* Herkese Özel Asker (Muhafız) Dağıt */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={adminGlobalTroops}
+                    onChange={(e) => setAdminGlobalTroops(parseInt(e.target.value) || 0)}
+                    className="flex-1 px-3 py-1.5 rounded-xl bg-slate-900 border border-purple-500/40 text-white font-bold text-xs"
+                    placeholder="Özel asker adedi"
+                  />
+                  <button
+                    onClick={() => engineRef.current?.adminGiveAllPlayersSpecialTroops(adminGlobalTroops)}
+                    className="py-1.5 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shrink-0 transition flex items-center gap-1"
+                  >
+                    <LogoSwords size={14} />
+                    <span>Millete Özel Asker Ver</span>
                   </button>
                 </div>
 

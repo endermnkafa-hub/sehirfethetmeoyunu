@@ -4,7 +4,15 @@
 
 import { FLAG_W, FLAG_H } from './flagLibrary';
 import { rtdb } from '../firebaseConfig';
-import { ref, push, onChildAdded, query, limitToLast, get, child, set } from 'firebase/database';
+import { ref, push, set, remove, onChildAdded, query, limitToLast, get, onValue } from 'firebase/database';
+
+// In localhost dev mode, use a completely isolated sandbox DB path
+// so testing starts on a clean map without touching the live production world!
+const IS_DEV_SANDBOX =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+const EVENTS_DB_PATH = IS_DEV_SANDBOX ? 'game_events_dev_v1' : 'game_events_v1';
+const COUNTRIES_STATE_PATH = IS_DEV_SANDBOX ? 'countries_state_dev_v1' : 'countries_state_v1';
 
 export class SharedWorldSync {
   constructor(engine, onRemoteUpdate) {
@@ -15,11 +23,16 @@ export class SharedWorldSync {
     this.tabId = 'tab_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
 
     this.isCloudConnected = false;
+    this.hasInitialSyncLoaded = false;
+    this.isSyncError = false;
+    this.lastWriteError = false;
     this.seenMsgIds = new Set();
     this._msgSeq = 0;
     this._announceInterval = null;
     this._statsInterval = null;
     this._unsubscribeFirebase = null;
+    this._unsubscribeConnected = null;
+    this._rtdbConnected = false;
 
     // Pending pixel conquest batch buffer (ultra fast 250ms batching)
     this._pendingPixels = [];
@@ -46,17 +59,65 @@ export class SharedWorldSync {
   async _initFirebaseSync() {
     if (typeof window === 'undefined') return;
 
+    // Listen to Firebase Realtime Database .info/connected
     try {
-      const eventsRef = ref(rtdb, 'game_events_v1');
+      const connectedRef = ref(rtdb, '.info/connected');
+      this._unsubscribeConnected = onValue(connectedRef, (snap) => {
+        if (this.destroyed) return;
+        const isConnected = Boolean(snap.val());
+        this._rtdbConnected = isConnected;
+        if (!isConnected) {
+          if (this.hasInitialSyncLoaded) {
+            // Lost connection after initial load
+            this.isCloudConnected = false;
+          }
+        } else {
+          this.isCloudConnected = true;
+          this.isSyncError = false;
+        }
+        this.onRemoteUpdate();
+      });
+    } catch (e) {
+      console.warn('Firebase .info/connected listener warning:', e);
+    }
 
-      // 1. Initial State Load: Fetch recent world history from Firebase Realtime DB
+    try {
+      const eventsRef = ref(rtdb, EVENTS_DB_PATH);
+      const countriesStateRef = ref(rtdb, COUNTRIES_STATE_PATH);
+
+      // 1. Initial State Load: Fetch BOTH persistent countries_state AND recent event history!
       const recentQuery = query(eventsRef, limitToLast(600));
-      const snapshot = await get(recentQuery);
+      
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Firebase initial load timeout')), 9000)
+      );
+
+      const [countriesSnap, snapshot] = await Promise.race([
+        Promise.all([get(countriesStateRef).catch(() => null), get(recentQuery)]),
+        timeoutPromise,
+      ]);
       
       this.isCloudConnected = true;
+      this.hasInitialSyncLoaded = true;
+      this.isSyncError = false;
       this.onRemoteUpdate();
 
       const initialPayloads = [];
+      // First load persistent country snapshots so NO country is ever pushed out by chat/pixel events!
+      if (countriesSnap && countriesSnap.exists()) {
+        countriesSnap.forEach((childSnap) => {
+          const val = childSnap.val();
+          if (val && val.country) {
+            initialPayloads.push({
+              type: 'COUNTRY_SYNC_PACKET',
+              country: val.country,
+              rle: val.rle || null,
+              _sentAt: val._sentAt || 1,
+            });
+          }
+        });
+      }
+
       if (snapshot.exists()) {
         snapshot.forEach((childSnap) => {
           const val = childSnap.val();
@@ -76,6 +137,7 @@ export class SharedWorldSync {
         const data = childSnap.val();
         if (data) {
           this.isCloudConnected = true;
+          this.isSyncError = false;
           this._handleRemoteMessage(data, false);
           this.onRemoteUpdate();
         }
@@ -93,6 +155,7 @@ export class SharedWorldSync {
       this._statsInterval = setInterval(() => {
         const myC = this.engine.getMyCountry();
         if (myC && myC.landCount > 0) {
+          const now = Date.now();
           this.broadcast({
             type: 'SYNC_COUNTRY_STATS',
             countryId: myC.id,
@@ -103,7 +166,9 @@ export class SharedWorldSync {
               color: myC.color,
               upgrades: myC.upgrades,
               inventory: myC.inventory || { nukes: 0 },
-              lastActiveTime: Date.now(),
+              lastActiveTime: now,
+              lastHeartbeatTime: now,
+              lastInputTime: this.engine.lastInputTime || myC.lastInputTime || now,
             },
           });
         }
@@ -112,6 +177,8 @@ export class SharedWorldSync {
     } catch (err) {
       console.warn('Firebase connection notice:', err);
       this.isCloudConnected = false;
+      this.hasInitialSyncLoaded = false;
+      this.isSyncError = true;
       this.onRemoteUpdate();
     }
   }
@@ -123,83 +190,18 @@ export class SharedWorldSync {
     if (this._statsInterval) clearInterval(this._statsInterval);
     if (this._batchTimer) clearTimeout(this._batchTimer);
     if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
+    if (typeof this._unsubscribeFirebase === 'function') {
+      try { this._unsubscribeFirebase(); } catch {}
+      this._unsubscribeFirebase = null;
+    }
+    if (typeof this._unsubscribeConnected === 'function') {
+      try { this._unsubscribeConnected(); } catch {}
+      this._unsubscribeConnected = null;
+    }
     if (this.channel) {
       try { this.channel.close(); } catch {}
       this.channel = null;
     }
-  }
-
-  async _pollCloudMessages() {
-    if (this.destroyed) return;
-    try {
-      const isInitialLoad = this._lastPollTime === 'all';
-      const url = `${CLOUD_TOPIC_URL}/json?poll=1&since=${this._lastPollTime}`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-      let res;
-      try {
-        res = await fetch(url, { cache: 'no-store', signal: controller.signal });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      if (this.destroyed || !res.ok) return;
-
-      const text = await res.text();
-      if (this.destroyed) return;
-      this.isCloudConnected = true;
-
-      if (!text || !text.trim()) {
-        this.onRemoteUpdate();
-        return;
-      }
-
-      let maxTime = typeof this._lastPollTime === 'number' ? this._lastPollTime : 0;
-      const lines = text.split('\n');
-      const parsedPayloads = [];
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const env = JSON.parse(line);
-          if (env && typeof env.time === 'number' && env.time > maxTime) {
-            maxTime = env.time;
-          }
-          if (env && env.attachment && env.attachment.url) {
-            try {
-              const aRes = await fetch(env.attachment.url, { cache: 'no-store' });
-              if (aRes.ok) {
-                const aData = await aRes.json();
-                if (aData) {
-                  aData._envTime = (env.time || 0) * 1000;
-                  parsedPayloads.push(aData);
-                }
-              }
-            } catch {}
-          } else if (env && env.event === 'message' && env.message) {
-            const data = typeof env.message === 'string' ? JSON.parse(env.message) : env.message;
-            if (data) {
-              data._envTime = (env.time || 0) * 1000;
-              parsedPayloads.push(data);
-            }
-          }
-        } catch {}
-      }
-
-      if (maxTime > 0) {
-        this._lastPollTime = maxTime;
-      }
-
-      if (parsedPayloads.length > 0) {
-        if (isInitialLoad) {
-          this._replayCompactedHistory(parsedPayloads);
-        } else {
-          for (const data of parsedPayloads) {
-            this._handleRemoteMessage(data, true);
-          }
-        }
-        this.onRemoteUpdate();
-      }
-    } catch {}
   }
 
   // Ultra-fast O(N) in-memory server history compactor: reduces 1,000+ server logs into exact current world state in <15ms!
@@ -458,6 +460,8 @@ export class SharedWorldSync {
       creatorIp: myC.creatorIp,
       deviceId: myC.deviceId,
       createdAt: myC.createdAt,
+      lastHeartbeatTime: Date.now(),
+      lastInputTime: this.engine.lastInputTime || myC.lastInputTime || Date.now(),
     };
 
     const payload = {
@@ -466,12 +470,22 @@ export class SharedWorldSync {
       rle,
     };
 
-    // Safety guard: keep total JSON strictly under ntfy's 4096-byte inline message limit!
+    // Persist authoritative country snapshot in countries_state_v1/<id> so new joiners ALWAYS see every country!
+    try {
+      const countryRef = ref(rtdb, `${COUNTRIES_STATE_PATH}/${myC.id}`);
+      set(countryRef, {
+        country: countryMeta,
+        rle,
+        _sentAt: Date.now(),
+      }).catch(() => {});
+    } catch {}
+
+    // Safety guard: keep total JSON strictly under 3600-byte inline message limit for event log!
     if (JSON.stringify(payload).length > 3600) {
       delete payload.country.flagDataUrl;
     }
 
-    this._sendToCloud(payload);
+    this._sendToFirebase(payload);
   }
 
   queuePixelConquest(countryId, x, y, cost) {
@@ -570,9 +584,20 @@ export class SharedWorldSync {
     this.seenMsgIds.add(fullPacket._msgId);
 
     try {
-      const eventsRef = ref(rtdb, 'game_events_v1');
-      push(eventsRef, fullPacket).catch(() => {});
-    } catch {}
+      const eventsRef = ref(rtdb, EVENTS_DB_PATH);
+      push(eventsRef, fullPacket)
+        .then(() => {
+          this.lastWriteError = false;
+        })
+        .catch((err) => {
+          console.warn('Firebase push write error:', err);
+          this.lastWriteError = true;
+          this.onRemoteUpdate();
+        });
+    } catch (e) {
+      this.lastWriteError = true;
+      this.onRemoteUpdate();
+    }
   }
 
   _handleRemoteMessage(data, isHistoryReplay = false) {

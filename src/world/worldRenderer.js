@@ -20,6 +20,9 @@ export class WorldMapRenderer {
 
     // Image cache for HTMLImageElements
     this.imgCache = new Map();
+
+    // Clickable screen hitboxes for country crests & flags
+    this.crestHitboxes = [];
   }
 
   getBaseScale(viewW, viewH) {
@@ -102,8 +105,8 @@ export class WorldMapRenderer {
             dst[p4 + 1] = bg;
             dst[p4 + 2] = bb;
             dst[p4 + 3] = 255;
-          } else if (flagRgba && bw <= 28 && bh <= 20) {
-            // For smaller/starter territory, fit the flag pattern cleanly
+          } else if (flagRgba && bw <= 120 && bh <= 90) {
+            // Fit the custom uploaded image pattern cleanly into the territory boundaries
             const flagAspect = FLAG_W / FLAG_H;
             const boxAspect = bw / bh;
             let normU = (x - minX + 0.5) / bw;
@@ -121,13 +124,12 @@ export class WorldMapRenderer {
             const fy = (normV * FLAG_H) | 0;
 
             const fp = (fy * FLAG_W + fx) * 4;
-            dst[p4] = (flagRgba[fp] * 0.85 + br * 0.15) | 0;
-            dst[p4 + 1] = (flagRgba[fp + 1] * 0.85 + bg * 0.15) | 0;
-            dst[p4 + 2] = (flagRgba[fp + 2] * 0.85 + bb * 0.15) | 0;
+            dst[p4] = (flagRgba[fp] * 0.90 + br * 0.10) | 0;
+            dst[p4 + 1] = (flagRgba[fp + 1] * 0.90 + bg * 0.10) | 0;
+            dst[p4 + 2] = (flagRgba[fp + 2] * 0.90 + bb * 0.10) | 0;
             dst[p4 + 3] = 255;
           } else {
-            // Large/expanding empire territory: Clean, solid, beautiful national territory color
-            // (The high-resolution crisp emblem banner is prominently rendered at the capital/core!)
+            // Very large empire territory: Solid, clean national territory color
             dst[p4] = (br * 0.90) | 0;
             dst[p4 + 1] = (bg * 0.90) | 0;
             dst[p4 + 2] = (bb * 0.90) | 0;
@@ -205,6 +207,9 @@ export class WorldMapRenderer {
 
       const bounds = engine.countryBounds || engine.computeCountryBounds();
 
+      // Reset hitboxes for this frame
+      this.crestHitboxes = [];
+
       // 3. Crisp High-Resolution Country Crest / Emblem Banner in Territory
       // Displays the player's full uncompressed, anti-aliased image / flag right at their capital or core territory!
       for (const country of engine.countries) {
@@ -268,11 +273,27 @@ export class WorldMapRenderer {
 
         // Compute crest dimensions based on country size and camera scale
         const landFactor = Math.sqrt(country.landCount);
-        // Proportional scale: small country ~20px, medium ~45px, massive empire ~90-120px
-        const baseW = Math.max(18, Math.min(100, 14 + landFactor * 0.9));
-        // Screen width: smoothly clamped between 30px and 150px so it's always majestic and visible
-        const screenW = Math.max(30, Math.min(150, Math.round(baseW * Math.max(0.65, Math.min(1.8, scale)))));
+        // Base width proportional to territory size
+        const baseW = Math.max(22, Math.min(110, 16 + landFactor * 0.9));
+        // Screen width: grows naturally when zooming in (scale factor), but has a robust minimum (>= 38px)
+        // so it NEVER becomes microscopic or shrinks when approaching
+        const zoomFactor = Math.max(0.85, Math.min(2.8, scale));
+        const screenW = Math.max(38, Math.min(220, Math.round(baseW * zoomFactor)));
         const screenH = Math.round(screenW * (FLAG_H / FLAG_W));
+
+        // Register clickable screen hitbox
+        const screenLeft = sx + originX - screenW / 2;
+        const screenTop = sy + originY - screenH / 2;
+        this.crestHitboxes.push({
+          countryId: country.id,
+          countryName: country.name,
+          flagDataUrl: country.flagDataUrl,
+          color: country.color,
+          x: screenLeft,
+          y: screenTop,
+          w: screenW,
+          h: screenH,
+        });
 
         ctx.save();
         ctx.translate(sx, sy);
@@ -347,6 +368,85 @@ export class WorldMapRenderer {
         }
 
         ctx.restore();
+      }
+
+      // 3.5. Fixed Strategic Resources & Historic Capitals (Gold Mines, Oil Hubs, Wonders)
+      if (engine.strategicNodes && engine.strategicNodes.length > 0) {
+        const pulse = 0.65 + 0.35 * Math.sin(Date.now() / 420);
+        for (const node of engine.strategicNodes) {
+          const sx = (node.x + 0.5) * scale;
+          const sy = (node.y + 0.5) * scale;
+          if (
+            sx + originX < -60 ||
+            sx + originX > viewW + 60 ||
+            sy + originY < -60 ||
+            sy + originY > viewH + 60
+          ) {
+            continue;
+          }
+
+          const ownerId = engine.owners[node.idx];
+          const ownerCountry = ownerId > 0 ? engine.countryMap.get(ownerId) : null;
+          const radius = Math.max(7, Math.min(14, 5.5 + scale * 1.15));
+
+          let bg = "rgba(15, 23, 42, 0.92)";
+          let accent = "#FBBF24";
+          let glyph = "🪙";
+          if (node.type === "OIL") {
+            accent = "#38BDF8";
+            glyph = "⛽";
+          } else if (node.type === "WONDER") {
+            accent = "#C084FC";
+            glyph = "🏛️";
+          }
+
+          ctx.save();
+          ctx.translate(sx, sy);
+
+          // Subtle glowing ring
+          ctx.beginPath();
+          ctx.arc(0, 0, radius + 2.5, 0, Math.PI * 2);
+          ctx.strokeStyle = ownerCountry ? (ownerCountry.color || accent) : accent;
+          ctx.globalAlpha = ownerCountry ? 0.85 : pulse * 0.65;
+          ctx.lineWidth = ownerCountry ? 2.2 : 1.4;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+
+          // Badge circle
+          ctx.beginPath();
+          ctx.arc(0, 0, radius, 0, Math.PI * 2);
+          ctx.fillStyle = bg;
+          ctx.fill();
+          ctx.strokeStyle = ownerCountry ? (ownerCountry.color || accent) : accent;
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+
+          // Icon glyph
+          ctx.font = `${Math.round(radius * 1.15)}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(glyph, 0, 1);
+
+          // Show name label when zoomed in
+          if (scale >= 3.2) {
+            ctx.font = "800 9px Inter, system-ui, sans-serif";
+            const label = node.name;
+            const tw = ctx.measureText(label).width + 10;
+            const th = 14;
+            ctx.fillStyle = "rgba(9, 13, 22, 0.88)";
+            ctx.beginPath();
+            if (typeof ctx.roundRect === "function") {
+              ctx.roundRect(-tw / 2, radius + 3, tw, th, 4);
+            } else {
+              ctx.rect(-tw / 2, radius + 3, tw, th);
+            }
+            ctx.fill();
+            ctx.fillStyle = accent;
+            ctx.fillText(label, 0, radius + 3 + th / 2);
+          }
+
+          ctx.restore();
+        }
       }
 
       const myCountry = engine.getMyCountry();
@@ -725,5 +825,22 @@ export class WorldMapRenderer {
       } catch {}
       return null;
     }
+  }
+
+  // Find crest hitbox clicked by player on screen
+  getHitCrest(clientX, clientY, canvas) {
+    if (!canvas || !this.crestHitboxes || this.crestHitboxes.length === 0) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    // Check hitboxes from front to back
+    for (let i = this.crestHitboxes.length - 1; i >= 0; i--) {
+      const hb = this.crestHitboxes[i];
+      if (x >= hb.x && x <= hb.x + hb.w && y >= hb.y && y <= hb.y + hb.h) {
+        return hb;
+      }
+    }
+    return null;
   }
 }
