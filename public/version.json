@@ -1,8 +1,8 @@
 {
-  "versionCode": 18,
-  "versionName": "2.7",
-  "minVersionCode": 18,
+  "versionCode": 19,
+  "versionName": "2.8",
+  "minVersionCode": 19,
   "apkUrl": "https://github.com/endermnkafa-hub/sehirfethetmeoyunu/releases/download/v1.0-latest/sehir-fethetme-oyunu.apk",
-  "releaseNotes": "Görevler ve günlük seri tam sunucuya taşındı, Market-Geliştir birleştirildi, rastgele kuruluş rengi, özel vektör kaynak ikonları, fetih/nükleer modunda orta bayrak gizleme ve yanıp sönen nükleer etki alanı önizlemesi eklendi.",
+  "releaseNotes": "Çevrimdışı savunma kalkanı (çevrimdışı oyuncuya saldırırken 5 kat asker maliyeti), saldırı alarmı, kırmızı ekran flaşı, acil durum sireni ve tek tıkla saldırı bölgesine gitme butonu eklendi.",
   "updatedAt": "2026-11-24"
 }

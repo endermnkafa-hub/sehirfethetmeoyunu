@@ -178,6 +178,10 @@ export default function WorldGame({ onReturnToModeSelect }) {
   }, [isTargetingNuke]);
   const [nukeConfirmModal, setNukeConfirmModal] = useState(null); // { x, y }
 
+  // Under Attack Alarm State (Red Flash Screen + Audio Siren + Action Banner)
+  const [underAttackAlert, setUnderAttackAlert] = useState(null); // { attackerName, x, y, isNuke, time }
+  const attackAlertTimerRef = useRef(null);
+
   // Admin Custom Value State
   const [adminCustomTroops, setAdminCustomTroops] = useState(100);
   const [adminCustomGold, setAdminCustomGold] = useState(5000);
@@ -270,7 +274,19 @@ export default function WorldGame({ onReturnToModeSelect }) {
           try {
             confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } });
           } catch {}
+        } else if (sound === "siren") {
+          soundManager.playSiren();
         }
+      },
+      onUnderAttack: (alertData) => {
+        setUnderAttackAlert(alertData);
+        if (soundEnabledRef.current) {
+          soundManager.playSiren();
+        }
+        if (attackAlertTimerRef.current) clearTimeout(attackAlertTimerRef.current);
+        attackAlertTimerRef.current = setTimeout(() => {
+          setUnderAttackAlert(null);
+        }, 5500);
       },
     });
   }
@@ -3365,6 +3381,45 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* RED FLASHING UNDER-ATTACK VIGNETTE BORDER */}
+      {underAttackAlert && (
+        <div className="pointer-events-none fixed inset-0 z-40 border-[8px] sm:border-[12px] border-rose-600/80 shadow-[inset_0_0_80px_rgba(225,29,72,0.65)] animate-pulse" />
+      )}
+
+      {/* TOP UNDER-ATTACK EMERGENCY ACTION BANNER */}
+      {underAttackAlert && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 bg-rose-950/95 border-2 border-rose-500 text-rose-100 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 animate-bounce">
+          <div className="w-8 h-8 rounded-xl bg-rose-600 text-white flex items-center justify-center font-black text-sm shrink-0 shadow-lg shadow-rose-600/50">
+            ⚠️
+          </div>
+          <div className="text-left">
+            <div className="text-xs font-black text-rose-200">
+              {underAttackAlert.isNuke ? "🚨 NÜKLEER SALDIRI ALTINDASIN!" : "🚨 TOPRAKLARIN SALDIRI ALTINDA!"}
+            </div>
+            <div className="text-[10px] text-rose-300">
+              {underAttackAlert.attackerName} sınırlarınıza saldırıyor!
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              if (Number.isFinite(underAttackAlert.x) && Number.isFinite(underAttackAlert.y)) {
+                centerOnCoords(underAttackAlert.x, underAttackAlert.y, 16.0);
+              }
+            }}
+            className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] transition shadow-lg shrink-0 active:scale-95"
+          >
+            Bölgeye Git
+          </button>
+          <button
+            onClick={() => setUnderAttackAlert(null)}
+            className="text-rose-400 hover:text-white text-xs px-1"
+            title="Kapat"
+          >
+            ✕
+          </button>
         </div>
       )}
 

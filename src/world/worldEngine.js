@@ -201,6 +201,7 @@ export class WorldSimulationEngine {
     this.onEvent = callbacks.onEvent || (() => {});
     this.onSound = callbacks.onSound || (() => {});
     this.onChat = callbacks.onChat || (() => {});
+    this.onUnderAttack = callbacks.onUnderAttack || (() => {});
 
     const total = MAP_W * MAP_H;
     this.owners = new Int16Array(total);
@@ -1570,6 +1571,15 @@ export class WorldSimulationEngine {
             country.landCount = Math.max(0, country.landCount - 1);
             country.troops = Math.max(0, country.troops - 0.75);
             affected.add(country);
+            if (prevOwner === this.myCountryId && !isLocal) {
+              this.onUnderAttack({
+                isNuke: true,
+                x,
+                y,
+                attackerName: "Düşman Nükleeri",
+                time: Date.now(),
+              });
+            }
           }
         }
       }
@@ -1819,9 +1829,23 @@ export class WorldSimulationEngine {
       const defender = this.countryMap.get(currentOwner);
       const defPower = defender ? defender.defensePower || 1.0 : 1.0;
       const atkPower = attacker.attackPower || 1.0;
+
+      // Çevrimdışı Oyuncu Koruma Kalkanı:
+      // Eğer hedef devlet son 150 saniyedir (2.5 dk) çevrimdışıysa fetih maliyeti 5 KAT artar!
+      let offlineShieldMult = 1.0;
+      if (defender && defender.id !== countryId) {
+        const now = Date.now();
+        const lastInput = defender.lastInputTime || 0;
+        const lastHeartbeat = defender.lastHeartbeatTime || defender._lastStatsTime || defender._lastSyncTime || 0;
+        const isOffline = (now - lastHeartbeat) >= 75000 && (now - lastInput) >= 150000;
+        if (isOffline) {
+          offlineShieldMult = 5.0;
+        }
+      }
+
       baseCost = Math.max(
         1.0,
-        Number(((2.0 * defPower) / atkPower).toFixed(2)),
+        Number((((2.0 * defPower) / atkPower) * offlineShieldMult).toFixed(2)),
       );
     }
 
@@ -2975,6 +2999,18 @@ export class WorldSimulationEngine {
         this._recalculateDerivedStats(prevC);
       }
       this.dirtyRegions = true;
+
+      // Eğer saldırıya uğrayan benim devletimse, anında acil durum saldırı alarmı tetikle!
+      if (prevOwner === this.myCountryId && countryId !== this.myCountryId) {
+        this.onUnderAttack({
+          attackerId: countryId,
+          attackerName: country.name || "Düşman",
+          attackerColor: country.color || "#EF4444",
+          x,
+          y,
+          time: Date.now(),
+        });
+      }
     }
     this._expandCountryBound(countryId, x, y);
 

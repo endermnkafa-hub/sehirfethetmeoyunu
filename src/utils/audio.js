@@ -182,6 +182,30 @@ class SoundManager {
   playSpin() {
     this.playTick();
   }
+
+  playSiren() {
+    if (!this.enabled) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      const now = this.ctx.currentTime;
+      // Urgent war alarm pitch modulation (800Hz -> 500Hz -> 800Hz)
+      osc.frequency.setValueAtTime(800, now);
+      osc.frequency.linearRampToValueAtTime(520, now + 0.18);
+      osc.frequency.linearRampToValueAtTime(850, now + 0.36);
+      gain.gain.setValueAtTime(0.14, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.38);
+    } catch {}
+  }
 }
 
 // Wrap soundManager in Proxy so any unknown playX method fails gracefully without throwing
