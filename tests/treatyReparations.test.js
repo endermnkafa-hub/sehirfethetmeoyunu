@@ -5,6 +5,7 @@ import {
   POP_SUPPORT_TIERS,
   getPopSupportCost,
 } from '../src/world/worldEngine.js';
+import { SharedWorldSync } from '../src/world/sharedWorldSync.js';
 
 function createMockEngine() {
   const worldData = { isLand: new Uint8Array(1000 * 500) };
@@ -421,4 +422,61 @@ test('auto-conquer rotates evenly across multiple disconnected territories/colon
 
   assert.equal(regionACount > 1, true, 'Region A must expand via auto-conquer');
   assert.equal(regionBCount > 1, true, 'Region B must also expand via auto-conquer');
+});
+
+test('sync history replay orders snapshots chronologically and preserves newer conquests and stats', () => {
+  const engine = createMockEngine();
+  // Mark test land area as habitable
+  for (let x = 20; x <= 30; x++) {
+    engine.worldData.isLand[20 * 1000 + x] = 1;
+    engine.owners[20 * 1000 + x] = 0;
+  }
+
+  // Create SharedWorldSync without opening live Firebase network connections
+  const sync = Object.create(SharedWorldSync.prototype);
+  sync.engine = engine;
+  sync.seenMsgIds = new Set();
+
+  // Country 10 saved an OLD snapshot at t=1000 owning (20,20) and (21,20)
+  // Country 20 conquered (21,20) and saved a NEWER snapshot at t=2000 owning (21,20) and (22,20)
+  // Notice Country 20 appears FIRST in countriesStateSnapshots, Country 10 appears SECOND!
+  const countriesStateSnapshots = [
+    {
+      type: 'COUNTRY_SYNC_PACKET',
+      country: { id: 20, name: 'NewerState', color: '#22C55E', capitalX: 22.4, capitalY: 20.1, gold: 100, troops: 10 },
+      rle: [20, 21, 2],
+      _sentAt: 2000,
+      _fromCountriesState: true,
+    },
+    {
+      type: 'COUNTRY_SYNC_PACKET',
+      country: { id: 10, name: 'OlderState', color: '#EF4444', capitalX: 20, capitalY: 20, gold: 50, troops: 5 },
+      rle: [20, 20, 2],
+      _sentAt: 1000,
+      _fromCountriesState: true,
+    },
+    {
+      type: 'COUNTRY_SYNC_PACKET',
+      country: { id: 30, name: 'DeletedState', color: '#3B82F6', capitalX: 25, capitalY: 20, gold: 10, troops: 1 },
+      rle: [20, 25, 1],
+      _sentAt: 1500,
+      _fromCountriesState: true,
+    },
+  ];
+
+  // Recent event log: Country 20 conquered (23,20) at t=2500 and updated gold to 999 at t=2600; Country 30 deleted at t=1800
+  const eventPayloads = [
+    { type: 'ADMIN_DELETE_COUNTRY', countryId: 30, _sentAt: 1800 },
+    { type: 'CONQUER_PIXEL', countryId: 20, x: 23, y: 20, cost: 1, _sentAt: 2500 },
+    { type: 'SYNC_COUNTRY_STATS', countryId: 20, stats: { gold: 999, troops: 15 }, _sentAt: 2600 },
+  ];
+
+  sync._replayCompactedHistory(eventPayloads, countriesStateSnapshots);
+
+  assert.equal(engine.countryMap.has(10), true, 'OlderState must be visible');
+  assert.equal(engine.countryMap.has(20), true, 'NewerState (with float capital) must be visible');
+  assert.equal(engine.countryMap.has(30), false, 'DeletedState must NOT resurrect from stale countries_state');
+  assert.equal(engine.owners[20 * 1000 + 21], 20, 'Newer snapshot must win contested pixel (21,20)');
+  assert.equal(engine.owners[20 * 1000 + 23], 20, 'Recent CONQUER_PIXEL after snapshot must NOT be dropped');
+  assert.equal(engine.countryMap.get(20).gold, 999, 'Recent SYNC_COUNTRY_STATS after snapshot must NOT be dropped');
 });

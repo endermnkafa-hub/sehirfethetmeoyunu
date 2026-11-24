@@ -2866,6 +2866,7 @@ export class WorldSimulationEngine {
     this.owners[idx] = newId;
     this.countries.push(country);
     this.countryMap.set(newId, country);
+    this._expandCountryBound(newId, capitalX, capitalY);
 
     this.myCountryId = newId;
     saveMyCountryId(newId);
@@ -2952,6 +2953,7 @@ export class WorldSimulationEngine {
     this.countryMap.set(country.id, country);
     this._expandCountryBound(country.id, country.capitalX, country.capitalY);
     this.dirtyPixels = true;
+    this.dirtyRegions = true;
     this.scheduleSave();
 
     if (flagUrl) {
@@ -3020,9 +3022,23 @@ export class WorldSimulationEngine {
     rleSpans = null,
   ) {
     if (!remoteCountry || !Number.isInteger(remoteCountry.id) || remoteCountry.id < 10 || remoteCountry.id > 31909) return;
-    if (!Number.isInteger(remoteCountry.capitalX) || !Number.isInteger(remoteCountry.capitalY) ||
-        remoteCountry.capitalX < 0 || remoteCountry.capitalX >= MAP_W ||
-        remoteCountry.capitalY < 0 || remoteCountry.capitalY >= MAP_H) return;
+    // Sanitize capital coordinates instead of silently dropping valid countries with float/missing capitals
+    let capX = Number.isFinite(remoteCountry.capitalX) ? Math.round(remoteCountry.capitalX) : -1;
+    let capY = Number.isFinite(remoteCountry.capitalY) ? Math.round(remoteCountry.capitalY) : -1;
+    if (capX < 0 || capX >= MAP_W || capY < 0 || capY >= MAP_H) {
+      if (Array.isArray(rleSpans) && rleSpans.length >= 3) {
+        capY = Math.max(0, Math.min(MAP_H - 1, Math.round(rleSpans[0])));
+        capX = Math.max(0, Math.min(MAP_W - 1, Math.round(rleSpans[1])));
+      } else if (Array.isArray(pts) && pts.length >= 2) {
+        capX = Math.max(0, Math.min(MAP_W - 1, Math.round(pts[0])));
+        capY = Math.max(0, Math.min(MAP_H - 1, Math.round(pts[1])));
+      } else {
+        return;
+      }
+      remoteCountry = { ...remoteCountry, capitalX: capX, capitalY: capY };
+    } else if (capX !== remoteCountry.capitalX || capY !== remoteCountry.capitalY) {
+      remoteCountry = { ...remoteCountry, capitalX: capX, capitalY: capY };
+    }
 
     // Reject oversized or malformed coordinate payloads before allocating sets.
     if (Array.isArray(rleSpans) && (rleSpans.length % 3 !== 0 || rleSpans.length > MAP_W * MAP_H * 3)) return;

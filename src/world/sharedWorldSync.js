@@ -102,11 +102,12 @@ export class SharedWorldSync {
       this.isSyncError = false;
       this.onRemoteUpdate();
 
-      const initialPayloads = [];
-      let latestResetTime = 0;
       const eventPayloads = [];
+      let latestResetTime = 0;
+      this.seenFirebaseKeys = new Set();
       if (snapshot.exists()) {
         snapshot.forEach((childSnap) => {
+          if (childSnap.key) this.seenFirebaseKeys.add(childSnap.key);
           const val = childSnap.val();
           if (val) {
             eventPayloads.push(val);
@@ -118,30 +119,27 @@ export class SharedWorldSync {
         });
       }
 
-      // First push eventPayloads (which contains ADMIN_RESET_WORLD at its exact chronological spot)
-      for (const ev of eventPayloads) {
-        initialPayloads.push(ev);
-      }
-
-      // Then append only countries_state snapshots that were saved AFTER the latest ADMIN_RESET_WORLD!
+      // Collect persistent countries_state snapshots saved AFTER the latest ADMIN_RESET_WORLD
+      const countriesStateSnapshots = [];
       if (countriesSnap && countriesSnap.exists()) {
         countriesSnap.forEach((childSnap) => {
           const val = childSnap.val();
           if (val && val.country) {
-            const snapTime = val._sentAt || 0;
+            const snapTime = val._sentAt || val.country.lastHeartbeatTime || val.country.lastActiveTime || 0;
             if (latestResetTime > 0 && snapTime <= latestResetTime) return;
-            initialPayloads.push({
+            countriesStateSnapshots.push({
               type: 'COUNTRY_SYNC_PACKET',
               country: val.country,
               rle: val.rle || null,
               _sentAt: snapTime || 1,
+              _fromCountriesState: true,
             });
           }
         });
       }
 
-      if (initialPayloads.length > 0) {
-        this._replayCompactedHistory(initialPayloads);
+      if (eventPayloads.length > 0 || countriesStateSnapshots.length > 0) {
+        this._replayCompactedHistory(eventPayloads, countriesStateSnapshots);
         this.onRemoteUpdate();
       }
 
@@ -149,6 +147,8 @@ export class SharedWorldSync {
       const listenerQuery = query(eventsRef, limitToLast(120));
       this._unsubscribeFirebase = onChildAdded(listenerQuery, (childSnap) => {
         if (this.destroyed) return;
+        if (childSnap.key && this.seenFirebaseKeys.has(childSnap.key)) return;
+        if (childSnap.key) this.seenFirebaseKeys.add(childSnap.key);
         const data = childSnap.val();
         if (data) {
           this.isCloudConnected = true;
@@ -221,7 +221,7 @@ export class SharedWorldSync {
   }
 
   // Ultra-fast O(N) in-memory server history compactor: reduces 1,000+ server logs into exact current world state in <15ms!
-  _replayCompactedHistory(payloads) {
+  _replayCompactedHistory(payloads, countriesStateSnapshots = []) {
     // 1. Find latest ADMIN_RESET_WORLD & ADMIN_CLEAR_CHAT index
     let lastResetIdx = -1;
     let lastChatClearIdx = -1;
@@ -229,6 +229,7 @@ export class SharedWorldSync {
     let lastTreatyResetIdx = -1;
     for (let i = 0; i < payloads.length; i++) {
       const p = payloads[i];
+      if (!p) continue;
       if (p._msgId) this.seenMsgIds.add(p._msgId);
       if (p.type === 'ADMIN_RESET_WORLD') lastResetIdx = i;
       if (p.type === 'ADMIN_CLEAR_CHAT') lastChatClearIdx = i;
@@ -249,12 +250,12 @@ export class SharedWorldSync {
     }
 
     const startIdx = lastResetIdx + 1;
-    const deletedCountries = new Map(); // countryId -> index of deletion
-    const latestSnapshot = new Map(); // countryId -> { idx, data }
-    const latestStats = new Map(); // countryId -> { idx, data }
-    const newCountries = new Map(); // countryId -> { idx, data }
-    const updateFlags = new Map(); // countryId -> { idx, flagDataUrl }
-    const pixelOps = []; // { idx, data }
+    const deletedCountries = new Map(); // countryId -> { idx, time }
+    const latestSnapshot = new Map(); // countryId -> { idx, time, data, fromState }
+    const latestStats = new Map(); // countryId -> { idx, time, data }
+    const newCountries = new Map(); // countryId -> { idx, time, data }
+    const updateFlags = new Map(); // countryId -> { idx, time, flagDataUrl }
+    const pixelOps = []; // { idx, time, data }
     const treatyOps = [];
     const nuclearStrikes = [];
     const chats = [];
@@ -262,19 +263,26 @@ export class SharedWorldSync {
     for (let i = startIdx; i < payloads.length; i++) {
       const p = payloads[i];
       if (!p || !p.type) continue;
+      const evTime = p._sentAt || p._envTime || 0;
 
       if (p.type === 'ADMIN_DELETE_COUNTRY' && p.countryId) {
-        deletedCountries.set(p.countryId, i);
+        deletedCountries.set(p.countryId, { idx: i, time: evTime });
       } else if (p.type === 'NEW_COUNTRY' && p.country?.id) {
-        newCountries.set(p.country.id, { idx: i, data: p });
+        newCountries.set(p.country.id, { idx: i, time: evTime, data: p });
       } else if (p.type === 'UPDATE_COUNTRY_FLAG' && p.countryId && p.flagDataUrl) {
-        updateFlags.set(p.countryId, { idx: i, flagDataUrl: p.flagDataUrl });
+        updateFlags.set(p.countryId, { idx: i, time: evTime, flagDataUrl: p.flagDataUrl });
       } else if (p.type === 'COUNTRY_SYNC_PACKET' && p.country?.id) {
-        latestSnapshot.set(p.country.id, { idx: i, data: p });
+        const prev = latestSnapshot.get(p.country.id);
+        if (!prev || evTime >= prev.time) {
+          latestSnapshot.set(p.country.id, { idx: i, time: evTime, data: p, fromState: false });
+        }
       } else if (p.type === 'SYNC_COUNTRY_STATS' && p.countryId) {
-        latestStats.set(p.countryId, { idx: i, data: p });
+        const prev = latestStats.get(p.countryId);
+        if (!prev || evTime >= prev.time) {
+          latestStats.set(p.countryId, { idx: i, time: evTime, data: p });
+        }
       } else if (p.type === 'CONQUER_BATCH' || p.type === 'CONQUER_PIXEL' || p.type === 'UNDO_PIXEL') {
-        pixelOps.push({ idx: i, data: p });
+        pixelOps.push({ idx: i, time: evTime, data: p });
       } else if (p.type === 'NUCLEAR_STRIKE' && p.strike) {
         // Radyasyon temizlendiyse öncesindeki nükleer saldırıları tekrar uygulama
         if (i > lastRadiationClearIdx) nuclearStrikes.push(p.strike);
@@ -296,6 +304,25 @@ export class SharedWorldSync {
       }
     }
 
+    // Merge persistent countries_state_v1 snapshots using true _sentAt timestamps
+    for (const snap of countriesStateSnapshots) {
+      if (!snap || !snap.country?.id) continue;
+      const cid = snap.country.id;
+      const snapTime = snap._sentAt || 0;
+      const prev = latestSnapshot.get(cid);
+      if (!prev || snapTime >= prev.time) {
+        latestSnapshot.set(cid, { idx: -1, time: snapTime, data: snap, fromState: true });
+      }
+    }
+
+    const isDeletedAfter = (cid, entryIdx, entryTime, fromState = false) => {
+      const del = deletedCountries.get(cid);
+      if (!del) return false;
+      if (!fromState && entryIdx >= 0 && del.idx > entryIdx) return true;
+      if (del.time > 0 && entryTime > 0 && del.time >= entryTime) return true;
+      return false;
+    };
+
     // Collect valid Global Chat messages after last chat clear & last reset
     const chatStart = Math.max(startIdx, lastChatClearIdx + 1);
     for (let i = chatStart; i < payloads.length; i++) {
@@ -312,16 +339,19 @@ export class SharedWorldSync {
 
     // 2. Apply active countries (skip any deleted AFTER their last creation/sync)
     for (const [cid, entry] of newCountries.entries()) {
-      const delIdx = deletedCountries.get(cid);
-      if (delIdx !== undefined && delIdx > entry.idx) continue;
+      if (isDeletedAfter(cid, entry.idx, entry.time, false)) continue;
       if (!latestSnapshot.has(cid)) {
         this.engine.handleRemoteNewCountry(entry.data.country);
       }
     }
 
-    for (const [cid, entry] of latestSnapshot.entries()) {
-      const delIdx = deletedCountries.get(cid);
-      if (delIdx !== undefined && delIdx > entry.idx) continue;
+    // Sort snapshots chronologically (oldest first, newest last) so newer snapshots ALWAYS win contested pixels!
+    const sortedSnapshots = Array.from(latestSnapshot.entries()).sort(
+      (a, b) => (a[1].time || 0) - (b[1].time || 0)
+    );
+
+    for (const [cid, entry] of sortedSnapshots) {
+      if (isDeletedAfter(cid, entry.idx, entry.time, entry.fromState)) continue;
 
       // Restore flag from newCountries or updateFlags if snapshot was stripped due to payload size!
       if (!entry.data.country?.flagDataUrl) {
@@ -337,19 +367,21 @@ export class SharedWorldSync {
       this.engine.handleRemoteCountrySyncPacket(
         entry.data.country,
         entry.data.pts,
-        entry.data._sentAt || entry.data._envTime || 0,
+        entry.time || 0,
         true, // batchMode: compute bounds once at the end!
         entry.data.rle || null
       );
     }
 
-    // 3. Apply pixel conquests/undos that occurred AFTER a country's latest snapshot
-    for (const { idx, data } of pixelOps) {
+    // 3. Apply pixel conquests/undos that occurred AFTER a country's latest snapshot (by real timestamp!)
+    for (const { idx, time, data } of pixelOps) {
       const cid = data.countryId;
-      const delIdx = deletedCountries.get(cid);
-      if (delIdx !== undefined && delIdx > idx) continue;
+      if (isDeletedAfter(cid, idx, time, false)) continue;
       const snap = latestSnapshot.get(cid);
-      if (snap && idx <= snap.idx) continue;
+      if (snap) {
+        if (!snap.fromState && snap.idx >= 0 && idx <= snap.idx) continue;
+        if (snap.time > 0 && time > 0 && time <= snap.time) continue;
+      }
 
       if (data.type === 'CONQUER_PIXEL') {
         this.engine.handleRemoteConquerPixel(cid, data.x, data.y, data.cost, true, data.wasEnemy ?? null);
@@ -364,14 +396,16 @@ export class SharedWorldSync {
 
     // 4. Apply latest stats (troops, gold, population, upgrades, color) for each country
     for (const [cid, entry] of latestStats.entries()) {
-      const delIdx = deletedCountries.get(cid);
-      if (delIdx !== undefined && delIdx > entry.idx) continue;
+      if (isDeletedAfter(cid, entry.idx, entry.time, false)) continue;
       const snap = latestSnapshot.get(cid);
-      if (snap && entry.idx < snap.idx) continue;
+      if (snap) {
+        if (!snap.fromState && snap.idx >= 0 && entry.idx < snap.idx) continue;
+        if (snap.time > 0 && entry.time > 0 && entry.time < snap.time) continue;
+      }
       this.engine.handleRemoteSyncCountryStats(
         cid,
         entry.data.stats,
-        entry.data._sentAt || entry.data._envTime || 0,
+        entry.time || 0,
         true, // allow initializing own country's latest server stats on reload!
         Boolean(entry.data.isAdminOverride)
       );
@@ -408,10 +442,13 @@ export class SharedWorldSync {
     }
 
     // Admin tarafından silinen devletleri yerel önbellekten de kaldır
-    for (const [cid, delIdx] of deletedCountries.entries()) {
-      const newIdx = newCountries.get(cid)?.idx ?? -1;
-      const snapIdx = latestSnapshot.get(cid)?.idx ?? -1;
-      if (delIdx > newIdx && delIdx > snapIdx && this.engine.countryMap.has(cid)) {
+    for (const [cid, del] of deletedCountries.entries()) {
+      const newEntry = newCountries.get(cid);
+      const snapEntry = latestSnapshot.get(cid);
+      const createdAfter =
+        (newEntry && !isDeletedAfter(cid, newEntry.idx, newEntry.time, false)) ||
+        (snapEntry && !isDeletedAfter(cid, snapEntry.idx, snapEntry.time, snapEntry.fromState));
+      if (!createdAfter && this.engine.countryMap.has(cid)) {
         this.engine.adminDeleteCountry(cid, false);
       }
     }
@@ -577,6 +614,15 @@ export class SharedWorldSync {
 
     // 2. Firebase Realtime DB
     if (data.type === 'CONQUER_PIXEL') {
+      // Enemy attacks must preserve wasEnemy=true and send immediately (never downgraded to neutral CONQUER_BATCH)
+      if (data.wasEnemy === true) {
+        this._sendToFirebase(packet);
+        if (this._authoritativeSnapshotTimer) clearTimeout(this._authoritativeSnapshotTimer);
+        this._authoritativeSnapshotTimer = setTimeout(() => {
+          this.publishMyCountrySnapshot();
+        }, 2000);
+        return;
+      }
       this.queuePixelConquest(data.countryId, data.x, data.y, data.cost);
       return;
     }
@@ -591,9 +637,8 @@ export class SharedWorldSync {
           flagDataUrl: compactFlag,
         },
       });
-      setTimeout(() => {
-        this.publishMyCountrySnapshot();
-      }, 500);
+      // Persist immediately to countries_state_v1 so new countries NEVER vanish on reload or event rollover!
+      this.publishMyCountrySnapshot();
       return;
     }
 

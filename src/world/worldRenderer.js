@@ -61,7 +61,10 @@ export class WorldMapRenderer {
     const dst = this.imageData.data;
     const base = this.worldData.baseMapRgba;
     const owners = engine.owners;
-    const bounds = engine.countryBounds || engine.computeCountryBounds();
+    const bounds =
+      engine.dirtyRegions || !engine.countryBounds
+        ? engine.computeCountryBounds()
+        : engine.countryBounds;
     const total = MAP_W * MAP_H;
 
     // Reset base grey map
@@ -206,7 +209,10 @@ export class WorldMapRenderer {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(this.bufferCanvas, 0, 0, mapScreenW, mapScreenH);
 
-      const bounds = engine.countryBounds || engine.computeCountryBounds();
+      const bounds =
+      engine.dirtyRegions || !engine.countryBounds
+        ? engine.computeCountryBounds()
+        : engine.countryBounds;
 
       // Reset hitboxes for this frame
       this.crestHitboxes = [];
