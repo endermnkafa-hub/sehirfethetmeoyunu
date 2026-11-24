@@ -96,15 +96,13 @@ export class SharedWorldSync {
         Promise.all([get(countriesStateRef).catch(() => null), get(recentQuery)]),
         timeoutPromise,
       ]);
-      
+
       this.isCloudConnected = true;
       this.hasInitialSyncLoaded = true;
       this.isSyncError = false;
       this.onRemoteUpdate();
 
       const initialPayloads = [];
-      // First load persistent country snapshots so NO country is ever pushed out by chat/pixel events!
-      // Ignore any snapshot older than the latest ADMIN_RESET_WORLD event.
       let latestResetTime = 0;
       const eventPayloads = [];
       if (snapshot.exists()) {
@@ -120,6 +118,12 @@ export class SharedWorldSync {
         });
       }
 
+      // First push eventPayloads (which contains ADMIN_RESET_WORLD at its exact chronological spot)
+      for (const ev of eventPayloads) {
+        initialPayloads.push(ev);
+      }
+
+      // Then append only countries_state snapshots that were saved AFTER the latest ADMIN_RESET_WORLD!
       if (countriesSnap && countriesSnap.exists()) {
         countriesSnap.forEach((childSnap) => {
           const val = childSnap.val();
@@ -134,10 +138,6 @@ export class SharedWorldSync {
             });
           }
         });
-      }
-
-      for (const ev of eventPayloads) {
-        initialPayloads.push(ev);
       }
 
       if (initialPayloads.length > 0) {
@@ -608,12 +608,6 @@ export class SharedWorldSync {
   }
 
   _sendToFirebase(packet) {
-    if (packet.type === 'ADMIN_RESET_WORLD') {
-      this.clearAllCloudCountriesState();
-    } else if (packet.type === 'ADMIN_DELETE_COUNTRY' && packet.countryId) {
-      this.deleteCloudCountryState(packet.countryId);
-    }
-
     const fullPacket = {
       ...packet,
       _msgId: packet._msgId || `${this.tabId}_${Date.now()}_${++this._msgSeq}`,
@@ -621,6 +615,25 @@ export class SharedWorldSync {
       _sentAt: packet._sentAt || Date.now(),
     };
     this.seenMsgIds.add(fullPacket._msgId);
+
+    if (packet.type === 'ADMIN_RESET_WORLD') {
+      // Hard-wipe BOTH countries_state AND the entire event log in Firebase, then write a single clean reset marker!
+      try {
+        const eventsRef = ref(rtdb, EVENTS_DB_PATH);
+        const countriesRef = ref(rtdb, COUNTRIES_STATE_PATH);
+        Promise.all([
+          remove(countriesRef).catch(() => {}),
+          remove(eventsRef).catch(() => {}),
+        ]).then(() => {
+          push(eventsRef, fullPacket).catch(() => {});
+        });
+      } catch {}
+      return;
+    }
+
+    if (packet.type === 'ADMIN_DELETE_COUNTRY' && packet.countryId) {
+      this.deleteCloudCountryState(packet.countryId);
+    }
 
     try {
       const eventsRef = ref(rtdb, EVENTS_DB_PATH);
