@@ -1009,10 +1009,16 @@ export class WorldSimulationEngine {
 
       // Continuous troop production runs for both active and offline countries up to their capacity limit!
       if (c.troops < c.capacity) {
-        c.troops = Math.min(
-          c.capacity,
-          c.troops + c.productionRate * deltaTimeSec,
-        );
+        const produced = Math.min(c.capacity - c.troops, c.productionRate * deltaTimeSec);
+        c.troops += produced;
+        if (c.id === this.myCountryId && produced > 0) {
+          this._troopQuestBuffer = (this._troopQuestBuffer || 0) + produced;
+          if (this._troopQuestBuffer >= 1) {
+            const whole = Math.floor(this._troopQuestBuffer);
+            this._troopQuestBuffer -= whole;
+            this.progressQuest("TROOPS", whole);
+          }
+        }
       }
 
       if (c.population < c.maxPopulation) {
@@ -1130,7 +1136,13 @@ export class WorldSimulationEngine {
     country.gold -= cost;
     country.upgrades[upgradeKey] = currentLevel + 1;
     if (country.id === this.myCountryId) {
-      this.progressQuest("GOLD", cost);
+      // Reward-earned gold cannot progress the GOLD spending quest (prevents infinite reward loops)
+      const rewardDebt = country._rewardGoldPool || 0;
+      const effectiveSpend = Math.max(0, cost - rewardDebt);
+      country._rewardGoldPool = Math.max(0, rewardDebt - cost);
+      if (effectiveSpend > 0) {
+        this.progressQuest("GOLD", effectiveSpend);
+      }
     }
     this._recalculateDerivedStats(country);
     this.onSound("celebration");
@@ -1206,12 +1218,12 @@ export class WorldSimulationEngine {
     return { title: "Beylik", badge: "🚩", minLand: 1 };
   }
 
-  // Balanced Dynamic Quests that scale with country size (no trivial 3-pixel tasks once grown)
+  // Balanced Dynamic Quests: Gold-only rewards, cumulative troop tracking, anti-loop protection
   getQuests() {
     const c = this.getMyCountry();
     if (!c) return [];
 
-    const key = `sf_quests_${c.id}`;
+    const key = `sf_quests_v2_${c.id}`;
     let saved = null;
     try {
       const stored = localStorage.getItem(key);
@@ -1219,10 +1231,9 @@ export class WorldSimulationEngine {
     } catch {}
 
     const lands = Math.max(1, c.landCount);
-    // Dynamic targets scale with player's actual progression
-    const conquerTarget = Math.max(6, Math.round(Math.min(50, lands * 0.15)));
-    const goldSpendTarget = Math.max(800, Math.round(Math.min(50000, (c.gold || 500) * 0.4 + lands * 60)));
-    const troopTarget = Math.max(15, Math.round(c.capacity * 0.7));
+    const conquerTarget = Math.max(8, Math.round(Math.min(60, lands * 0.15)));
+    const goldSpendTarget = Math.max(500, Math.round(Math.min(25000, lands * 40 + 400)));
+    const troopTarget = Math.max(30, Math.round(c.capacity * 1.2) + 20);
 
     const defaultQuests = [
       {
@@ -1232,30 +1243,30 @@ export class WorldSimulationEngine {
         type: "CONQUER",
         target: conquerTarget,
         current: 0,
-        rewardGold: Math.round(conquerTarget * 120),
-        rewardTroops: Math.round(conquerTarget * 0.8),
+        rewardGold: Math.round(conquerTarget * 25),
+        rewardTroops: 0,
         completed: false,
       },
       {
         id: "quest_gold",
-        title: `${goldSpendTarget.toLocaleString()} Altın Harca veya Yatır`,
-        desc: "Geliştirmelere veya orduya altın yatırarak ekonomiyi canlandır.",
+        title: `${goldSpendTarget.toLocaleString()} Altın Harca (Kendi Gelirin)`,
+        desc: "Kendi ürettiğin altınla geliştirmeler yap (Ödül altınları sayılmaz).",
         type: "GOLD",
         target: goldSpendTarget,
         current: 0,
-        rewardGold: Math.round(goldSpendTarget * 0.35),
-        rewardTroops: Math.max(4, Math.round(lands * 0.2)),
+        rewardGold: Math.round(goldSpendTarget * 0.12),
+        rewardTroops: 0,
         completed: false,
       },
       {
         id: "quest_army",
-        title: `Ordunu ${troopTarget} Asker Gücüne Ulaştır`,
-        desc: "Kışlalarında hazır asker mevcudunu koru veya artır.",
+        title: `Toplam ${troopTarget} Asker Üret`,
+        desc: "Kışlalarında asker üret (Harcasan bile ilerleme sıfırlanmaz).",
         type: "TROOPS",
         target: troopTarget,
-        current: Math.floor(c.troops || 0),
-        rewardGold: Math.round(troopTarget * 35),
-        rewardTroops: Math.max(5, Math.round(troopTarget * 0.15)),
+        current: 0,
+        rewardGold: Math.round(troopTarget * 4),
+        rewardTroops: 0,
         completed: false,
       },
     ];
@@ -1267,16 +1278,6 @@ export class WorldSimulationEngine {
       return defaultQuests;
     }
 
-    // Update current progress for troop quest automatically
-    for (const q of saved) {
-      if (q.type === "TROOPS") {
-        q.current = Math.floor(c.troops || 0);
-        if (q.current >= q.target && !q.completed) {
-          q.completed = true;
-        }
-      }
-    }
-
     return saved;
   }
 
@@ -1284,7 +1285,7 @@ export class WorldSimulationEngine {
   progressQuest(type, amount = 1) {
     const c = this.getMyCountry();
     if (!c) return;
-    const key = `sf_quests_${c.id}`;
+    const key = `sf_quests_v2_${c.id}`;
     let quests = this.getQuests();
 
     let changed = false;
@@ -1292,6 +1293,7 @@ export class WorldSimulationEngine {
       if (q.type === type && !q.completed) {
         q.current = (q.current || 0) + amount;
         if (q.current >= q.target) {
+          q.current = q.target;
           q.completed = true;
         }
         changed = true;
@@ -1309,7 +1311,7 @@ export class WorldSimulationEngine {
   claimQuestReward(questId) {
     const c = this.getMyCountry();
     if (!c) return null;
-    const key = `sf_quests_${c.id}`;
+    const key = `sf_quests_v2_${c.id}`;
     let quests = this.getQuests();
 
     const idx = quests.findIndex((q) => q.id === questId && q.completed);
@@ -1317,53 +1319,50 @@ export class WorldSimulationEngine {
 
     const quest = quests[idx];
     const rewardGold = quest.rewardGold || 0;
-    const rewardTroops = quest.rewardTroops || 0;
 
     c.gold = (c.gold || 0) + rewardGold;
-    if (rewardTroops > 0) {
-      c.troops = Math.min(c.capacity, Number((c.troops + rewardTroops).toFixed(1)));
-    }
+    // Track reward gold separately so spending it doesn't feed back into GOLD quests
+    c._rewardGoldPool = (c._rewardGoldPool || 0) + rewardGold;
 
     this.onSound("celebration");
-    this.onEvent(`🏆 Görev Tamamlandı (${quest.title}): +${rewardGold} Altın, +${rewardTroops} Asker kazandın!`);
+    this.onEvent(`🏆 Görev Tamamlandı (${quest.title}): +${rewardGold.toLocaleString()} Altın kazandın!`);
 
-    // Generate refreshed higher-tier replacement quest
+    // Generate refreshed higher-tier replacement quest (Gold-only, balanced scaling)
     const lands = Math.max(1, c.landCount);
-    let nextTarget = Math.round(quest.target * 1.5);
     if (quest.type === "CONQUER") {
-      nextTarget = Math.max(quest.target + 5, Math.round(lands * 0.2) + 5);
+      const nextTarget = Math.max(quest.target + 6, Math.round(lands * 0.18) + 6);
       quests[idx] = {
         ...quest,
         id: "quest_conquer_" + Date.now(),
         title: `${nextTarget} Yeni Piksel Fethet`,
         target: nextTarget,
         current: 0,
-        rewardGold: Math.round(nextTarget * 130),
-        rewardTroops: Math.round(nextTarget * 0.8),
+        rewardGold: Math.round(nextTarget * 25),
+        rewardTroops: 0,
         completed: false,
       };
     } else if (quest.type === "GOLD") {
-      nextTarget = Math.round(quest.target * 1.6);
+      const nextTarget = Math.round(quest.target * 1.5);
       quests[idx] = {
         ...quest,
         id: "quest_gold_" + Date.now(),
-        title: `${nextTarget.toLocaleString()} Altın Harca veya Yatır`,
+        title: `${nextTarget.toLocaleString()} Altın Harca (Kendi Gelirin)`,
         target: nextTarget,
         current: 0,
-        rewardGold: Math.round(nextTarget * 0.35),
-        rewardTroops: Math.max(5, Math.round(lands * 0.25)),
+        rewardGold: Math.round(nextTarget * 0.12),
+        rewardTroops: 0,
         completed: false,
       };
     } else {
-      nextTarget = Math.round(quest.target * 1.35) + 5;
+      const nextTarget = Math.round(quest.target * 1.45) + 25;
       quests[idx] = {
         ...quest,
         id: "quest_army_" + Date.now(),
-        title: `Ordunu ${nextTarget} Asker Gücüne Ulaştır`,
+        title: `Toplam ${nextTarget} Asker Üret`,
         target: nextTarget,
-        current: Math.floor(c.troops || 0),
-        rewardGold: Math.round(nextTarget * 40),
-        rewardTroops: Math.max(6, Math.round(nextTarget * 0.15)),
+        current: 0,
+        rewardGold: Math.round(nextTarget * 4),
+        rewardTroops: 0,
         completed: false,
       };
     }
@@ -1386,7 +1385,7 @@ export class WorldSimulationEngine {
     });
 
     this.saveState();
-    return { rewardGold, rewardTroops };
+    return { rewardGold, rewardTroops: 0 };
   }
 
   // Special Mercenary Recruitment: Unlimited capacity, dedicated reserve pool!
