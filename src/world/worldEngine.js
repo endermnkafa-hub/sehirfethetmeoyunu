@@ -2170,13 +2170,13 @@ export class WorldSimulationEngine {
       }
     }
 
-    // Record for 5-Second Undo if this was our own country (including any filled cavities)
-    if (countryId === this.myCountryId) {
+    // Record for 5-Second Undo ONLY for neutral (unowned) land pixels — never enemy combat conquests!
+    if (countryId === this.myCountryId && prevOwner === 0) {
       this.undoStack.push({
         countryId,
         x,
         y,
-        prevOwner,
+        prevOwner: 0,
         cost: check.cost,
         cavities: filledCavities,
         time: Date.now(),
@@ -2362,10 +2362,19 @@ export class WorldSimulationEngine {
     );
 
     if (item.prevOwner > 0) {
-      const prevC = this.countryMap.get(item.prevOwner);
-      if (prevC) {
-        prevC.landCount++;
-        this._recalculateDerivedStats(prevC);
+      return { ok: false, reason: "Düşman toprağı fethi geri alınamaz!" };
+    }
+
+    // Deduct reverted pixels from CONQUER quest progress so undo cannot farm quests
+    if (item.countryId === this.myCountryId && removedCount > 0) {
+      const quests = this.getQuests();
+      for (const q of quests) {
+        if (q.type === "CONQUER") {
+          q.current = Math.max(0, (q.current || 0) - removedCount);
+          if (q.current < q.target) {
+            q.completed = false;
+          }
+        }
       }
     }
 

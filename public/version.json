@@ -1,8 +1,8 @@
 {
-  "versionCode": 15,
-  "versionName": "2.4",
-  "minVersionCode": 15,
+  "versionCode": 16,
+  "versionName": "2.5",
+  "minVersionCode": 16,
   "apkUrl": "https://github.com/endermnkafa-hub/sehirfethetmeoyunu/releases/download/v1.0-latest/sehir-fethetme-oyunu.apk",
-  "releaseNotes": "Tam sunucu odaklı mimari: Harita, envanter, görevler ve günlük giriş ödülü artık tarayıcı önbelleğinde değil sadece Firebase sunucusunda tutulur. Gir-çık günlük ödül bug'ı giderildi.",
+  "releaseNotes": "Geri alma (Undo) açıkları kapatıldı: Düşman toprağı fethi geri alınamaz ve geri alınan pikseller fetih görevinden otomatik düşülür.",
   "updatedAt": "2026-11-24"
 }
