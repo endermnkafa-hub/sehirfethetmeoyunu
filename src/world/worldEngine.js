@@ -3066,6 +3066,14 @@ export class WorldSimulationEngine {
     if (!forceInit && !isAdminOverride && countryId === this.myCountryId) return;
     const country = this.countryMap.get(countryId);
     if (!country || !stats) return;
+    // Reject stale admin/stats packets sent BEFORE this country was created (prevents old 1M admin gifts leaking to new countries)
+    if (
+      packetTime > 0 &&
+      country.createdAt &&
+      packetTime + 3000 < country.createdAt
+    ) {
+      return;
+    }
     if (
       !isAdminOverride &&
       packetTime > 0 &&
@@ -4184,6 +4192,26 @@ export class WorldSimulationEngine {
     this.dirtyPixels = true;
     this.onChat([]);
     this.saveState();
+
+    if (typeof localStorage !== "undefined") {
+      try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (
+            k &&
+            (k.startsWith("sf_inventory_") ||
+              k.startsWith("sf_quests_") ||
+              k.startsWith("sf_streak_") ||
+              k.startsWith("sf_last_active_") ||
+              k === "sf_my_country_flag")
+          ) {
+            keysToRemove.push(k);
+          }
+        }
+        for (const k of keysToRemove) localStorage.removeItem(k);
+      } catch {}
+    }
 
     if (broadcast && this.sync) {
       this.sync.broadcast({ type: "ADMIN_RESET_WORLD" });

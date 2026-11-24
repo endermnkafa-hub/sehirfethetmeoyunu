@@ -104,25 +104,40 @@ export class SharedWorldSync {
 
       const initialPayloads = [];
       // First load persistent country snapshots so NO country is ever pushed out by chat/pixel events!
+      // Ignore any snapshot older than the latest ADMIN_RESET_WORLD event.
+      let latestResetTime = 0;
+      const eventPayloads = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((childSnap) => {
+          const val = childSnap.val();
+          if (val) {
+            eventPayloads.push(val);
+            if (val.type === 'ADMIN_RESET_WORLD') {
+              const t = val._sentAt || val._envTime || 0;
+              if (t > latestResetTime) latestResetTime = t;
+            }
+          }
+        });
+      }
+
       if (countriesSnap && countriesSnap.exists()) {
         countriesSnap.forEach((childSnap) => {
           const val = childSnap.val();
           if (val && val.country) {
+            const snapTime = val._sentAt || 0;
+            if (latestResetTime > 0 && snapTime <= latestResetTime) return;
             initialPayloads.push({
               type: 'COUNTRY_SYNC_PACKET',
               country: val.country,
               rle: val.rle || null,
-              _sentAt: val._sentAt || 1,
+              _sentAt: snapTime || 1,
             });
           }
         });
       }
 
-      if (snapshot.exists()) {
-        snapshot.forEach((childSnap) => {
-          const val = childSnap.val();
-          if (val) initialPayloads.push(val);
-        });
+      for (const ev of eventPayloads) {
+        initialPayloads.push(ev);
       }
 
       if (initialPayloads.length > 0) {
@@ -574,7 +589,28 @@ export class SharedWorldSync {
     this._sendToFirebase(packet);
   }
 
+  clearAllCloudCountriesState() {
+    try {
+      remove(ref(rtdb, COUNTRIES_STATE_PATH)).catch((err) => {
+        console.warn('Firebase countries_state wipe error:', err);
+      });
+    } catch {}
+  }
+
+  deleteCloudCountryState(countryId) {
+    if (!countryId) return;
+    try {
+      remove(ref(rtdb, `${COUNTRIES_STATE_PATH}/${countryId}`)).catch(() => {});
+    } catch {}
+  }
+
   _sendToFirebase(packet) {
+    if (packet.type === 'ADMIN_RESET_WORLD') {
+      this.clearAllCloudCountriesState();
+    } else if (packet.type === 'ADMIN_DELETE_COUNTRY' && packet.countryId) {
+      this.deleteCloudCountryState(packet.countryId);
+    }
+
     const fullPacket = {
       ...packet,
       _msgId: packet._msgId || `${this.tabId}_${Date.now()}_${++this._msgSeq}`,
