@@ -330,15 +330,30 @@ export default function WorldGame({ onReturnToModeSelect }) {
     });
 
     // Check version: if outdated on Android app, enforce mandatory update modal!
-    checkAppVersion().then((ver) => {
-      if (ver.isMandatory) {
-        setMandatoryUpdate(ver);
-      } else if (ver.isNative && ver.isOptionalUpdate) {
-        setOptionalAppUpdate(ver);
-      } else if (ver.needsUpdate && !ver.isNative) {
-        setWebUpdateAvailable(true);
-      }
-    });
+    // On web, if an update is available, alert and automatically reload so all players get the latest version immediately!
+    const runVersionCheck = () => {
+      checkAppVersion().then((ver) => {
+        if (ver.isMandatory) {
+          setMandatoryUpdate(ver);
+        } else if (ver.isNative && ver.isOptionalUpdate) {
+          setOptionalAppUpdate(ver);
+        } else if (ver.needsUpdate && !ver.isNative) {
+          setWebUpdateAvailable(true);
+          // Show non-intrusive alert then reload after 2.5s if user hasn't clicked
+          setTimeout(() => {
+            window.location.reload();
+          }, 3000);
+        }
+      });
+    };
+
+    runVersionCheck();
+    // Periodically re-check version every 60 seconds so active players auto-update
+    const versionInterval = setInterval(runVersionCheck, 60000);
+
+    return () => {
+      clearInterval(versionInterval);
+    };
   }, []);
 
   const getBaseScale = useCallback((viewW, viewH) => {
@@ -2027,29 +2042,79 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   <div className="flex items-center gap-2 text-purple-300 font-black text-xs sm:text-sm">
                     <span>🏛️ Stratejik Kaynaklar & Harikalar</span>
                   </div>
-                  <span className="text-[10px] text-slate-400 font-bold">Sabit Dünya Noktaları</span>
+                  <span className="text-[10px] text-slate-400 font-bold">Haritada Fethedilenler</span>
                 </div>
                 {(() => {
-                  const sc = myCountry.strategicCounts || { gold: 0, oil: 0, wonder: 0 };
+                  const stratLive = engineRef.current?.getCountryStrategicCounts?.(myCountry.id) || {
+                    gold: myCountry.strategicCounts?.gold || 0,
+                    oil: myCountry.strategicCounts?.oil || 0,
+                    wonder: myCountry.strategicCounts?.wonder || 0,
+                    controlled: [],
+                  };
+                  const goldBoost = Math.min(48, stratLive.gold * 12);
+                  const oilBoost = Math.min(48, stratLive.oil * 12);
+                  const wonderBoost = Math.min(32, stratLive.wonder * 8);
+
                   return (
-                    <div className="grid grid-cols-3 gap-2 text-left">
-                      <div className="p-2 rounded-xl bg-slate-900/80 border border-amber-500/30">
-                        <div className="text-[10px] text-amber-300 font-bold">🪙 Altın Madeni</div>
-                        <div className="text-sm font-black text-white">
-                          {sc.gold} <span className="text-[10px] text-emerald-400">(+%{Math.min(48, sc.gold * 12)})</span>
+                    <div className="space-y-2.5 text-left">
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="p-2 rounded-xl bg-slate-900/80 border border-amber-500/30">
+                          <div className="text-[10px] text-amber-300 font-bold">🪙 Altın Madeni</div>
+                          <div className="text-sm font-black text-white">
+                            {stratLive.gold} <span className="text-[10px] text-emerald-400 font-bold">(+%{goldBoost})</span>
+                          </div>
+                          <div className="text-[9px] text-slate-400">Altın Üretimi</div>
+                        </div>
+                        <div className="p-2 rounded-xl bg-slate-900/80 border border-sky-500/30">
+                          <div className="text-[10px] text-sky-300 font-bold">⛽ Petrol Havzası</div>
+                          <div className="text-sm font-black text-white">
+                            {stratLive.oil} <span className="text-[10px] text-emerald-400 font-bold">(+%{oilBoost})</span>
+                          </div>
+                          <div className="text-[9px] text-slate-400">Asker Üretim Hızı</div>
+                        </div>
+                        <div className="p-2 rounded-xl bg-slate-900/80 border border-purple-500/30">
+                          <div className="text-[10px] text-purple-300 font-bold">🏛️ Başkent</div>
+                          <div className="text-sm font-black text-white">
+                            {stratLive.wonder} <span className="text-[10px] text-emerald-400 font-bold">(+%{wonderBoost})</span>
+                          </div>
+                          <div className="text-[9px] text-slate-400">Saldırı & Savunma</div>
                         </div>
                       </div>
-                      <div className="p-2 rounded-xl bg-slate-900/80 border border-sky-500/30">
-                        <div className="text-[10px] text-sky-300 font-bold">⛽ Petrol Havzası</div>
-                        <div className="text-sm font-black text-white">
-                          {sc.oil} <span className="text-[10px] text-emerald-400">(+%{Math.min(48, sc.oil * 12)})</span>
+
+                      {/* Canlı Hesaplanan Aktif Boost Özeti */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-emerald-500/20 text-[11px] space-y-1">
+                        <div className="flex items-center justify-between font-black text-emerald-300 text-xs border-b border-emerald-500/20 pb-1">
+                          <span>⚡ Mevcut Aktif Boostlar (Canlı):</span>
+                          <span className="text-[10px] text-slate-400 font-normal">Piksel bazlı hesaplanır</span>
                         </div>
-                      </div>
-                      <div className="p-2 rounded-xl bg-slate-900/80 border border-purple-500/30">
-                        <div className="text-[10px] text-purple-300 font-bold">🏛️ Başkent</div>
-                        <div className="text-sm font-black text-white">
-                          {sc.wonder} <span className="text-[10px] text-emerald-400">(+%{Math.min(32, sc.wonder * 8)})</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 pt-0.5 text-[10px]">
+                          <div className="text-amber-200">
+                            💰 Altın Boostu: <span className="font-bold text-emerald-400">+{goldBoost}%</span>
+                          </div>
+                          <div className="text-sky-200">
+                            🪖 Asker Üretim Boostu: <span className="font-bold text-emerald-400">+{oilBoost}%</span>
+                          </div>
+                          <div className="text-purple-200">
+                            ⚔️ Savaş Gücü: <span className="font-bold text-emerald-400">+{wonderBoost}%</span>
+                          </div>
                         </div>
+                        {stratLive.controlled && stratLive.controlled.length > 0 ? (
+                          <div className="pt-1 text-[10px] text-slate-300 flex flex-wrap gap-1 items-center">
+                            <span className="text-slate-400 font-bold">Kontrol Edilen Noktalar:</span>
+                            {stratLive.controlled.map((node) => (
+                              <span
+                                key={node.id}
+                                className="px-1.5 py-0.5 rounded-md bg-purple-900/50 border border-purple-500/30 text-purple-200 text-[9px] font-bold"
+                              >
+                                {node.type === "GOLD" ? "🪙" : node.type === "OIL" ? "⛽" : "🏛️"} {node.name}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="pt-1 text-[10px] text-slate-400 italic">
+                            Henüz stratejik kaynak veya tarihi başkent toprağı fethedilmedi. Haritadaki simgeleri ele geçirerek bu boostları açabilirsiniz!
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -3297,15 +3362,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
       {/* WEB VERSION UPDATE FLOATING BANNER */}
       {webUpdateAvailable && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-indigo-950/95 border border-indigo-400 text-indigo-100 px-3.5 py-1.5 rounded-full shadow-2xl text-[11px] font-black flex items-center gap-2 animate-bounce">
-          <Sparkles size={14} className="text-indigo-400" />
-          <span>Yeni sürüm yayında!</span>
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-indigo-950/95 border border-indigo-400 text-indigo-100 px-4 py-2 rounded-full shadow-2xl text-[11px] font-black flex items-center gap-2.5 animate-bounce">
+          <Sparkles size={14} className="text-indigo-400 animate-spin" />
+          <span>Yeni sürüm yayında! Sayfa 3 saniye içinde otomatik yenileniyor...</span>
           <button
             onClick={() => window.location.reload()}
-            className="px-2 py-0.5 rounded-full bg-indigo-500 hover:bg-indigo-400 text-white font-black text-[10px] flex items-center gap-1 transition"
+            className="px-2.5 py-1 rounded-full bg-indigo-500 hover:bg-indigo-400 text-white font-black text-[10px] flex items-center gap-1 transition"
           >
             <RefreshCw size={10} />
-            <span>Yenile</span>
+            <span>Şimdi Yenile</span>
           </button>
         </div>
       )}

@@ -145,32 +145,33 @@ export const DOCTRINE_DEFINITIONS = [
   },
 ];
 
-// Deterministic Strategic Resource & Historic Capital Coordinates (1000x500 Equirectangular World)
-// Automatically snapped to nearest valid land pixel on engine initialization
+// Deterministic Strategic Resource & Historic Capital Coordinates (1000x500 Miller Projected World)
+// Accurately calibrated to real-world geography and guaranteed to snap to authentic land pixels
 export const RAW_STRATEGIC_NODES = [
-  // Historic Capitals / Wonders (+8% Attack & +8% Defense each, capped at +32%)
-  { id: "cap_istanbul", type: "WONDER", name: "İstanbul", x: 580, y: 136 },
-  { id: "cap_rome", type: "WONDER", name: "Roma", x: 535, y: 134 },
-  { id: "cap_cairo", type: "WONDER", name: "Kahire", x: 586, y: 166 },
-  { id: "cap_beijing", type: "WONDER", name: "Pekin", x: 823, y: 139 },
-  { id: "cap_newyork", type: "WONDER", name: "New York", x: 294, y: 137 },
-  { id: "cap_london", type: "WONDER", name: "Londra", x: 499, y: 107 },
+  // Historic Capitals / Wonders (+8% Attack & +8% Defense each, max +32%)
+  { id: "cap_istanbul", type: "WONDER", name: "İstanbul", x: 580, y: 179 },
+  { id: "cap_rome", type: "WONDER", name: "Roma", x: 535, y: 176 },
+  { id: "cap_cairo", type: "WONDER", name: "Kahire", x: 587, y: 217 },
+  { id: "cap_beijing", type: "WONDER", name: "Pekin", x: 823, y: 183 },
+  { id: "cap_newyork", type: "WONDER", name: "New York", x: 294, y: 180 },
+  { id: "cap_london", type: "WONDER", name: "Londra", x: 500, y: 139 },
+  { id: "cap_tokyo", type: "WONDER", name: "Tokyo", x: 888, y: 198 },
 
-  // Gold Mines (+12% Gold Income each, capped at +48%)
-  { id: "gold_safrica", type: "GOLD", name: "Witwatersrand Altın Madeni", x: 577, y: 322 },
-  { id: "gold_alaska", type: "GOLD", name: "Klondike Altın Madeni", x: 112, y: 74 },
-  { id: "gold_andes", type: "GOLD", name: "And Altın Madeni", x: 302, y: 285 },
-  { id: "gold_oz", type: "GOLD", name: "Kalgoorlie Altın Madeni", x: 836, y: 335 },
-  { id: "gold_siberia", type: "GOLD", name: "Sibirya Altın Madeni", x: 760, y: 82 },
-  { id: "gold_ghana", type: "GOLD", name: "Batı Afrika Altın Madeni", x: 496, y: 228 },
+  // Gold Mines (+12% Gold Income each, max +48%) - Balanced across all continents
+  { id: "gold_safrica", type: "GOLD", name: "Witwatersrand Altın Madeni", x: 578, y: 391 },
+  { id: "gold_alaska", type: "GOLD", name: "Klondike Altın Madeni", x: 113, y: 85 },
+  { id: "gold_andes", type: "GOLD", name: "And Dağları Altın Madeni", x: 282, y: 332 },
+  { id: "gold_oz", type: "GOLD", name: "Kalgoorlie Altın Madeni", x: 837, y: 406 },
+  { id: "gold_siberia", type: "GOLD", name: "Sibirya Altın Madeni", x: 849, y: 110 },
+  { id: "gold_ghana", type: "GOLD", name: "Batı Afrika Altın Madeni", x: 496, y: 292 },
 
-  // Oil & Industrial Hubs (+12% Troop Production each, capped at +48%)
-  { id: "oil_gulf", type: "OIL", name: "Basra Petrol Havzası", x: 632, y: 170 },
-  { id: "oil_texas", type: "OIL", name: "Teksas Petrol Havzası", x: 225, y: 163 },
-  { id: "oil_caspian", type: "OIL", name: "Hazar Petrol Havzası", x: 638, y: 137 },
-  { id: "oil_venezuela", type: "OIL", name: "Orinoco Petrol Havzası", x: 318, y: 226 },
-  { id: "oil_northsea", type: "OIL", name: "Kuzey Avrupa Sanayisi", x: 528, y: 106 },
-  { id: "oil_manchuria", type: "OIL", name: "Doğu Asya Sanayisi", x: 845, y: 120 },
+  // Oil & Industrial Hubs (+12% Troop Production each, max +48%) - Balanced across all continents
+  { id: "oil_gulf", type: "OIL", name: "Basra Petrol Havzası", x: 633, y: 215 },
+  { id: "oil_texas", type: "OIL", name: "Teksas Petrol Havzası", x: 235, y: 218 },
+  { id: "oil_caspian", type: "OIL", name: "Hazar Petrol Havzası", x: 639, y: 181 },
+  { id: "oil_venezuela", type: "OIL", name: "Orinoco Petrol Havzası", x: 324, y: 286 },
+  { id: "oil_northsea", type: "OIL", name: "Kuzey Avrupa Sanayisi", x: 504, y: 119 },
+  { id: "oil_manchuria", type: "OIL", name: "Doğu Asya Sanayisi", x: 847, y: 158 },
 ];
 
 const NUCLEAR_STRIKE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
