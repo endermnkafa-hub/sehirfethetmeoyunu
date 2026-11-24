@@ -2,8 +2,8 @@
 // Powered 100% by Google Firebase Realtime Database (WebSocket Real-Time + Instant Replay + Local BroadcastChannel)
 // Guaranteed 0% timeout, 0 rate limits, instant cross-device sync between Mobile and PC!
 
-import { FLAG_W, FLAG_H } from './flagLibrary';
-import { rtdb } from '../firebaseConfig';
+import { FLAG_W, FLAG_H } from './flagLibrary.js';
+import { rtdb } from '../firebaseConfig.js';
 import { ref, push, set, remove, onChildAdded, query, limitToLast, get, onValue } from 'firebase/database';
 
 // In localhost dev mode, use a completely isolated sandbox DB path
@@ -285,6 +285,7 @@ export class SharedWorldSync {
         p.type === 'TREATY_REJECT' ||
         p.type === 'TREATY_BREAK' ||
         p.type === 'TREATY_PAYMENT' ||
+        p.type === 'TREATY_REPARATION_PAYMENT' ||
         p.type === 'TREATY_TERMINATION_REQUEST' ||
         p.type === 'TREATY_TERMINATION_CANCEL_REQUEST' ||
         p.type === 'TREATY_TERMINATION_ACCEPT' ||
@@ -387,9 +388,11 @@ export class SharedWorldSync {
       } else if (p.type === 'TREATY_REJECT' && p.treatyId) {
         this.engine.handleRemoteTreatyReject(p.treatyId, true);
       } else if (p.type === 'TREATY_BREAK' && p.treatyId) {
-        this.engine.handleRemoteTreatyBreak(p.treatyId, p.breakerId, p.penalty, p.reason, true);
+        this.engine.handleRemoteTreatyBreak(p.treatyId, p.breakerId, p.penalty, p.upfrontPaid, p.debt, p.reason, true);
       } else if (p.type === 'TREATY_PAYMENT' && p.treatyId) {
         this.engine.handleRemoteTreatyPayment(p.treatyId, p.amount, p.time, true);
+      } else if (p.type === 'TREATY_REPARATION_PAYMENT' && p.treatyId) {
+        this.engine.handleRemoteTreatyReparationPayment(p.treatyId, p.amount, p.remainingDebt, p.time, true);
       } else if (p.type === 'TREATY_TERMINATION_REQUEST' && p.treatyId) {
         this.engine.handleRemoteTreatyTerminationRequest(p.treatyId, p.requesterId);
       } else if (p.type === 'TREATY_TERMINATION_CANCEL_REQUEST' && p.treatyId) {
@@ -724,10 +727,13 @@ export class SharedWorldSync {
       this.engine.handleRemoteTreatyReject(data.treatyId, false);
       this.onRemoteUpdate();
     } else if (data.type === 'TREATY_BREAK' && data.treatyId) {
-      this.engine.handleRemoteTreatyBreak(data.treatyId, data.breakerId, data.penalty, data.reason, false);
+      this.engine.handleRemoteTreatyBreak(data.treatyId, data.breakerId, data.penalty, data.upfrontPaid, data.debt, data.reason, false);
       this.onRemoteUpdate();
     } else if (data.type === 'TREATY_PAYMENT' && data.treatyId) {
       this.engine.handleRemoteTreatyPayment(data.treatyId, data.amount, data.time, false);
+      this.onRemoteUpdate();
+    } else if (data.type === 'TREATY_REPARATION_PAYMENT' && data.treatyId) {
+      this.engine.handleRemoteTreatyReparationPayment(data.treatyId, data.amount, data.remainingDebt, data.time, false);
       this.onRemoteUpdate();
     } else if (data.type === 'TREATY_TERMINATION_REQUEST' && data.treatyId) {
       this.engine.handleRemoteTreatyTerminationRequest(data.treatyId, data.requesterId);

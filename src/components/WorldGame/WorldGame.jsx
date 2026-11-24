@@ -1206,14 +1206,23 @@ export default function WorldGame({ onReturnToModeSelect }) {
     if (!eng || !myCountry) return;
     const treaty = eng.treaties.find((t) => t.id === treatyId);
     if (!treaty) return;
-    if (
-      window.confirm(
-        `DİKKAT! Bu anlaşmayı tek taraflı feshedersen ${treaty.penalty} Altın ceza ödeyeceksin. Onaylıyor musun?`,
-      )
-    ) {
+    const penalty = treaty.penalty || 0;
+    const myGold = Math.floor(myCountry.gold || 0);
+    const debt = Math.max(0, penalty - myGold);
+    const confirmMsg =
+      debt > 0
+        ? `DİKKAT! Bu anlaşmayı tek taraflı feshederseniz kasadaki ${myGold} Altın ödenecek, kalan ${debt} Altın borç kapanana kadar ürettiğiniz tüm altınlar mağdur devlete aktarılacaktır. Onaylıyor musunuz?`
+        : `DİKKAT! Bu anlaşmayı tek taraflı feshederseniz ${penalty} Altın ceza ödeyeceksiniz. Onaylıyor musunuz?`;
+    if (window.confirm(confirmMsg)) {
       const res = eng.breakTreaty(treatyId, myCountry.id, "FESİH");
       if (res.ok) {
-        showToast(`Anlaşma feshedildi. ${res.deducted} Altın ceza ödendi.`);
+        if (res.debt > 0) {
+          showToast(
+            `Anlaşma feshedildi! Kasadaki ${res.deducted} Altın ödendi, kalan ${res.debt} Altın borç üretimden kesilecek.`,
+          );
+        } else {
+          showToast(`Anlaşma feshedildi. ${res.deducted} Altın ceza ödendi.`);
+        }
       }
     }
   }, [myCountry, showToast]);
@@ -1225,7 +1234,13 @@ export default function WorldGame({ onReturnToModeSelect }) {
     const { x, y, treaty } = treatyWarningModal;
     const resBreak = eng.breakTreaty(treaty.id, myCountry.id, "SALDIRI");
     if (resBreak.ok) {
-      showToast(`Anlaşma bozuldu! ${resBreak.deducted} Altın ceza ödendi.`);
+      if (resBreak.debt > 0) {
+        showToast(
+          `Anlaşma bozuldu! Kasadaki ${resBreak.deducted} Altın ödendi. Kalan ${resBreak.debt} Altın borç üretimden kesilecek.`,
+        );
+      } else {
+        showToast(`Anlaşma bozuldu! ${resBreak.deducted} Altın ceza ödendi.`);
+      }
       eng.conquerPixel(myCountry.id, x, y);
     }
     setTreatyWarningModal(null);
@@ -2018,9 +2033,15 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   </div>
                   <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
                     <div className="text-[10px] text-slate-400 font-bold">Altın Geliri</div>
-                    <div className="text-sm sm:text-base font-black text-amber-400">
-                      +{(myCountry.goldIncome || 0).toFixed(2)} <span className="text-[10px] text-slate-400">/sn</span>
-                    </div>
+                    {engineRef.current?.getActiveReparationDebts(myCountry.id)?.length > 0 ? (
+                      <div className="text-xs sm:text-sm font-black text-rose-400">
+                        Borca Kesiliyor
+                      </div>
+                    ) : (
+                      <div className="text-sm sm:text-base font-black text-amber-400">
+                        +{(myCountry.goldIncome || 0).toFixed(2)} <span className="text-[10px] text-slate-400">/sn</span>
+                      </div>
+                    )}
                   </div>
                   <div className="p-2 rounded-xl bg-slate-900/80 border border-slate-700/50">
                     <div className="text-[10px] text-slate-400 font-bold">Çevrimdışı Altın (%50)</div>
@@ -2029,6 +2050,11 @@ export default function WorldGame({ onReturnToModeSelect }) {
                     </div>
                   </div>
                 </div>
+                {engineRef.current?.getActiveReparationDebts(myCountry.id)?.length > 0 && (
+                  <div className="mt-2.5 p-2 rounded-xl bg-rose-950/50 border border-rose-500/40 text-[11px] text-rose-300 font-medium">
+                    ⚠️ Aktif tazminat borcunuz bulunmaktadır. Ürettiğiniz tüm altınlar borç kapanana kadar mağdur devlete aktarılmaktadır.
+                  </div>
+                )}
               </div>
 
               {/* Toprak & Nüfus */}
@@ -3590,20 +3616,32 @@ export default function WorldGame({ onReturnToModeSelect }) {
 
             {/* Tab Contents */}
             <div className="flex-1 overflow-y-auto pr-1 space-y-2.5">
-              {/* TAB 1: ACTIVE TREATIES */}
+              {/* TAB 1: ACTIVE TREATIES & REPARATION DEBTS */}
               {diplomacyTab === "ACTIVE" && (() => {
                 const activeList = treatiesList.filter(
                   (t) =>
                     t.status === "ACTIVE" &&
                     (t.fromId === myCountry.id || t.toId === myCountry.id)
                 );
+                const myDebts = treatiesList.filter(
+                  (t) =>
+                    t.status === "BROKEN" &&
+                    t.debtorId === myCountry.id &&
+                    (t.remainingDebt || 0) > 0.05
+                );
+                const myReceivables = treatiesList.filter(
+                  (t) =>
+                    t.status === "BROKEN" &&
+                    t.creditorId === myCountry.id &&
+                    (t.remainingDebt || 0) > 0.05
+                );
 
-                if (activeList.length === 0) {
+                if (activeList.length === 0 && myDebts.length === 0 && myReceivables.length === 0) {
                   return (
                     <div className="text-center py-8 px-4 rounded-2xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-400">
                       <Shield size={32} className="mx-auto mb-2 text-slate-600" />
                       <div className="text-xs font-bold text-slate-300">
-                        Henüz aktif bir anlaşmanız yok
+                        Henüz aktif bir anlaşmanız veya tazminat borcunuz yok
                       </div>
                       <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto">
                         "Teklif Et" sekmesinden başka bir devlete İttifak veya Haraç teklifi gönderebilirsin.
@@ -3612,11 +3650,94 @@ export default function WorldGame({ onReturnToModeSelect }) {
                   );
                 }
 
-                return activeList.map((tr) => {
-                  const partnerId = tr.fromId === myCountry.id ? tr.toId : tr.fromId;
-                  const partner = (hud.allCountries || []).find((c) => c.id === partnerId) || engineRef.current?.countryMap.get(partnerId);
-                  const isAlliance = tr.type === "ALLIANCE";
-                  const isPayer = tr.tributePayerId === myCountry.id;
+                return (
+                  <div className="space-y-3">
+                    {/* ACTIVE REPARATION DEBTS (I OWE MONEY) */}
+                    {myDebts.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-black text-rose-400 flex items-center gap-1.5 px-1">
+                          <Coins size={14} className="text-rose-400" />
+                          <span>Ödenmekte Olan Tazminat Borçları</span>
+                        </div>
+                        {myDebts.map((tr) => (
+                          <div
+                            key={tr.id}
+                            className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/50 space-y-2"
+                          >
+                            <div className="flex items-center justify-between text-xs font-bold text-white">
+                              <span>{tr.creditorName || "Mağdur Devlet"}</span>
+                              <span className="text-rose-400 font-black">
+                                {Math.round(tr.remainingDebt)} Altın Borç Kaldı
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-rose-500/20">
+                              <div
+                                className="bg-rose-500 h-full transition-all duration-300"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    Math.round(
+                                      ((tr.paidDebt || 0) / (tr.totalDebt || 1)) * 100
+                                    )
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="text-[10px] text-rose-200/90 leading-tight">
+                              ⚠️ Anlaşma ihlali nedeniyle ürettiğiniz tüm altınlar bu borç kapanana kadar otomatik olarak mağdur devlete tazminat olarak aktarılmaktadır.
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* ACTIVE REPARATION RECEIVABLES (I AM OWED MONEY) */}
+                    {myReceivables.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-black text-emerald-400 flex items-center gap-1.5 px-1">
+                          <Coins size={14} className="text-emerald-400" />
+                          <span>Tahsil Edilen Tazminat Alacakları</span>
+                        </div>
+                        {myReceivables.map((tr) => (
+                          <div
+                            key={tr.id}
+                            className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/50 space-y-2"
+                          >
+                            <div className="flex items-center justify-between text-xs font-bold text-white">
+                              <span>{tr.debtorName || "Hain Devlet"}</span>
+                              <span className="text-emerald-400 font-black">
+                                +{Math.round(tr.paidDebt || 0)} / {tr.totalDebt} Altın
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-emerald-500/20">
+                              <div
+                                className="bg-emerald-500 h-full transition-all duration-300"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    Math.round(
+                                      ((tr.paidDebt || 0) / (tr.totalDebt || 1)) * 100
+                                    )
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="text-[10px] text-emerald-200/90 leading-tight">
+                              💰 Bu devlet anlaşmayı ihlal ettiği için ürettiği altınlar borcu ({Math.round(tr.remainingDebt)} Altın kaldı) bitene kadar kasanıza aktarılmaktadır.
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* ACTIVE TREATIES */}
+                    {activeList.map((tr) => {
+                      const partnerId = tr.fromId === myCountry.id ? tr.toId : tr.fromId;
+                      const partner =
+                        (hud.allCountries || []).find((c) => c.id === partnerId) ||
+                        engineRef.current?.countryMap.get(partnerId);
+                      const isAlliance = tr.type === "ALLIANCE";
+                      const isPayer = tr.tributePayerId === myCountry.id;
 
                   return (
                     <div
@@ -3706,19 +3827,30 @@ export default function WorldGame({ onReturnToModeSelect }) {
                           </div>
                         </div>
                       ) : (
-                        <button
-                          onClick={() => handleRequestTreatyTermination(tr.id)}
-                          className="w-full py-2 rounded-xl bg-gradient-to-r from-rose-500/15 to-amber-500/15 hover:from-rose-500/25 hover:to-amber-500/25 border border-rose-500/30 text-amber-200 font-bold text-xs transition flex items-center justify-center gap-1.5 active:scale-95"
-                          title="Karşı tarafa fesih isteği gönderir, kabul edilirse cezasız bozulur"
-                        >
-                          <Handshake size={14} className="text-amber-400" />
-                          <span>Anlaşmayı Feshet (İstek Gönder - Cezasız)</span>
-                        </button>
+                        <div className="space-y-1.5">
+                          <button
+                            onClick={() => handleRequestTreatyTermination(tr.id)}
+                            className="w-full py-2 rounded-xl bg-gradient-to-r from-rose-500/15 to-amber-500/15 hover:from-rose-500/25 hover:to-amber-500/25 border border-rose-500/30 text-amber-200 font-bold text-xs transition flex items-center justify-center gap-1.5 active:scale-95"
+                            title="Karşı tarafa fesih isteği gönderir, kabul edilirse cezasız bozulur"
+                          >
+                            <Handshake size={14} className="text-amber-400" />
+                            <span>Anlaşmayı Feshet (İstek Gönder - Cezasız)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCancelTreaty(tr.id)}
+                            className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold text-center w-full py-0.5 transition"
+                          >
+                            Tek taraflı boz ({tr.penalty} Altın Ceza)
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
-                });
-              })()}
+                })}
+              </div>
+            );
+          })()}
 
               {/* TAB 2: INCOMING PROPOSALS */}
               {diplomacyTab === "INCOMING" && (() => {
@@ -4201,17 +4333,48 @@ export default function WorldGame({ onReturnToModeSelect }) {
               </p>
             </div>
 
-            <div className="p-3 rounded-2xl bg-rose-950/50 border border-rose-500/40 text-left text-xs space-y-1">
-              <div className="text-rose-300 font-bold flex items-center gap-1.5">
-                <Coins size={14} className="text-amber-400 shrink-0" />
-                <span>Ödenecek Ceza Tazminatı:</span>
+            <div className="p-3 rounded-2xl bg-rose-950/50 border border-rose-500/40 text-left text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-rose-300 font-bold flex items-center gap-1.5">
+                  <Coins size={14} className="text-amber-400 shrink-0" />
+                  <span>Ceza Tazminatı:</span>
+                </div>
+                <div className="text-amber-400 font-black text-sm">
+                  {treatyWarningModal.treaty?.penalty || 2500} Altın
+                </div>
               </div>
-              <div className="text-amber-400 font-black text-base">
-                {treatyWarningModal.treaty?.penalty || 2500} Altın
+
+              <div className="grid grid-cols-2 gap-1.5 text-[11px] pt-1 border-t border-rose-500/20">
+                <div className="text-slate-400">
+                  Kasadaki Altın:{" "}
+                  <strong className="text-white">
+                    {Math.floor(myCountry?.gold || 0)}
+                  </strong>
+                </div>
+                <div className="text-slate-400 text-right">
+                  {(myCountry?.gold || 0) < (treatyWarningModal.treaty?.penalty || 2500) ? (
+                    <span className="text-rose-400 font-bold">
+                      Kalan Borç:{" "}
+                      {(treatyWarningModal.treaty?.penalty || 2500) - Math.floor(myCountry?.gold || 0)} Altın
+                    </span>
+                  ) : (
+                    <span className="text-emerald-400 font-bold">Tamamı Kasadan</span>
+                  )}
+                </div>
               </div>
-              <p className="text-[10px] text-slate-400">
-                Saldırıya devam ederseniz anlaşma derhal bozulacak ve bu ceza kasanızdan kesilip müttefikinize aktarılacaktır.
-              </p>
+
+              {(myCountry?.gold || 0) < (treatyWarningModal.treaty?.penalty || 2500) ? (
+                <p className="text-[10px] text-amber-200/90 leading-tight bg-amber-950/40 p-2 rounded-xl border border-amber-500/30">
+                  ⚠️ <strong>Yetersiz Altın:</strong> Kasandaki tüm altın (
+                  {Math.floor(myCountry?.gold || 0)} Altın) kurbana verilecek. Kalan{" "}
+                  {(treatyWarningModal.treaty?.penalty || 2500) - Math.floor(myCountry?.gold || 0)}{" "}
+                  Altın borç tamamlanana kadar <u>ürettiğin tüm altınlar</u> otomatik olarak mağdur devlete tazminat olarak aktarılacaktır!
+                </p>
+              ) : (
+                <p className="text-[10px] text-slate-400">
+                  Saldırıya devam ederseniz anlaşma derhal bozulacak ve ceza kasanızdan kesilip müttefikinize aktarılacaktır.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2 pt-1">

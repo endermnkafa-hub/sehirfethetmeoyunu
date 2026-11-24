@@ -2,7 +2,7 @@
 // Uses real Natural Earth TopoJSON geometry from world-atlas (100% offline)
 
 import { feature } from 'topojson-client';
-import countriesAtlas from 'world-atlas/countries-110m.json';
+import countriesAtlas from 'world-atlas/countries-110m.json' with { type: 'json' };
 
 export const MAP_W = 1000;
 export const MAP_H = 500;

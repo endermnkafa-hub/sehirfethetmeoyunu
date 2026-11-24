@@ -1,14 +1,14 @@
 // Real-Time Shared World MMO Conquest Engine
 // Hardcore logarithmic progression, Naval Ship Expeditions across seas, 9 Upgrade Branches (Max Lv.25), Zero Emojis
 
-import { MAP_W, MAP_H } from "./worldRasterizer";
-import { loadDataUrlToFlagBuffer } from "./flagLibrary";
+import { MAP_W, MAP_H } from "./worldRasterizer.js";
+import { loadDataUrlToFlagBuffer } from "./flagLibrary.js";
 import {
   getOrCreateDeviceId,
   getMyCountryId,
   saveMyCountryId,
-} from "./networkSecurity";
-import { SharedWorldSync } from "./sharedWorldSync";
+} from "./networkSecurity.js";
+import { SharedWorldSync } from "./sharedWorldSync.js";
 
 const IS_DEV_SANDBOX =
   typeof window !== "undefined" &&
@@ -952,13 +952,33 @@ export class WorldSimulationEngine {
 
       const isMyCountry = c.id === this.myCountryId;
       if (isMyCountry) {
-        c.gold += c.goldIncome * deltaTimeSec;
+        let goldIncomeDelta = c.goldIncome * deltaTimeSec;
+        // Check active reparation debts where my country is the debtor
+        const activeDebts = this.getActiveReparationDebts(c.id);
+        if (activeDebts.length > 0 && goldIncomeDelta > 0) {
+          for (const debtTreaty of activeDebts) {
+            if (goldIncomeDelta <= 0) break;
+            const payAmt = Math.min(goldIncomeDelta, debtTreaty.remainingDebt);
+            debtTreaty.paidDebt = (debtTreaty.paidDebt || 0) + payAmt;
+            debtTreaty.remainingDebt = Math.max(0, debtTreaty.remainingDebt - payAmt);
+            goldIncomeDelta -= payAmt;
+
+            this._pendingDebtTransfers = this._pendingDebtTransfers || {};
+            this._pendingDebtTransfers[debtTreaty.id] =
+              (this._pendingDebtTransfers[debtTreaty.id] || 0) + payAmt;
+          }
+        }
+        // Debtor only receives leftover gold income (0 while debts remain active)
+        c.gold += goldIncomeDelta;
         c.lastActiveTime = Date.now();
       }
     }
 
     // Process periodic Tribute payments every 60s
     this._processPeriodicTributes();
+
+    // Process periodic Reparation debt payments
+    this._processPeriodicReparations();
 
     // Update sailing ships across oceans/seas
     if (this.ships.length > 0) {
@@ -995,6 +1015,12 @@ export class WorldSimulationEngine {
     country.population += 5;
 
     if (prevOwner > 0) {
+      if (prevOwner !== ship.countryId) {
+        const activeTreaty = this.getActiveTreatyBetween(ship.countryId, prevOwner);
+        if (activeTreaty) {
+          this.breakTreaty(activeTreaty.id, ship.countryId, "SALDIRI (ÇIKARMA)");
+        }
+      }
       const prevCountry = this.countryMap.get(prevOwner);
       if (prevCountry) {
         prevCountry.landCount = Math.max(0, prevCountry.landCount - 1);
@@ -1519,6 +1545,12 @@ export class WorldSimulationEngine {
         const prevOwner = this.owners[idx];
         if (prevOwner > 0) {
           this.owners[idx] = 0;
+          if (prevOwner !== strike.attackerId) {
+            const activeTreaty = this.getActiveTreatyBetween(strike.attackerId, prevOwner);
+            if (activeTreaty) {
+              this.breakTreaty(activeTreaty.id, strike.attackerId, "NÜKLEER SALDIRI");
+            }
+          }
           const country = this.countryMap.get(prevOwner);
           if (country) {
             country.landCount = Math.max(0, country.landCount - 1);
@@ -1566,6 +1598,12 @@ export class WorldSimulationEngine {
         const prevOwner = this.owners[idx];
         if (prevOwner > 0) {
           this.owners[idx] = 0;
+          if (prevOwner !== strike.attackerId) {
+            const activeTreaty = this.getActiveTreatyBetween(strike.attackerId, prevOwner);
+            if (activeTreaty) {
+              this.breakTreaty(activeTreaty.id, strike.attackerId, "NÜKLEER SALDIRI");
+            }
+          }
           const country = this.countryMap.get(prevOwner);
           if (country) {
             country.landCount = Math.max(0, country.landCount - 1);
@@ -2134,6 +2172,12 @@ export class WorldSimulationEngine {
     country.population += 5;
 
     if (prevOwner > 0) {
+      if (prevOwner !== countryId) {
+        const activeTreaty = this.getActiveTreatyBetween(countryId, prevOwner);
+        if (activeTreaty) {
+          this.breakTreaty(activeTreaty.id, countryId, "SALDIRI");
+        }
+      }
       const prevCountry = this.countryMap.get(prevOwner);
       if (prevCountry) {
         prevCountry.landCount = Math.max(0, prevCountry.landCount - 1);
@@ -2509,6 +2553,9 @@ export class WorldSimulationEngine {
 
         // If onlyNeutral requested, strictly skip any land owned by other countries/states
         if (onlyNeutral && this.owners[idx] !== 0) continue;
+
+        // Never auto-conquer land belonging to an active treaty partner (alliance/tribute)
+        if (this.owners[idx] > 0 && this.getActiveTreatyBetween(countryId, this.owners[idx])) continue;
 
         const ownedNeighbors =
           (x > 0 && this.owners[idx - 1] === countryId ? 1 : 0) +
@@ -2993,6 +3040,20 @@ export class WorldSimulationEngine {
     this._recalculateDerivedStats(country);
 
     if (prevOwner > 0) {
+      if (prevOwner !== countryId) {
+        const activeTreaty = this.getActiveTreatyBetween(countryId, prevOwner);
+        if (activeTreaty) {
+          this.handleRemoteTreatyBreak(
+            activeTreaty.id,
+            countryId,
+            activeTreaty.penalty,
+            null,
+            null,
+            "SALDIRI",
+            false,
+          );
+        }
+      }
       const prevC = this.countryMap.get(prevOwner);
       if (prevC) {
         prevC.landCount = Math.max(0, prevC.landCount - 1);
@@ -3201,6 +3262,68 @@ export class WorldSimulationEngine {
         }
       }
     }
+  }
+
+  _processPeriodicReparations() {
+    const now = Date.now();
+    if (this._lastReparationCheck && now - this._lastReparationCheck < 2500) return;
+    this._lastReparationCheck = now;
+
+    if (!this._pendingDebtTransfers) return;
+    let hasTransfers = false;
+
+    for (const [treatyId, amount] of Object.entries(this._pendingDebtTransfers)) {
+      if (!amount || amount < 0.5) continue;
+      const treaty = this.treaties.find((t) => t.id === treatyId);
+      if (!treaty) continue;
+
+      const rounded = Number(amount.toFixed(1));
+      this._pendingDebtTransfers[treatyId] = 0;
+      hasTransfers = true;
+
+      this.sync.broadcast({
+        type: "TREATY_REPARATION_PAYMENT",
+        treatyId: treaty.id,
+        amount: rounded,
+        remainingDebt: Number(Math.max(0, treaty.remainingDebt).toFixed(1)),
+        time: now,
+      });
+
+      const creditor = this.countryMap.get(treaty.creditorId);
+      if (creditor && creditor.id !== this.myCountryId) {
+        creditor.gold += rounded;
+      }
+
+      if (treaty.remainingDebt <= 0) {
+        this.onSound("celebration");
+        this.onEvent(
+          `⚖️ ${treaty.creditorName || "Devlet"} devletine olan tüm tazminat borcunuz kapandı! Artık ürettiğiniz altınlar kasanıza kalacak.`,
+        );
+      }
+    }
+    if (hasTransfers && this.onTreatyUpdate) {
+      this.onTreatyUpdate();
+    }
+  }
+
+  getActiveReparationDebts(countryId) {
+    if (!countryId || !Array.isArray(this.treaties)) return [];
+    return this.treaties.filter(
+      (t) =>
+        t.status === "BROKEN" &&
+        t.debtorId === countryId &&
+        (t.remainingDebt || 0) > 0.05,
+    );
+  }
+
+  getPendingReparationReceivables(countryId) {
+    if (!countryId || !Array.isArray(this.treaties)) return [];
+    return this.treaties.filter(
+      (t) =>
+        t.status === "BROKEN" &&
+        t.creditorId === countryId &&
+        (t.remainingDebt || 0) > 0.05,
+    );
   }
 
   getActiveTreatyBetween(c1Id, c2Id) {
@@ -3460,13 +3583,18 @@ export class WorldSimulationEngine {
     const victim = this.countryMap.get(victimId);
 
     const penalty = treaty.penalty || 0;
-    let deducted = 0;
+    let upfrontPaid = 0;
+    let debt = 0;
 
     if (breaker && penalty > 0) {
-      deducted = Math.min(breaker.gold, penalty);
-      breaker.gold = Math.max(0, breaker.gold - penalty);
-      if (victim) {
-        victim.gold += deducted;
+      upfrontPaid = Math.min(breaker.gold, penalty);
+      breaker.gold = Math.max(0, breaker.gold - upfrontPaid);
+      debt = Math.max(0, penalty - upfrontPaid);
+      if (victim && upfrontPaid > 0) {
+        victim.gold += upfrontPaid;
+        if (victim.id === this.myCountryId) {
+          this.progressQuest("GOLD", Math.round(upfrontPaid));
+        }
       }
     }
 
@@ -3475,22 +3603,39 @@ export class WorldSimulationEngine {
     treaty.breakerId = breakerCountryId;
     treaty.breakReason = reason;
 
+    treaty.debtorId = breakerCountryId;
+    treaty.creditorId = victimId;
+    treaty.debtorName = breaker ? breaker.name : "Devlet";
+    treaty.creditorName = victim ? victim.name : "Devlet";
+    treaty.totalDebt = penalty;
+    treaty.paidDebt = upfrontPaid;
+    treaty.remainingDebt = debt;
+
     this.sync.broadcast({
       type: "TREATY_BREAK",
       treatyId,
       breakerId: breakerCountryId,
-      penalty: deducted,
+      penalty,
+      upfrontPaid,
+      debt,
       reason,
     });
 
     this.onSound("celebration");
     const breakerName = breaker ? breaker.name : "Devlet";
     const victimName = victim ? victim.name : "Devlet";
-    this.onEvent(
-      ` ${breakerName}, ${victimName} ile olan ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşmasını ${reason === "SALDIRI" ? "saldırarak" : "ödemeyerek"} ihlal etti! (${deducted} Altın ceza ödendi)`,
-    );
+    if (debt > 0) {
+      this.onEvent(
+        `⚠️ ${breakerName}, ${victimName} ile anlaşmasını ihlal etti! Kasadaki ${upfrontPaid} Altın ödendi. Kalan ${debt} Altın borç, ürettiği altınlardan tahsil edilecek!`,
+      );
+    } else {
+      this.onEvent(
+        ` ${breakerName}, ${victimName} ile olan ${treaty.type === "ALLIANCE" ? "İttifak" : "Haraç"} anlaşmasını ${reason === "SALDIRI" ? "saldırarak" : "ödemeyerek"} ihlal etti! (${upfrontPaid} Altın ceza ödendi)`,
+      );
+    }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
-    return { ok: true, deducted, treaty };
+    this.scheduleSave();
+    return { ok: true, penalty, deducted: upfrontPaid, debt, treaty };
   }
 
   // Request mutual termination of an active treaty without penalty
@@ -3669,25 +3814,95 @@ export class WorldSimulationEngine {
     if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
 
-  handleRemoteTreatyBreak(treatyId, breakerId, penalty = 0, reason = "SALDIRI", isReplay = false) {
+  handleRemoteTreatyBreak(
+    treatyId,
+    breakerId,
+    penalty = 0,
+    upfrontPaid = null,
+    debt = null,
+    reason = "SALDIRI",
+    isReplay = false,
+  ) {
     const treaty = this.treaties.find((t) => t.id === treatyId);
     if (!treaty) return;
     treaty.status = "BROKEN";
     treaty.breakerId = breakerId;
     treaty.brokenAt = Date.now();
+    treaty.breakReason = reason;
 
     const breaker = this.countryMap.get(breakerId);
     const victimId = breakerId === treaty.fromId ? treaty.toId : treaty.fromId;
     const victim = this.countryMap.get(victimId);
 
-    if (!isReplay && penalty > 0) {
-      if (breaker) breaker.gold = Math.max(0, breaker.gold - penalty);
-      if (victim) victim.gold += penalty;
+    const actualPenalty = penalty || treaty.penalty || 0;
+    const actualUpfront =
+      upfrontPaid !== null
+        ? upfrontPaid
+        : breaker
+          ? Math.min(breaker.gold, actualPenalty)
+          : actualPenalty;
+    const actualDebt =
+      debt !== null ? debt : Math.max(0, actualPenalty - actualUpfront);
+
+    treaty.debtorId = breakerId;
+    treaty.creditorId = victimId;
+    treaty.debtorName = breaker ? breaker.name : "Devlet";
+    treaty.creditorName = victim ? victim.name : "Devlet";
+    treaty.totalDebt = actualPenalty;
+    treaty.paidDebt = actualUpfront;
+    treaty.remainingDebt = actualDebt;
+
+    if (!isReplay && actualPenalty > 0) {
+      if (breaker && actualUpfront > 0) {
+        breaker.gold = Math.max(0, breaker.gold - actualUpfront);
+      }
+      if (victim && actualUpfront > 0) {
+        victim.gold += actualUpfront;
+        if (victim.id === this.myCountryId) {
+          this.progressQuest("GOLD", Math.round(actualUpfront));
+        }
+      }
       const breakerName = breaker ? breaker.name : "Devlet";
       const victimName = victim ? victim.name : "Devlet";
-      this.onEvent(
-        ` ${breakerName}, ${victimName} ile olan anlaşmasını ihlal etti! (${penalty} Altın tazminat)`,
-      );
+      if (actualDebt > 0) {
+        this.onEvent(
+          `⚠️ ${breakerName}, ${victimName} ile anlaşmasını ihlal etti! Kasadaki ${actualUpfront} Altın ödendi. Kalan ${actualDebt} Altın borç, ürettiği altınlardan tahsil edilecek!`,
+        );
+      } else {
+        this.onEvent(
+          ` ${breakerName}, ${victimName} ile olan anlaşmasını ihlal etti! (${actualUpfront} Altın tazminat)`,
+        );
+      }
+    }
+    if (this.onTreatyUpdate) this.onTreatyUpdate();
+  }
+
+  handleRemoteTreatyReparationPayment(
+    treatyId,
+    amount = 0,
+    remainingDebt = 0,
+    time = 0,
+    isReplay = false,
+  ) {
+    const treaty = this.treaties.find((t) => t.id === treatyId);
+    if (!treaty) return;
+    treaty.remainingDebt = remainingDebt;
+    treaty.paidDebt = (treaty.paidDebt || 0) + amount;
+
+    if (!isReplay && amount > 0) {
+      const creditor = this.countryMap.get(treaty.creditorId);
+      if (creditor && creditor.id === this.myCountryId) {
+        creditor.gold += amount;
+        this.progressQuest("GOLD", Math.round(amount));
+        this.onSound("cash");
+        this.onEvent(
+          `💰 ${treaty.debtorName || "Devlet"} tazminat borcuna istinaden size ${Math.round(amount)} Altın ödedi. (Kalan Borç: ${Math.round(remainingDebt)} Altın)`,
+        );
+      }
+      const debtor = this.countryMap.get(treaty.debtorId);
+      if (debtor && debtor.id !== this.myCountryId) {
+        debtor.gold = Math.max(0, debtor.gold - amount);
+      }
     }
     if (this.onTreatyUpdate) this.onTreatyUpdate();
   }
