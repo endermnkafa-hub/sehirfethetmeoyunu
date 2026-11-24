@@ -519,15 +519,15 @@ export class WorldSimulationEngine {
     }
 
     const nextStreak = isClaimedToday ? currentStreak : currentStreak + 1;
-    // Streak bonus: +3% per streak day up to +25%
-    const bonusPercent = Math.min(25, Math.max(3, currentStreak * 3));
+    // Streak bonus: +2% per streak day up to +15%
+    const bonusPercent = Math.min(15, Math.max(2, currentStreak * 2));
 
     return {
       streak: currentStreak,
       nextStreak,
       isClaimedToday,
       bonusPercent,
-      bonusGold: Math.min(2500, 200 + currentStreak * 150),
+      bonusGold: Math.min(600, 100 + currentStreak * 50),
     };
   }
 
@@ -1206,7 +1206,7 @@ export class WorldSimulationEngine {
     return { title: "Beylik", badge: "🚩", minLand: 1 };
   }
 
-  // Balanced Dynamic Quests that scale with country size (no trivial 3-pixel tasks once grown)
+  // Balanced Dynamic Quests that scale with country size (no runaway gold loops)
   getQuests() {
     const c = this.getMyCountry();
     if (!c) return [];
@@ -1232,8 +1232,8 @@ export class WorldSimulationEngine {
         type: "CONQUER",
         target: conquerTarget,
         current: 0,
-        rewardGold: Math.round(conquerTarget * 120),
-        rewardTroops: Math.round(conquerTarget * 0.8),
+        rewardGold: Math.round(conquerTarget * 12),
+        rewardTroops: Math.max(1, Math.round(conquerTarget * 0.15)),
         completed: false,
       },
       {
@@ -1243,8 +1243,8 @@ export class WorldSimulationEngine {
         type: "GOLD",
         target: goldSpendTarget,
         current: 0,
-        rewardGold: Math.round(goldSpendTarget * 0.35),
-        rewardTroops: Math.max(4, Math.round(lands * 0.2)),
+        rewardGold: Math.min(1000, Math.max(30, Math.round(goldSpendTarget * 0.08))),
+        rewardTroops: Math.max(1, Math.round(lands * 0.05)),
         completed: false,
       },
       {
@@ -1254,8 +1254,8 @@ export class WorldSimulationEngine {
         type: "TROOPS",
         target: troopTarget,
         current: Math.floor(c.troops || 0),
-        rewardGold: Math.round(troopTarget * 35),
-        rewardTroops: Math.max(5, Math.round(troopTarget * 0.15)),
+        rewardGold: Math.min(600, Math.max(30, Math.round(troopTarget * 5))),
+        rewardTroops: Math.max(1, Math.round(troopTarget * 0.05)),
         completed: false,
       },
     ];
@@ -1267,14 +1267,30 @@ export class WorldSimulationEngine {
       return defaultQuests;
     }
 
-    // Update current progress for troop quest automatically
+    // Auto-fix quests if saved rewards have runaway old values (prevent hyperinflation)
+    let needsResave = false;
     for (const q of saved) {
       if (q.type === "TROOPS") {
         q.current = Math.floor(c.troops || 0);
         if (q.current >= q.target && !q.completed) {
           q.completed = true;
+          needsResave = true;
         }
       }
+      // Re-cap legacy hyperinflated rewards
+      if (q.rewardGold > 1500) {
+        q.rewardGold = Math.min(1000, Math.round(q.rewardGold * 0.12));
+        needsResave = true;
+      }
+      if (q.rewardTroops > 20) {
+        q.rewardTroops = Math.min(15, Math.round(q.rewardTroops * 0.15));
+        needsResave = true;
+      }
+    }
+    if (needsResave) {
+      try {
+        localStorage.setItem(key, JSON.stringify(saved));
+      } catch {}
     }
 
     return saved;
@@ -1338,8 +1354,8 @@ export class WorldSimulationEngine {
         title: `${nextTarget} Yeni Piksel Fethet`,
         target: nextTarget,
         current: 0,
-        rewardGold: Math.round(nextTarget * 130),
-        rewardTroops: Math.round(nextTarget * 0.8),
+        rewardGold: Math.round(nextTarget * 14),
+        rewardTroops: Math.max(1, Math.round(nextTarget * 0.15)),
         completed: false,
       };
     } else if (quest.type === "GOLD") {
@@ -1350,8 +1366,8 @@ export class WorldSimulationEngine {
         title: `${nextTarget.toLocaleString()} Altın Harca veya Yatır`,
         target: nextTarget,
         current: 0,
-        rewardGold: Math.round(nextTarget * 0.35),
-        rewardTroops: Math.max(5, Math.round(lands * 0.25)),
+        rewardGold: Math.min(1200, Math.max(40, Math.round(nextTarget * 0.08))),
+        rewardTroops: Math.max(1, Math.round(lands * 0.05)),
         completed: false,
       };
     } else {
@@ -1362,8 +1378,8 @@ export class WorldSimulationEngine {
         title: `Ordunu ${nextTarget} Asker Gücüne Ulaştır`,
         target: nextTarget,
         current: Math.floor(c.troops || 0),
-        rewardGold: Math.round(nextTarget * 40),
-        rewardTroops: Math.max(6, Math.round(nextTarget * 0.15)),
+        rewardGold: Math.min(800, Math.max(40, Math.round(nextTarget * 6))),
+        rewardTroops: Math.max(1, Math.round(nextTarget * 0.05)),
         completed: false,
       };
     }
