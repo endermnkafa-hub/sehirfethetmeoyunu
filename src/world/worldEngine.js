@@ -253,61 +253,42 @@ export class WorldSimulationEngine {
   }
 
   _saveLocalWorldBackup() {
-    try {
-      if (typeof localStorage === 'undefined') return;
-      const snapshot = this.exportSnapshot();
-      if (snapshot) {
-        localStorage.setItem(WORLD_SAVE_KEY, JSON.stringify(snapshot));
-      }
-    } catch {}
+    // Disabled: all world state lives exclusively on the Firebase server
   }
 
   _loadLocalWorldBackup() {
+    // Disabled: always load authoritative state from Firebase server
     try {
-      if (typeof localStorage === 'undefined') return;
-      const raw = localStorage.getItem(WORLD_SAVE_KEY);
-      if (!raw) return;
-      const data = JSON.parse(raw);
-      if (data && Array.isArray(data.countries) && Array.isArray(data.rle)) {
-        this.mergeRemoteSnapshot(data);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(WORLD_SAVE_KEY);
       }
     } catch {}
   }
 
   _ensureCountryInventory(c) {
     if (!c) return;
-    c.inventory = c.inventory || { nukes: 0 };
-    try {
-      if (typeof localStorage !== "undefined") {
-        const stored = localStorage.getItem(`sf_inventory_${c.id}`);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (parsed && typeof parsed.nukes === "number") {
-            c.inventory.nukes = Math.max(c.inventory.nukes || 0, parsed.nukes);
-          }
-        }
-      }
-    } catch {}
+    c.inventory = c.inventory || { nukes: 0, specialTroops: c.specialTroops || 0 };
   }
 
-  _persistCountryInventory(c) {
-    if (!c || !c.inventory) return;
-    try {
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(`sf_inventory_${c.id}`, JSON.stringify(c.inventory));
-      }
-    } catch {}
+  _persistCountryInventory() {
+    // Disabled: inventory is synced exclusively via Firebase server
   }
 
   _persistNuclearStrikes() {
-    try {
-      if (typeof localStorage !== "undefined" && Array.isArray(this.nuclearStrikes)) {
-        localStorage.setItem("sf_nuclear_strikes_v1", JSON.stringify(this.nuclearStrikes.slice(-60)));
-      }
-    } catch {}
+    // Disabled: nuclear strikes are synced exclusively via Firebase server
   }
 
   _loadPersistedNuclearStrikes() {
+    // Disabled: nuclear strikes come exclusively from Firebase server
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem("sf_nuclear_strikes_v1");
+      }
+    } catch {}
+    return;
+  }
+
+  _legacyLoadNuclearStrikesUnused() {
     try {
       if (typeof localStorage !== "undefined") {
         const raw = localStorage.getItem("sf_nuclear_strikes_v1");
@@ -402,15 +383,7 @@ export class WorldSimulationEngine {
     if (!c || c.landCount <= 0) return null;
 
     const now = Date.now();
-    let lastTime = 0;
-    try {
-      const stored = localStorage.getItem(`sf_last_active_${c.id}`);
-      if (stored) lastTime = parseInt(stored, 10);
-    } catch {}
-
-    if (!lastTime || Number.isNaN(lastTime)) {
-      lastTime = c.lastActiveTime || c._lastStatsTime || c._lastSyncTime || now;
-    }
+    const lastTime = c.lastActiveTime || c._lastStatsTime || c._lastSyncTime || now;
 
     const elapsedSec = Math.max(
       0,
@@ -495,31 +468,23 @@ export class WorldSimulationEngine {
     return true;
   }
 
-  // Daily Streak Check & Bonus (Consecutive login tracking)
+  // Daily Streak Check & Bonus (Server-backed on country object, never localStorage!)
   getDailyStreakInfo() {
     const c = this.getMyCountry();
-    if (!c) return { streak: 0, canClaim: false, bonusPercent: 0 };
-
-    const key = `sf_streak_${c.id}`;
-    let data = { streak: 0, lastClaimDay: "" };
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) data = JSON.parse(stored);
-    } catch {}
+    if (!c) return { streak: 0, isClaimedToday: true, bonusPercent: 0, bonusGold: 0 };
 
     const today = new Date().toISOString().slice(0, 10);
     const yesterdayDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    const isClaimedToday = data.lastClaimDay === today;
-    let currentStreak = data.streak || 0;
+    const lastClaimDay = c.lastDailyClaimDay || "";
+    const isClaimedToday = lastClaimDay === today;
+    let currentStreak = Number(c.dailyStreak) || 0;
 
-    if (!isClaimedToday && data.lastClaimDay && data.lastClaimDay !== yesterdayDate) {
-      // Streak broken if missed more than 1 day
+    if (!isClaimedToday && lastClaimDay && lastClaimDay !== yesterdayDate) {
       currentStreak = 0;
     }
 
     const nextStreak = isClaimedToday ? currentStreak : currentStreak + 1;
-    // Streak bonus: +3% per streak day up to +25%
     const bonusPercent = Math.min(25, Math.max(3, currentStreak * 3));
 
     return {
@@ -540,17 +505,13 @@ export class WorldSimulationEngine {
 
     const today = new Date().toISOString().slice(0, 10);
     const updatedStreak = info.nextStreak;
-    const key = `sf_streak_${c.id}`;
 
-    try {
-      localStorage.setItem(key, JSON.stringify({
-        streak: updatedStreak,
-        lastClaimDay: today,
-      }));
-    } catch {}
+    c.dailyStreak = updatedStreak;
+    c.lastDailyClaimDay = today;
 
     const goldBonus = info.bonusGold;
     c.gold = (c.gold || 0) + goldBonus;
+    c._rewardGoldPool = (c._rewardGoldPool || 0) + goldBonus;
 
     this.onSound("celebration");
     this.onEvent(`🔥 ${updatedStreak}. Gün Giriş Serisi! (+${goldBonus} Altın ve +%${info.bonusPercent} Günlük Verim)`);
@@ -565,8 +526,13 @@ export class WorldSimulationEngine {
         color: c.color,
         upgrades: c.upgrades,
         inventory: c.inventory,
+        dailyStreak: c.dailyStreak,
+        lastDailyClaimDay: c.lastDailyClaimDay,
       },
     });
+    if (this.sync && this.sync.publishMyCountrySnapshot) {
+      this.sync.publishMyCountrySnapshot();
+    }
 
     this.saveState();
     return {
@@ -1032,15 +998,6 @@ export class WorldSimulationEngine {
       if (isMyCountry) {
         c.gold += c.goldIncome * deltaTimeSec;
         c.lastActiveTime = Date.now();
-        if (
-          !this._lastActivePersist ||
-          Date.now() - this._lastActivePersist > 8000
-        ) {
-          this._lastActivePersist = Date.now();
-          try {
-            localStorage.setItem(`sf_last_active_${c.id}`, String(Date.now()));
-          } catch {}
-        }
       }
     }
 
@@ -1218,24 +1175,21 @@ export class WorldSimulationEngine {
     return { title: "Beylik", badge: "🚩", minLand: 1 };
   }
 
-  // Balanced Dynamic Quests: Gold-only rewards, cumulative troop tracking, anti-loop protection
+  // Balanced Dynamic Quests: Server-backed in-memory/country state (no browser localStorage cache!)
   getQuests() {
     const c = this.getMyCountry();
     if (!c) return [];
 
-    const key = `sf_quests_v2_${c.id}`;
-    let saved = null;
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) saved = JSON.parse(stored);
-    } catch {}
+    if (Array.isArray(c.quests) && c.quests.length > 0) {
+      return c.quests;
+    }
 
     const lands = Math.max(1, c.landCount);
     const conquerTarget = Math.max(8, Math.round(Math.min(60, lands * 0.15)));
     const goldSpendTarget = Math.max(500, Math.round(Math.min(25000, lands * 40 + 400)));
     const troopTarget = Math.max(30, Math.round(c.capacity * 1.2) + 20);
 
-    const defaultQuests = [
+    c.quests = [
       {
         id: "quest_conquer",
         title: `${conquerTarget} Yeni Piksel Fethet`,
@@ -1271,24 +1225,15 @@ export class WorldSimulationEngine {
       },
     ];
 
-    if (!saved || !Array.isArray(saved) || saved.length === 0) {
-      try {
-        localStorage.setItem(key, JSON.stringify(defaultQuests));
-      } catch {}
-      return defaultQuests;
-    }
-
-    return saved;
+    return c.quests;
   }
 
   // Progress quest and grant reward
   progressQuest(type, amount = 1) {
     const c = this.getMyCountry();
     if (!c) return;
-    const key = `sf_quests_v2_${c.id}`;
-    let quests = this.getQuests();
+    const quests = this.getQuests();
 
-    let changed = false;
     for (const q of quests) {
       if (q.type === type && !q.completed) {
         q.current = (q.current || 0) + amount;
@@ -1296,14 +1241,7 @@ export class WorldSimulationEngine {
           q.current = q.target;
           q.completed = true;
         }
-        changed = true;
       }
-    }
-
-    if (changed) {
-      try {
-        localStorage.setItem(key, JSON.stringify(quests));
-      } catch {}
     }
   }
 
@@ -1311,8 +1249,7 @@ export class WorldSimulationEngine {
   claimQuestReward(questId) {
     const c = this.getMyCountry();
     if (!c) return null;
-    const key = `sf_quests_v2_${c.id}`;
-    let quests = this.getQuests();
+    const quests = this.getQuests();
 
     const idx = quests.findIndex((q) => q.id === questId && q.completed);
     if (idx === -1) return null;
@@ -1366,10 +1303,6 @@ export class WorldSimulationEngine {
         completed: false,
       };
     }
-
-    try {
-      localStorage.setItem(key, JSON.stringify(quests));
-    } catch {}
 
     this.sync.broadcast({
       type: "SYNC_COUNTRY_STATS",
@@ -3118,6 +3051,12 @@ export class WorldSimulationEngine {
     if (stats.lastActiveTime) country.lastActiveTime = stats.lastActiveTime;
     if (["BALANCED", "MERCHANT", "WARLORD", "FORTRESS"].includes(stats.doctrine)) {
       country.doctrine = stats.doctrine;
+    }
+    if (Number.isFinite(stats.dailyStreak)) {
+      country.dailyStreak = Math.max(country.dailyStreak || 0, Math.floor(stats.dailyStreak));
+    }
+    if (typeof stats.lastDailyClaimDay === "string" && stats.lastDailyClaimDay) {
+      country.lastDailyClaimDay = stats.lastDailyClaimDay;
     }
     this._recalculateDerivedStats(country);
     this.saveState();
