@@ -424,7 +424,7 @@ test('auto-conquer rotates evenly across multiple disconnected territories/colon
   assert.equal(regionBCount > 1, true, 'Region B must also expand via auto-conquer');
 });
 
-test('sync history replay orders snapshots chronologically and preserves newer conquests and stats', () => {
+test('CF Worker INIT_STATE and live delta updates preserve countries, conquests, and stats', () => {
   const engine = createMockEngine();
   // Mark test land area as habitable
   for (let x = 20; x <= 30; x++) {
@@ -432,51 +432,68 @@ test('sync history replay orders snapshots chronologically and preserves newer c
     engine.owners[20 * 1000 + x] = 0;
   }
 
-  // Create SharedWorldSync without opening live Firebase network connections
+  // Create SharedWorldSync without opening live WebSocket connections
   const sync = Object.create(SharedWorldSync.prototype);
   sync.engine = engine;
   sync.seenMsgIds = new Set();
+  sync.onRemoteUpdate = () => {};
+  sync.tabId = 'test_tab';
 
-  // Country 10 saved an OLD snapshot at t=1000 owning (20,20) and (21,20)
-  // Country 20 conquered (21,20) and saved a NEWER snapshot at t=2000 owning (21,20) and (22,20)
-  // Notice Country 20 appears FIRST in countriesStateSnapshots, Country 10 appears SECOND!
-  const countriesStateSnapshots = [
-    {
-      type: 'COUNTRY_SYNC_PACKET',
-      country: { id: 20, name: 'NewerState', color: '#22C55E', capitalX: 22.4, capitalY: 20.1, gold: 100, troops: 10 },
-      rle: [20, 21, 2],
-      _sentAt: 2000,
-      _fromCountriesState: true,
-    },
-    {
-      type: 'COUNTRY_SYNC_PACKET',
-      country: { id: 10, name: 'OlderState', color: '#EF4444', capitalX: 20, capitalY: 20, gold: 50, troops: 5 },
-      rle: [20, 20, 2],
-      _sentAt: 1000,
-      _fromCountriesState: true,
-    },
-    {
-      type: 'COUNTRY_SYNC_PACKET',
-      country: { id: 30, name: 'DeletedState', color: '#3B82F6', capitalX: 25, capitalY: 20, gold: 10, troops: 1 },
-      rle: [20, 25, 1],
-      _sentAt: 1500,
-      _fromCountriesState: true,
-    },
-  ];
+  // Authoritative INIT_STATE from Cloudflare Durable Object
+  sync._applyInitState({
+    type: 'INIT_STATE',
+    serverTime: 2000,
+    onlineCount: 2,
+    countries: [
+      {
+        country: { id: 10, name: 'OlderState', color: '#EF4444', capitalX: 20, capitalY: 20, gold: 50, troops: 5 },
+        rle: [20, 20, 1],
+        updatedAt: 1000,
+      },
+      {
+        country: { id: 20, name: 'NewerState', color: '#22C55E', capitalX: 22.4, capitalY: 20.1, gold: 100, troops: 10 },
+        rle: [20, 21, 2],
+        updatedAt: 2000,
+      },
+    ],
+    chats: [],
+    treaties: [],
+    nuclearStrikes: [],
+  });
 
-  // Recent event log: Country 20 conquered (23,20) at t=2500 and updated gold to 999 at t=2600; Country 30 deleted at t=1800
-  const eventPayloads = [
-    { type: 'ADMIN_DELETE_COUNTRY', countryId: 30, _sentAt: 1800 },
-    { type: 'CONQUER_PIXEL', countryId: 20, x: 23, y: 20, cost: 1, _sentAt: 2500 },
-    { type: 'SYNC_COUNTRY_STATS', countryId: 20, stats: { gold: 999, troops: 15 }, _sentAt: 2600 },
-  ];
-
-  sync._replayCompactedHistory(eventPayloads, countriesStateSnapshots);
+  // Live delta messages arriving over WebSocket
+  sync._handleRemoteMessage({ type: 'CONQUER_PIXEL', countryId: 20, x: 23, y: 20, cost: 1, _sentAt: 2500 }, false);
+  sync._handleRemoteMessage({ type: 'SYNC_COUNTRY_STATS', countryId: 20, stats: { gold: 999, troops: 15 }, _sentAt: 2600 }, false);
 
   assert.equal(engine.countryMap.has(10), true, 'OlderState must be visible');
   assert.equal(engine.countryMap.has(20), true, 'NewerState (with float capital) must be visible');
-  assert.equal(engine.countryMap.has(30), false, 'DeletedState must NOT resurrect from stale countries_state');
-  assert.equal(engine.owners[20 * 1000 + 21], 20, 'Newer snapshot must win contested pixel (21,20)');
-  assert.equal(engine.owners[20 * 1000 + 23], 20, 'Recent CONQUER_PIXEL after snapshot must NOT be dropped');
-  assert.equal(engine.countryMap.get(20).gold, 999, 'Recent SYNC_COUNTRY_STATS after snapshot must NOT be dropped');
+  assert.equal(engine.owners[20 * 1000 + 21], 20, 'Authoritative RLE must assign (21,20) to Country 20');
+  assert.equal(engine.owners[20 * 1000 + 23], 20, 'Live CONQUER_PIXEL delta must be applied');
+  assert.equal(engine.countryMap.get(20).gold, 999, 'Live SYNC_COUNTRY_STATS delta must be applied');
+});
+
+test('narrow isthmus/corridor bounded by sea or owned territory allows linear expansion', () => {
+  const engine = createMockEngine();
+  const cid = 10;
+  engine.countryMap.set(cid, {
+    id: cid,
+    name: 'IsthmusNation',
+    color: '#3B82F6',
+    landCount: 15,
+  });
+
+  // Setup a 1-pixel wide peninsula/bridge along row y=50 from x=10 to x=15
+  // y=49 and y=51 are sea (water = 0)
+  for (let x = 10; x <= 15; x++) {
+    engine.worldData.isLand[50 * 1000 + x] = 1;
+  }
+  // Country already owns (10,50), (11,50), (12,50)
+  engine.owners[50 * 1000 + 10] = cid;
+  engine.owners[50 * 1000 + 11] = cid;
+  engine.owners[50 * 1000 + 12] = cid;
+
+  // Expanding to (13,50): sağı ve solu su (y=49 ve y=51 deniz)
+  // Bu yüzden zorunlu koridordur ve snaking sayılmamalıdır!
+  const isSnake = engine.isSnakingConquest(cid, 13, 50);
+  assert.equal(isSnake, false, 'Narrow isthmus with sea on flanks must NOT be blocked as snaking');
 });

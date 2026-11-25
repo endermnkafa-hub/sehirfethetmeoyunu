@@ -32,6 +32,8 @@ jobs:
         run: npm ci
 
       - name: Web Sitesini Derle
+        env:
+          VITE_WORKER_WS_URL: ${{ vars.VITE_WORKER_WS_URL }}
         run: npm run build
 
       - name: GitHub Pages Ayarla
@@ -74,6 +76,8 @@ jobs:
           java-version: '21'
 
       - name: Paketleri Yukle ve Web Derle
+        env:
+          VITE_WORKER_WS_URL: ${{ vars.VITE_WORKER_WS_URL }}
         run: |
           npm ci
           npm run build
